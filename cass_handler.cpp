@@ -540,7 +540,7 @@ bool EloqDS::CassHandler::PutAllExecute(
     const CassPrepared *insert_ttl_prepared,
     const CassPrepared *delete_prepared,
     std::vector<txservice::FlushRecord> &batch,
-    const TableSchema *table_schema,
+    const txservice::TableSchema *table_schema,
     uint32_t node_group)
 {
     size_t flush_idx = 0;
@@ -558,7 +558,7 @@ bool EloqDS::CassHandler::PutAllExecute(
     int32_t last_pk = -1;
 
     while (flush_idx < batch.size() &&
-           Sharder::Instance().LeaderTerm(node_group) > 0)
+           txservice::Sharder::Instance().LeaderTerm(node_group) > 0)
     {
         for (; flush_idx < batch.size() &&
                cass_batch.PendingFutureCount() < max_futures_;
@@ -592,7 +592,7 @@ bool EloqDS::CassHandler::PutAllExecute(
             tuple_size += ckpt_rec.Key().Size();
             if (ckpt_rec.Payload() != nullptr)
             {
-                const TxRecord *payload = ckpt_rec.Payload();
+                const txservice::TxRecord *payload = ckpt_rec.Payload();
                 tuple_size += payload->Length();
             }
             CassError rc = cass_batch.AddBatchStatement(statement, tuple_size);
@@ -626,7 +626,7 @@ bool EloqDS::CassHandler::PutAllExecute(
         }
     }
 
-    if (Sharder::Instance().LeaderTerm(node_group) < 0)
+    if (txservice::Sharder::Instance().LeaderTerm(node_group) < 0)
     {
         LOG(WARNING) << "CassHandler: leader transferred of ng#" << node_group;
         return false;
@@ -844,7 +844,7 @@ CassStatement *EloqDS::CassHandler::PutAllCreateStatement(
     const CassPrepared *insert_ttl_prepared,
     const CassPrepared *delete_prepared,
     const txservice::FlushRecord &ckpt_rec,
-    const TableSchema *table_schema,
+    const txservice::TableSchema *table_schema,
     int32_t pk1,
     int16_t pk2)
 {
@@ -855,11 +855,11 @@ CassStatement *EloqDS::CassHandler::PutAllCreateStatement(
         table_schema->GetKVCatalogInfo()->GetKvTableName(table_name);
 
     CassStatement *statement = nullptr;
-    assert(ckpt_rec.payload_status_ == RecordStatus::Normal ||
-           ckpt_rec.payload_status_ == RecordStatus::Deleted);
-    uint64_t now = LocalCcShards::ClockTsInMillseconds();
+    assert(ckpt_rec.payload_status_ == txservice::RecordStatus::Normal ||
+           ckpt_rec.payload_status_ == txservice::RecordStatus::Deleted);
+    uint64_t now = txservice::LocalCcShards::ClockTsInMillseconds();
 
-    if (ckpt_rec.payload_status_ != RecordStatus::Deleted &&
+    if (ckpt_rec.payload_status_ != txservice::RecordStatus::Deleted &&
         (!tx_record->HasTTL() || tx_record->GetTTL() > now))
     {
         if (tx_record->HasTTL())
@@ -930,8 +930,8 @@ CassStatement *EloqDS::CassHandler::PutAllCreateStatement(
         // bind ttl if it has
         if (tx_record->HasTTL())
         {
-            int64_t ttl_gap =
-                tx_record->GetTTL() - LocalCcShards::ClockTsInMillseconds();
+            int64_t ttl_gap = tx_record->GetTTL() -
+                              txservice::LocalCcShards::ClockTsInMillseconds();
             ttl_gap = ttl_gap < 0 ? 0 : ttl_gap;
             uint64_t ttl = std::chrono::duration_cast<std::chrono::seconds>(
                                std::chrono::milliseconds(ttl_gap))
@@ -1036,27 +1036,29 @@ void EloqDS::CassHandler::UpsertTable(
     txservice::CcShard *ccs,
     txservice::CcErrorCode *err_code)
 {
-    int64_t leader_term = Sharder::Instance().TryPinNodeGroupData(ng_id);
+    int64_t leader_term =
+        txservice::Sharder::Instance().TryPinNodeGroupData(ng_id);
     if (leader_term < 0)
     {
-        hd_res->SetError(CcErrorCode::TX_NODE_NOT_LEADER);
+        hd_res->SetError(txservice::CcErrorCode::TX_NODE_NOT_LEADER);
         return;
     }
 
     std::shared_ptr<void> defer_unpin(
         nullptr,
-        [ng_id](void *) { Sharder::Instance().UnpinNodeGroupData(ng_id); });
+        [ng_id](void *)
+        { txservice::Sharder::Instance().UnpinNodeGroupData(ng_id); });
 
     if (leader_term != tx_term)
     {
-        hd_res->SetError(CcErrorCode::NG_TERM_CHANGED);
+        hd_res->SetError(txservice::CcErrorCode::NG_TERM_CHANGED);
         return;
     }
 
     // Use old schema for drop table as the new schema would be null.
     const txservice::TableSchema *schema =
-        (op_type == OperationType::DropTable ||
-         op_type == OperationType::TruncateTable)
+        (op_type == txservice::OperationType::DropTable ||
+         op_type == txservice::OperationType::TruncateTable)
             ? old_table_schema
             : table_schema;
     const CassCatalogInfo *cass_info =
@@ -1083,17 +1085,17 @@ void EloqDS::CassHandler::UpsertTable(
     // Upsert PK(base) table.
     switch (op_type)
     {
-    case OperationType::DropTable:
+    case txservice::OperationType::DropTable:
     {
         DeleteDataFromKvTable(&schema->GetBaseTableName(), table_data);
         break;
     }
-    case OperationType::TruncateTable:
+    case txservice::OperationType::TruncateTable:
     {
         DeleteDataFromKvTable(&schema->GetBaseTableName(), table_data);
         break;
     }
-    case OperationType::CreateTable:
+    case txservice::OperationType::CreateTable:
     {
         if (ddl_skip_kv_ && !is_bootstrap_)
         {
@@ -1120,9 +1122,9 @@ void EloqDS::CassHandler::UpsertTable(
         }
         break;
     }
-    case OperationType::Update:
-    case OperationType::AddIndex:
-    case OperationType::DropIndex:
+    case txservice::OperationType::Update:
+    case txservice::OperationType::AddIndex:
+    case txservice::OperationType::DropIndex:
         // Skip base table update
         break;
     default:
@@ -1131,9 +1133,10 @@ void EloqDS::CassHandler::UpsertTable(
     }
 
     // Upsert SK tables.
-    if (op_type == OperationType::AddIndex ||
-        op_type == OperationType::DropIndex ||
-        (op_type != OperationType::Update && schema->IndexesSize() > 0))
+    if (op_type == txservice::OperationType::AddIndex ||
+        op_type == txservice::OperationType::DropIndex ||
+        (op_type != txservice::OperationType::Update &&
+         schema->IndexesSize() > 0))
     {
         table_data->RewindSKTableIteratorMarkFirstForUpserting();
         while (!table_data->IsSKTableIteratorEnd())
@@ -1146,7 +1149,7 @@ void EloqDS::CassHandler::UpsertTable(
     // Check if we are the last referencer of table data.
     if (table_data->ref_count_.fetch_sub(1) == 1)
     {
-        CcErrorCode error_code = table_data->ErrorCode();
+        txservice::CcErrorCode error_code = table_data->ErrorCode();
         if (error_code != txservice::CcErrorCode::NO_ERROR)
         {
             table_data->hd_res_->SetError(error_code);
@@ -1175,13 +1178,13 @@ void EloqDS::CassHandler::OnUpsertCassTable(CassFuture *future, void *data)
     {
         LOG(ERROR) << ErrorMessage(future)
                    << " table name: " << table_data->table_name_->String();
-        table_data->SetErrorCode(CcErrorCode::DATA_STORE_ERR);
+        table_data->SetErrorCode(txservice::CcErrorCode::DATA_STORE_ERR);
     }
 
     if (table_data->ref_count_.fetch_sub(1) == 1)
     {
-        CcErrorCode error_code = table_data->ErrorCode();
-        if (error_code != CcErrorCode::NO_ERROR)
+        txservice::CcErrorCode error_code = table_data->ErrorCode();
+        if (error_code != txservice::CcErrorCode::NO_ERROR)
         {
             table_data->hd_res_->SetError(error_code);
             // If one of the previous upsert table failed, clean up memory and
@@ -1204,8 +1207,8 @@ void EloqDS::CassHandler::UpsertSkTable(UpsertTableData *table_data)
 
     switch (table_data->op_type_)
     {
-    case OperationType::CreateTable:
-    case OperationType::AddIndex:
+    case txservice::OperationType::CreateTable:
+    case txservice::OperationType::AddIndex:
     {
         if (table_data->ddl_skip_kv_ && !table_data->is_bootstrap_)
         {
@@ -1217,8 +1220,8 @@ void EloqDS::CassHandler::UpsertSkTable(UpsertTableData *table_data)
         }
         break;
     }
-    case OperationType::DropTable:
-    case OperationType::DropIndex:
+    case txservice::OperationType::DropTable:
+    case txservice::OperationType::DropIndex:
     {
         // in case one transaction create->drop->create table(2nd create with
         // different schema)
@@ -1242,7 +1245,7 @@ void EloqDS::CassHandler::UpsertCatalog(UpsertTableData *table_data)
 
     switch (table_data->op_type_)
     {
-    case OperationType::DropTable:
+    case txservice::OperationType::DropTable:
     {
         std::string table_key = table_data->table_name_->Serialize();
         std::string delete_str("DELETE FROM ");
@@ -1258,7 +1261,7 @@ void EloqDS::CassHandler::UpsertCatalog(UpsertTableData *table_data)
         st_future = cass_session_execute(table_data->session_, statement);
         break;
     }
-    case OperationType::TruncateTable:
+    case txservice::OperationType::TruncateTable:
     {
         std::string table_key = table_data->table_name_->Serialize();
 
@@ -1280,10 +1283,10 @@ void EloqDS::CassHandler::UpsertCatalog(UpsertTableData *table_data)
         st_future = cass_session_execute(table_data->session_, statement);
         break;
     }
-    case OperationType::CreateTable:
-    case OperationType::Update:
-    case OperationType::AddIndex:
-    case OperationType::DropIndex:
+    case txservice::OperationType::CreateTable:
+    case txservice::OperationType::Update:
+    case txservice::OperationType::AddIndex:
+    case txservice::OperationType::DropIndex:
     {
         const CassCatalogInfo *cass_info = static_cast<const CassCatalogInfo *>(
             table_data->schema_->GetKVCatalogInfo());
@@ -1385,24 +1388,24 @@ void EloqDS::CassHandler::OnUpsertCatalog(CassFuture *future, void *data)
     if (code != CASS_OK)
     {
         LOG(ERROR) << ErrorMessage(future);
-        table_data->hd_res_->SetError(CcErrorCode::DATA_STORE_ERR);
+        table_data->hd_res_->SetError(txservice::CcErrorCode::DATA_STORE_ERR);
         delete table_data;
         return;
     }
 
     switch (table_data->op_type_)
     {
-    case OperationType::CreateTable:
-    case OperationType::DropTable:
-    case OperationType::AddIndex:
-    case OperationType::DropIndex:
+    case txservice::OperationType::CreateTable:
+    case txservice::OperationType::DropTable:
+    case txservice::OperationType::AddIndex:
+    case txservice::OperationType::DropIndex:
         UpsertTableStatistics(table_data);
         break;
-    case OperationType::TruncateTable:
+    case txservice::OperationType::TruncateTable:
         table_data->hd_res_->SetFinished();
         delete table_data;
         break;
-    case OperationType::Update:
+    case txservice::OperationType::Update:
         table_data->hd_res_->SetFinished();
         delete table_data;
         break;
@@ -1414,7 +1417,7 @@ void EloqDS::CassHandler::OnUpsertCatalog(CassFuture *future, void *data)
 
 void EloqDS::CassHandler::UpsertTableStatistics(UpsertTableData *table_data)
 {
-    if (table_data->op_type_ == OperationType::DropTable)
+    if (table_data->op_type_ == txservice::OperationType::DropTable)
     {
         std::string table_key = table_data->table_name_->Serialize();
 
@@ -1470,16 +1473,17 @@ void EloqDS::CassHandler::OnUpsertTableStatistics(CassFuture *future,
     {
         switch (table_data->op_type_)
         {
-        case OperationType::CreateTable:
-        case OperationType::DropTable:
+        case txservice::OperationType::CreateTable:
+        case txservice::OperationType::DropTable:
         {
-            const RecordSchema *rsch = table_data->schema_->RecordSchema();
+            const txservice::RecordSchema *rsch =
+                table_data->schema_->RecordSchema();
             // For CREATE TABLE, will write the initial sequence record into the
             // sequence ccmap, and the record will be flush into the data store
             // during normal checkpoint, so there is no need to insert the
             // initial sequence record into data store here.
             if (rsch->AutoIncrementIndex() >= 0 &&
-                table_data->op_type_ == OperationType::DropTable)
+                table_data->op_type_ == txservice::OperationType::DropTable)
             {
 #ifndef ON_KEY_OBJECT
                 UpsertSequence(table_data);
@@ -1504,8 +1508,8 @@ void EloqDS::CassHandler::OnUpsertTableStatistics(CassFuture *future,
             }
             break;
         }
-        case OperationType::AddIndex:
-        case OperationType::DropIndex:
+        case txservice::OperationType::AddIndex:
+        case txservice::OperationType::DropIndex:
         {
 #ifdef RANGE_PARTITION_ENABLED
             // Upsert index range tables
@@ -1535,7 +1539,7 @@ void EloqDS::CassHandler::OnUpsertTableStatistics(CassFuture *future,
     else
     {
         LOG(ERROR) << ErrorMessage(future);
-        table_data->hd_res_->SetError(CcErrorCode::DATA_STORE_ERR);
+        table_data->hd_res_->SetError(txservice::CcErrorCode::DATA_STORE_ERR);
         delete table_data;
     }
 }
@@ -1551,7 +1555,7 @@ void EloqDS::CassHandler::UpsertSequence(UpsertTableData *table_data)
     // Assign fixed partition id for sequences
     int32_t pk1 = 0;
 
-    if (table_data->op_type_ == OperationType::DropTable)
+    if (table_data->op_type_ == txservice::OperationType::DropTable)
     {
         std::string delete_str("DELETE FROM ");
         delete_str.append(table_data->cass_hd_->keyspace_name_);
@@ -1625,7 +1629,7 @@ void EloqDS::CassHandler::OnUpsertSequence(CassFuture *future, void *data)
     else
     {
         LOG(ERROR) << ErrorMessage(future);
-        table_data->hd_res_->SetError(CcErrorCode::DATA_STORE_ERR);
+        table_data->hd_res_->SetError(txservice::CcErrorCode::DATA_STORE_ERR);
         delete table_data;
     }
 }
@@ -1655,7 +1659,8 @@ void EloqDS::CassHandler::OnLoadRangeSlice(CassFuture *future, void *data)
     }
 
     CassIterator *scan_it = cass_iterator_from_result(scan_result);
-    FillStoreSliceCc &load_slice_req = *scan_slice_data->load_slice_req_;
+    txservice::FillStoreSliceCc &load_slice_req =
+        *scan_slice_data->load_slice_req_;
 
     uint16_t non_key_col_cnt = 1;
 
@@ -1689,9 +1694,10 @@ void EloqDS::CassHandler::OnLoadRangeSlice(CassFuture *future, void *data)
                              &packed_key,
                              &packed_len);
 
-        TxKey key = TxKeyFactory::CreateTxKey(
+        txservice::TxKey key = txservice::TxKeyFactory::CreateTxKey(
             reinterpret_cast<const char *>(packed_key), packed_len);
-        std::unique_ptr<TxRecord> record = TxRecordFactory::CreateTxRecord();
+        std::unique_ptr<txservice::TxRecord> record =
+            txservice::TxRecordFactory::CreateTxRecord();
         if (!is_deleted)
         {
             const CassValue *unpack_info_value =
@@ -1702,7 +1708,7 @@ void EloqDS::CassHandler::OnLoadRangeSlice(CassFuture *future, void *data)
             if (scan_slice_data->table_name_->Type() ==
                     txservice::TableType::Primary ||
                 scan_slice_data->table_name_->Type() ==
-                    TableType::UniqueSecondary)
+                    txservice::TableType::UniqueSecondary)
             {
                 const cass_byte_t *encode_blob;
                 size_t encode_blob_len = 0;
@@ -1755,8 +1761,8 @@ void EloqDS::CassHandler::UpsertInitialRangePartitionIdInternal(
 
     // For add index, if the cass_range_table_name meta table has initialized,
     // skip this phase.
-    if (table_data->op_type_ == OperationType::CreateTable ||
-        (table_data->op_type_ == OperationType::AddIndex &&
+    if (table_data->op_type_ == txservice::OperationType::CreateTable ||
+        (table_data->op_type_ == txservice::OperationType::AddIndex &&
          !table_data->partition_id_initialized_.at(*tbl_name)))
     {
 #ifndef ON_KEY_OBJECT
@@ -1773,7 +1779,7 @@ void EloqDS::CassHandler::UpsertInitialRangePartitionIdInternal(
                 Partition::InitialPartitionId(tbl_name->StringView()));
         }
 
-        assert(table_name.Engine() != TableEngine::None);
+        assert(table_name.Engine() != txservice::TableEngine::None);
         std::string table_key = table_name.Serialize();
 
         std::string upsert_query("INSERT INTO ");
@@ -1791,8 +1797,8 @@ void EloqDS::CassHandler::UpsertInitialRangePartitionIdInternal(
 
         // Bind tablename
         cass_statement_bind_string(upsert_stmt, 0, table_key.data());
-        const TxKey *packed_neg_inf_key =
-            TxKeyFactory::PackedNegativeInfinity();
+        const txservice::TxKey *packed_neg_inf_key =
+            txservice::TxKeyFactory::PackedNegativeInfinity();
         // Bind mono_key
         cass_statement_bind_bytes(
             upsert_stmt,
@@ -1847,10 +1853,10 @@ void EloqDS::CassHandler::UpsertLastRangePartitionIdInternal(
     CassStatement *stmt = nullptr;
 
     // tablename format: ./dbname/tablename
-    if (table_data->op_type_ == OperationType::DropTable ||
-        table_data->op_type_ == OperationType::DropIndex)
+    if (table_data->op_type_ == txservice::OperationType::DropTable ||
+        table_data->op_type_ == txservice::OperationType::DropIndex)
     {
-        assert(table_name.Engine() != TableEngine::None);
+        assert(table_name.Engine() != txservice::TableEngine::None);
         std::string table_key = table_name.Serialize();
 
         std::string delete_range_partition_id_str = "DELETE FROM ";
@@ -1864,11 +1870,11 @@ void EloqDS::CassHandler::UpsertLastRangePartitionIdInternal(
     }
     // For add index, if the cass_last_range_id_name meta table has initialized,
     // skip this phase.
-    else if (table_data->op_type_ == OperationType::CreateTable ||
-             (table_data->op_type_ == OperationType::AddIndex &&
+    else if (table_data->op_type_ == txservice::OperationType::CreateTable ||
+             (table_data->op_type_ == txservice::OperationType::AddIndex &&
               !table_data->partition_id_initialized_.at(table_name)))
     {
-        assert(table_name.Engine() != TableEngine::None);
+        assert(table_name.Engine() != txservice::TableEngine::None);
         std::string table_key = table_name.Serialize();
 
         std::string insert_range_partition_id_str = "INSERT INTO ";
@@ -1926,7 +1932,7 @@ void EloqDS::CassHandler::OnUpsertDone(
     else
     {
         LOG(ERROR) << ErrorMessage(future);
-        table_data->hd_res_->SetError(CcErrorCode::DATA_STORE_ERR);
+        table_data->hd_res_->SetError(txservice::CcErrorCode::DATA_STORE_ERR);
         delete table_data;
     }
 }
@@ -1981,7 +1987,7 @@ void EloqDS::CassHandler::IterateSkIndexes(
     else
     {
         LOG(ERROR) << ErrorMessage(future);
-        table_data->hd_res_->SetError(CcErrorCode::DATA_STORE_ERR);
+        table_data->hd_res_->SetError(txservice::CcErrorCode::DATA_STORE_ERR);
         delete table_data;
     }
 }
@@ -1999,10 +2005,10 @@ void EloqDS::CassHandler::PrepareTableRanges(UpsertTableData *table_data)
     }
 
     CassStatement *create_statement = nullptr;
-    if (table_data->op_type_ == OperationType::DropTable ||
-        table_data->op_type_ == OperationType::DropIndex)
+    if (table_data->op_type_ == txservice::OperationType::DropTable ||
+        table_data->op_type_ == txservice::OperationType::DropIndex)
     {
-        assert(table_name->Engine() != TableEngine::None);
+        assert(table_name->Engine() != txservice::TableEngine::None);
         std::string table_key = table_name->Serialize();
 
         std::string delete_str("DELETE FROM ");
@@ -2045,7 +2051,7 @@ void EloqDS::CassHandler::OnPrepareTableRanges(CassFuture *future, void *data)
     else if (table_type == txservice::TableType::Secondary ||
              table_type == txservice::TableType::UniqueSecondary)
     {
-        if (table_data->op_type_ == OperationType::AddIndex)
+        if (table_data->op_type_ == txservice::OperationType::AddIndex)
         {
             IterateSkIndexes(future,
                              data,
@@ -2078,8 +2084,8 @@ bool EloqDS::CassHandler::PrepareUpsertSkTableIterator(
 {
     switch (table_data->op_type_)
     {
-    case OperationType::CreateTable:
-    case OperationType::DropTable:
+    case txservice::OperationType::CreateTable:
+    case txservice::OperationType::DropTable:
     {
         if (!table_data->HasSKTable())
         {
@@ -2087,8 +2093,8 @@ bool EloqDS::CassHandler::PrepareUpsertSkTableIterator(
         }
         break;
     }
-    case OperationType::AddIndex:
-    case OperationType::DropIndex:
+    case txservice::OperationType::AddIndex:
+    case txservice::OperationType::DropIndex:
     {
         break;
     }
@@ -2119,7 +2125,7 @@ void EloqDS::CassHandler::CheckTableRangesVersion(UpsertTableData *table_data)
         return;
     }
 
-    if (table_data->op_type_ == OperationType::AddIndex)
+    if (table_data->op_type_ == txservice::OperationType::AddIndex)
     {
         const txservice::TableName *table_name =
             table_data->GetMarkedUpsertingTableName();
@@ -2132,7 +2138,7 @@ void EloqDS::CassHandler::CheckTableRangesVersion(UpsertTableData *table_data)
         // For`table_ranges`, can not use USING TIMESTAMP to control overwrite
         // policy, because cassandra treats list type specially. So should check
         // the version manually and skip if version is the same.
-        assert(table_name->Engine() != TableEngine::None);
+        assert(table_name->Engine() != txservice::TableEngine::None);
         std::string table_key = table_name->Serialize();
 
         std::string select_str("SELECT \"___version___\" FROM ");
@@ -2273,8 +2279,8 @@ void EloqDS::CassHandler::OnUpsertLastRangePartitionId(CassFuture *future,
 
     if (table_type == txservice::TableType::Primary)
     {
-        assert(table_data->op_type_ == OperationType::CreateTable ||
-               table_data->op_type_ == OperationType::DropTable);
+        assert(table_data->op_type_ == txservice::OperationType::CreateTable ||
+               table_data->op_type_ == txservice::OperationType::DropTable);
 
         OnUpsertDone(
             future,
@@ -2354,8 +2360,9 @@ void EloqDS::CassHandler::OnFetchCatalog(CassFuture *future, void *fetch_req)
     if (rc != CASS_OK)
     {
         LOG(ERROR) << ErrorMessage(future);
-        fetch_cc->SetFinish(txservice::RecordStatus::Unknown,
-                            static_cast<int>(CcErrorCode::DATA_STORE_ERR));
+        fetch_cc->SetFinish(
+            txservice::RecordStatus::Unknown,
+            static_cast<int>(txservice::CcErrorCode::DATA_STORE_ERR));
         return;
     }
 
@@ -2384,7 +2391,8 @@ void EloqDS::CassHandler::OnFetchCatalog(CassFuture *future, void *fetch_req)
         catalog_image.append(SerializeSchemaImage(
             frm,
             CassCatalogInfo(kv_table_name, kv_index_names).Serialize(),
-            TableKeySchemaTs(key_schemas_ts, fetch_cc->CatalogName().Engine())
+            txservice::TableKeySchemaTs(key_schemas_ts,
+                                        fetch_cc->CatalogName().Engine())
                 .Serialize()));
 
         fetch_cc->SetFinish(txservice::RecordStatus::Normal, 0);
@@ -2402,11 +2410,11 @@ void EloqDS::CassHandler::OnFetchCatalog(CassFuture *future, void *fetch_req)
 
 void EloqDS::CassHandler::FetchCurrentTableStatistics(
     const txservice::TableName &ccm_table_name,
-    FetchTableStatisticsCc *fetch_cc)
+    txservice::FetchTableStatisticsCc *fetch_cc)
 {
     fetch_cc->SetStoreHandler(this);
 
-    assert(ccm_table_name.Engine() != TableEngine::None);
+    assert(ccm_table_name.Engine() != txservice::TableEngine::None);
     std::string table_key = ccm_table_name.Serialize();
 
     std::string query_str("SELECT version FROM ");
@@ -2462,9 +2470,9 @@ void EloqDS::CassHandler::OnFetchCurrentTableStatistics(CassFuture *future,
 
 void EloqDS::CassHandler::FetchTableStatistics(
     const txservice::TableName &ccm_table_name,
-    FetchTableStatisticsCc *fetch_cc)
+    txservice::FetchTableStatisticsCc *fetch_cc)
 {
-    assert(ccm_table_name.Engine() != TableEngine::None);
+    assert(ccm_table_name.Engine() != txservice::TableEngine::None);
     std::string table_key = ccm_table_name.Serialize();
 
     std::string query_str(
@@ -2512,7 +2520,8 @@ void EloqDS::CassHandler::OnFetchTableStatistics(CassFuture *future,
             cass_row_get_column_by_name(row, "indextype");
         cass_int8_t indextype_i8 = 0;
         cass_value_get_int8(indextype_val, &indextype_i8);
-        TableType indextype = static_cast<TableType>(indextype_i8);
+        txservice::TableType indextype =
+            static_cast<txservice::TableType>(indextype_i8);
 
         const CassValue *indexname_val =
             cass_row_get_column_by_name(row, "indexname");
@@ -2521,9 +2530,9 @@ void EloqDS::CassHandler::OnFetchTableStatistics(CassFuture *future,
         cass_value_get_string(indexname_val, &indexname_ptr, &indexname_len);
         std::string indexname_str(indexname_ptr, indexname_len);
 
-        TableName indexname(std::move(indexname_str),
-                            indextype,
-                            fetch_cc->CatalogName().Engine());
+        txservice::TableName indexname(std::move(indexname_str),
+                                       indextype,
+                                       fetch_cc->CatalogName().Engine());
 
         cass_int64_t records_i64 = 0;
         const CassValue *records_val =
@@ -2535,7 +2544,7 @@ void EloqDS::CassHandler::OnFetchTableStatistics(CassFuture *future,
             fetch_cc->SetRecords(indexname, records);
         }
 
-        std::vector<TxKey> samplekeys;
+        std::vector<txservice::TxKey> samplekeys;
         const CassValue *samplekeys_val =
             cass_row_get_column_by_name(row, "samplekeys");
         CassIterator *it = cass_iterator_from_collection(samplekeys_val);
@@ -2545,7 +2554,7 @@ void EloqDS::CassHandler::OnFetchTableStatistics(CassFuture *future,
             const cass_byte_t *samplekey_ptr = nullptr;
             size_t samplekey_len = 0;
             cass_value_get_bytes(samplekey_val, &samplekey_ptr, &samplekey_len);
-            TxKey samplekey = TxKeyFactory::CreateTxKey(
+            txservice::TxKey samplekey = txservice::TxKeyFactory::CreateTxKey(
                 reinterpret_cast<const char *>(samplekey_ptr), samplekey_len);
             samplekeys.emplace_back(std::move(samplekey));
         }
@@ -2580,12 +2589,12 @@ void EloqDS::CassHandler::OnFetchTableStatistics(CassFuture *future,
 //
 bool EloqDS::CassHandler::UpsertTableStatistics(
     const txservice::TableName &ccm_table_name,
-    const std::unordered_map<TableName,
+    const std::unordered_map<txservice::TableName,
                              std::pair<uint64_t, std::vector<txservice::TxKey>>>
         &sample_pool_map,
     uint64_t version)
 {
-    assert(ccm_table_name.Engine() != TableEngine::None);
+    assert(ccm_table_name.Engine() != txservice::TableEngine::None);
     std::string table_key = ccm_table_name.Serialize();
 
     {
@@ -2798,7 +2807,7 @@ bool EloqDS::CassHandler::UpsertTableStatistics(
 void EloqDS::CassHandler::FetchTableRanges(
     txservice::FetchTableRangesCc *fetch_cc)
 {
-    assert(fetch_cc->table_name_.Engine() != TableEngine::None);
+    assert(fetch_cc->table_name_.Engine() != txservice::TableEngine::None);
     std::string table_key = fetch_cc->table_name_.Serialize();
 
     std::string query(
@@ -2843,7 +2852,8 @@ void EloqDS::CassHandler::OnFetchTableRanges(CassFuture *future,
     const CassResult *result = cass_future_get_result(future);
     CassIterator *iter = cass_iterator_from_result(result);
 
-    LocalCcShards *shards = Sharder::Instance().GetLocalCcShards();
+    txservice::LocalCcShards *shards =
+        txservice::Sharder::Instance().GetLocalCcShards();
     std::unique_lock<std::mutex> heap_lk(shards->table_ranges_heap_mux_);
     bool is_override_thd = mi_is_override_thread();
     mi_threadid_t prev_thd =
@@ -2878,7 +2888,7 @@ void EloqDS::CassHandler::OnFetchTableRanges(CassFuture *future,
         // The first range always starts with negative infinity.
         if (mono_key_len > 1 || *mono_key_ptr != 0x00)
         {
-            TxKey start_key = TxKeyFactory::CreateTxKey(
+            txservice::TxKey start_key = txservice::TxKeyFactory::CreateTxKey(
                 reinterpret_cast<const char *>(mono_key_ptr), mono_key_len);
             range_vec.emplace_back(
                 std::move(start_key), partition_id, version_ts);
@@ -2886,7 +2896,7 @@ void EloqDS::CassHandler::OnFetchTableRanges(CassFuture *future,
         else
         {
             range_vec.emplace_back(
-                TxKeyFactory::NegInfTxKey()->GetShallowCopy(),
+                txservice::TxKeyFactory::NegInfTxKey()->GetShallowCopy(),
                 partition_id,
                 version_ts);
         }
@@ -2921,7 +2931,7 @@ void EloqDS::CassHandler::OnFetchTableRanges(CassFuture *future,
         if (range_vec.empty() && fetch_range_cc->EmptyRanges())
         {
             range_vec.emplace_back(
-                TxKeyFactory::NegInfTxKey()->GetShallowCopy(),
+                txservice::TxKeyFactory::NegInfTxKey()->GetShallowCopy(),
                 Partition::InitialPartitionId(
                     fetch_range_cc->table_name_.StringView()),
                 1);
@@ -2938,14 +2948,14 @@ void EloqDS::CassHandler::OnFetchTableRanges(CassFuture *future,
 void EloqDS::CassHandler::FetchRangeSlices(
     txservice::FetchRangeSlicesReq *fetch_cc)
 {
-    if (Sharder::Instance().TryPinNodeGroupData(fetch_cc->cc_ng_id_) !=
-        fetch_cc->cc_ng_term_)
+    if (txservice::Sharder::Instance().TryPinNodeGroupData(
+            fetch_cc->cc_ng_id_) != fetch_cc->cc_ng_term_)
     {
-        fetch_cc->SetFinish(CcErrorCode::NG_TERM_CHANGED);
+        fetch_cc->SetFinish(txservice::CcErrorCode::NG_TERM_CHANGED);
         return;
     }
 
-    assert(fetch_cc->table_name_.Engine() != TableEngine::None);
+    assert(fetch_cc->table_name_.Engine() != txservice::TableEngine::None);
     std::string table_key = fetch_cc->table_name_.Serialize();
 
     std::string query(
@@ -2958,7 +2968,8 @@ void EloqDS::CassHandler::FetchRangeSlices(
     CassStatement *fetch_stmt = cass_statement_new(query.c_str(), 2);
     cass_statement_bind_string(fetch_stmt, 0, table_key.data());
 
-    TxKey start_key = fetch_cc->range_entry_->GetRangeInfo()->StartTxKey();
+    txservice::TxKey start_key =
+        fetch_cc->range_entry_->GetRangeInfo()->StartTxKey();
     if (start_key.Type() == txservice::KeyType::Normal)
     {
         // bind mono_key
@@ -2970,7 +2981,8 @@ void EloqDS::CassHandler::FetchRangeSlices(
     }
     else
     {
-        const TxKey *packed_neg_inf_key = TxKeyFactory::NegInfTxKey();
+        const txservice::TxKey *packed_neg_inf_key =
+            txservice::TxKeyFactory::NegInfTxKey();
         // bind mono_key
         cass_statement_bind_bytes(
             fetch_stmt,
@@ -2996,14 +3008,14 @@ void EloqDS::CassHandler::OnFetchRangeSlices(CassFuture *future,
         static_cast<FetchSlicesSpecData *>(fetch_req);
     std::unique_ptr<FetchSlicesSpecData> fetch_data_guard(fetch_data);
 
-    FetchRangeSlicesReq *fetch_cc = fetch_data->fetch_cc_;
-    NodeGroupId ng_id = fetch_cc->cc_ng_id_;
+    txservice::FetchRangeSlicesReq *fetch_cc = fetch_data->fetch_cc_;
+    txservice::NodeGroupId ng_id = fetch_cc->cc_ng_id_;
     CassError rc = cass_future_error_code(future);
     if (rc != CASS_OK)
     {
         LOG(ERROR) << "Fetch table range failed: " << ErrorMessage(future);
-        fetch_cc->SetFinish(CcErrorCode::DATA_STORE_ERR);
-        Sharder::Instance().UnpinNodeGroupData(ng_id);
+        fetch_cc->SetFinish(txservice::CcErrorCode::DATA_STORE_ERR);
+        txservice::Sharder::Instance().UnpinNodeGroupData(ng_id);
         return;
     }
 
@@ -3054,9 +3066,11 @@ void EloqDS::CassHandler::OnFetchRangeSlices(CassFuture *future,
 
                 assert(segment_cnt == 1);
                 fetch_cc->slice_info_.emplace_back(
-                    TxKey(), 0, SliceStatus::PartiallyCached);
-                fetch_cc->SetFinish(CcErrorCode::NO_ERROR);
-                Sharder::Instance().UnpinNodeGroupData(ng_id);
+                    txservice::TxKey(),
+                    0,
+                    txservice::SliceStatus::PartiallyCached);
+                fetch_cc->SetFinish(txservice::CcErrorCode::NO_ERROR);
+                txservice::Sharder::Instance().UnpinNodeGroupData(ng_id);
                 return;
             }
         }
@@ -3079,8 +3093,8 @@ void EloqDS::CassHandler::OnFetchRangeSlices(CassFuture *future,
                 // Free CassIterator CassResult
                 cass_iterator_free(iter);
                 cass_result_free(result);
-                fetch_cc->SetFinish(CcErrorCode::DATA_STORE_ERR);
-                Sharder::Instance().UnpinNodeGroupData(ng_id);
+                fetch_cc->SetFinish(txservice::CcErrorCode::DATA_STORE_ERR);
+                txservice::Sharder::Instance().UnpinNodeGroupData(ng_id);
                 return;
             }
 
@@ -3103,11 +3117,14 @@ void EloqDS::CassHandler::OnFetchRangeSlices(CassFuture *future,
                 uint32_t slice_size = *reinterpret_cast<const uint32_t *>(
                     slice_size_val_raw_ptr + offset);
                 fetch_cc->slice_info_.emplace_back(
-                    TxKey(), slice_size, SliceStatus::PartiallyCached);
+                    txservice::TxKey(),
+                    slice_size,
+                    txservice::SliceStatus::PartiallyCached);
                 offset += sizeof(uint32_t);
             }
 
-            LocalCcShards *shards = Sharder::Instance().GetLocalCcShards();
+            txservice::LocalCcShards *shards =
+                txservice::Sharder::Instance().GetLocalCcShards();
             std::unique_lock<std::mutex> heap_lk(
                 shards->table_ranges_heap_mux_);
             bool is_override_thd = mi_is_override_thread();
@@ -3137,7 +3154,7 @@ void EloqDS::CassHandler::OnFetchRangeSlices(CassFuture *future,
                 slice_key_val_raw_ptr += sizeof(uint32_t);
 
                 fetch_cc->slice_info_[vec_index].key_ =
-                    TxKeyFactory::CreateTxKey(
+                    txservice::TxKeyFactory::CreateTxKey(
                         reinterpret_cast<const char *>(slice_key_val_raw_ptr),
                         key_len);
                 slice_key_val_raw_ptr += key_len;
@@ -3162,8 +3179,8 @@ void EloqDS::CassHandler::OnFetchRangeSlices(CassFuture *future,
             {
                 cass_iterator_free(iter);
                 cass_result_free(result);
-                fetch_cc->SetFinish(CcErrorCode::NO_ERROR);
-                Sharder::Instance().UnpinNodeGroupData(ng_id);
+                fetch_cc->SetFinish(txservice::CcErrorCode::NO_ERROR);
+                txservice::Sharder::Instance().UnpinNodeGroupData(ng_id);
                 return;
             }
         }
@@ -3173,8 +3190,8 @@ void EloqDS::CassHandler::OnFetchRangeSlices(CassFuture *future,
         if (current_segment_id == segment_cnt)
         {
             cass_result_free(result);
-            fetch_cc->SetFinish(CcErrorCode::NO_ERROR);
-            Sharder::Instance().UnpinNodeGroupData(ng_id);
+            fetch_cc->SetFinish(txservice::CcErrorCode::NO_ERROR);
+            txservice::Sharder::Instance().UnpinNodeGroupData(ng_id);
             return;
         }
 
@@ -3184,8 +3201,8 @@ void EloqDS::CassHandler::OnFetchRangeSlices(CassFuture *future,
             LOG(ERROR)
                 << "Fetch range slices failed: Partial result, keey retring";
             cass_result_free(result);
-            fetch_cc->SetFinish(CcErrorCode::DATA_STORE_ERR);
-            Sharder::Instance().UnpinNodeGroupData(ng_id);
+            fetch_cc->SetFinish(txservice::CcErrorCode::DATA_STORE_ERR);
+            txservice::Sharder::Instance().UnpinNodeGroupData(ng_id);
             return;
         }
 
@@ -3206,20 +3223,20 @@ void EloqDS::CassHandler::OnFetchRangeSlices(CassFuture *future,
         {
             // This should only happen if ddl_skip_kv_ is true.
             fetch_cc->slice_info_.emplace_back(
-                TxKey(), 0, SliceStatus::PartiallyCached);
-            fetch_cc->SetFinish(CcErrorCode::NO_ERROR);
+                txservice::TxKey(), 0, txservice::SliceStatus::PartiallyCached);
+            fetch_cc->SetFinish(txservice::CcErrorCode::NO_ERROR);
         }
         else
         {
             // Partial result.
             LOG(ERROR)
                 << "Fetch range slices failed: Partial result, keey retring";
-            fetch_cc->SetFinish(CcErrorCode::DATA_STORE_ERR);
+            fetch_cc->SetFinish(txservice::CcErrorCode::DATA_STORE_ERR);
         }
     }
 
     cass_result_free(result);
-    Sharder::Instance().UnpinNodeGroupData(ng_id);
+    txservice::Sharder::Instance().UnpinNodeGroupData(ng_id);
 }
 
 txservice::store::DataStoreHandler::DataStoreOpStatus
@@ -3235,7 +3252,7 @@ EloqDS::CassHandler::FetchRecord(txservice::FetchRecordCc *fetch_cc)
         {
             // prepared stmt for this table is being created, wait and retry
             // later.
-            return store::DataStoreHandler::DataStoreOpStatus::Retry;
+            return txservice::store::DataStoreHandler::DataStoreOpStatus::Retry;
         }
 
         std::string read_str("SELECT ");
@@ -3265,7 +3282,7 @@ EloqDS::CassHandler::FetchRecord(txservice::FetchRecordCc *fetch_cc)
             {
                 FetchRecordData *fetch_data =
                     static_cast<FetchRecordData *>(data);
-                FetchRecordCc *fetch_cc = fetch_data->fetch_cc_;
+                txservice::FetchRecordCc *fetch_cc = fetch_data->fetch_cc_;
                 CassError rc = cass_future_error_code(future);
                 if (rc != CASS_OK)
                 {
@@ -3278,8 +3295,8 @@ EloqDS::CassHandler::FetchRecord(txservice::FetchRecordCc *fetch_cc)
                         LOG(ERROR) << "Failed to create prepare statement for "
                                       "fetch record , "
                                    << ErrorMessage(future);
-                        fetch_cc->SetFinish(
-                            static_cast<int>(CcErrorCode::DATA_STORE_ERR));
+                        fetch_cc->SetFinish(static_cast<int>(
+                            txservice::CcErrorCode::DATA_STORE_ERR));
                     }
                     delete fetch_data;
                     return;
@@ -3336,7 +3353,7 @@ EloqDS::CassHandler::FetchRecord(txservice::FetchRecordCc *fetch_cc)
     cass_future_free(future);
     cass_statement_free(statement);
 
-    return store::DataStoreHandler::DataStoreOpStatus::Success;
+    return txservice::store::DataStoreHandler::DataStoreOpStatus::Success;
 }
 
 void EloqDS::CassHandler::OnFetchRecord(CassFuture *future, void *data)
@@ -3345,13 +3362,17 @@ void EloqDS::CassHandler::OnFetchRecord(CassFuture *future, void *data)
     txservice::FetchRecordCc *fetch_cc = fetch_data->fetch_cc_;
     const CassResult *result = nullptr;
     auto rc = cass_future_error_code(future);
-    CODE_FAULT_INJECTOR("FetchRecordFail", {
-        LOG(INFO) << "FaultInject  "
-                     "FetchRecordFail";
+    {
+        using namespace txservice;
+        CODE_FAULT_INJECTOR("FetchRecordFail", {
+            LOG(INFO) << "FaultInject  "
+                         "FetchRecordFail";
 
-        FaultInject::Instance().InjectFault("FetchRecordFail", "remove");
-        rc = CASS_ERROR_SERVER_READ_TIMEOUT;
-    });
+            txservice::FaultInject::Instance().InjectFault("FetchRecordFail",
+                                                           "remove");
+            rc = CASS_ERROR_SERVER_READ_TIMEOUT;
+        });
+    }
     if (metrics::enable_kv_metrics)
     {
         metrics::kv_meter->CollectDuration(metrics::NAME_KV_READ_DURATION,
@@ -3364,7 +3385,7 @@ void EloqDS::CassHandler::OnFetchRecord(CassFuture *future, void *data)
         if (fetch_data->handler_->ddl_skip_kv_)
         {
             fetch_cc->rec_ts_ = 1;
-            fetch_cc->rec_status_ = RecordStatus::Deleted;
+            fetch_cc->rec_status_ = txservice::RecordStatus::Deleted;
             fetch_cc->SetFinish(0);
         }
         else
@@ -3372,7 +3393,8 @@ void EloqDS::CassHandler::OnFetchRecord(CassFuture *future, void *data)
             LOG(ERROR) << "Failed to fetch record from kv for table "
                        << fetch_cc->table_name_->Trace()
                        << ", err: " << ErrorMessage(future);
-            fetch_cc->SetFinish(static_cast<int>(CcErrorCode::DATA_STORE_ERR));
+            fetch_cc->SetFinish(
+                static_cast<int>(txservice::CcErrorCode::DATA_STORE_ERR));
         }
         return;
     }
@@ -3382,11 +3404,11 @@ void EloqDS::CassHandler::OnFetchRecord(CassFuture *future, void *data)
     {
         // CommitTs= 1 indicate non-existence
         fetch_cc->rec_ts_ = 1;
-        fetch_cc->rec_status_ = RecordStatus::Deleted;
+        fetch_cc->rec_status_ = txservice::RecordStatus::Deleted;
     }
     else
     {
-        const TableName &table_name = *fetch_cc->table_name_;
+        const txservice::TableName &table_name = *fetch_cc->table_name_;
         uint16_t record_col_cnt = 1;
 
         int64_t version_ts;
@@ -3397,8 +3419,8 @@ void EloqDS::CassHandler::OnFetchRecord(CassFuture *future, void *data)
         cass_bool_t deleted = cass_false;
         cass_value_get_bool(cass_row_get_column(row, record_col_cnt + 3),
                             &deleted);
-        fetch_cc->rec_status_ =
-            deleted ? RecordStatus::Deleted : RecordStatus::Normal;
+        fetch_cc->rec_status_ = deleted ? txservice::RecordStatus::Deleted
+                                        : txservice::RecordStatus::Normal;
 
         if (!deleted)
         {
@@ -3557,8 +3579,8 @@ EloqDS::CassHandler::LoadRangeSlice(const txservice::TableName &table_name,
                                     uint32_t range_partition_id,
                                     txservice::FillStoreSliceCc *load_slice_req)
 {
-    int64_t leader_term =
-        Sharder::Instance().TryPinNodeGroupData(load_slice_req->NodeGroup());
+    int64_t leader_term = txservice::Sharder::Instance().TryPinNodeGroupData(
+        load_slice_req->NodeGroup());
     if (leader_term < 0)
     {
         return txservice::store::DataStoreHandler::DataStoreOpStatus::Error;
@@ -3567,7 +3589,7 @@ EloqDS::CassHandler::LoadRangeSlice(const txservice::TableName &table_name,
     std::shared_ptr<void> defer_unpin(
         nullptr,
         [ng_id = load_slice_req->NodeGroup()](void *)
-        { Sharder::Instance().UnpinNodeGroupData(ng_id); });
+        { txservice::Sharder::Instance().UnpinNodeGroupData(ng_id); });
 
     if (leader_term != load_slice_req->Term())
     {
@@ -3576,7 +3598,7 @@ EloqDS::CassHandler::LoadRangeSlice(const txservice::TableName &table_name,
 
     CassPreparedType scan_type;
 
-    if (load_slice_req->EndKey().Type() == KeyType::PositiveInf)
+    if (load_slice_req->EndKey().Type() == txservice::KeyType::PositiveInf)
     {
         if (load_slice_req->SnapshotTs() == 0)
         {
@@ -3715,10 +3737,11 @@ EloqDS::CassHandler::LoadRangeSlice(const txservice::TableName &table_name,
     // Bind pk2
     cass_statement_bind_int16(scan_stmt, 2, -1);
 
-    const TxKey &slice_start = load_slice_req->StartKey();
-    const TxKey mono_start =
-        (slice_start.Type() == KeyType::NegativeInf)
-            ? TxKeyFactory::PackedNegativeInfinity()->GetShallowCopy()
+    const txservice::TxKey &slice_start = load_slice_req->StartKey();
+    const txservice::TxKey mono_start =
+        (slice_start.Type() == txservice::KeyType::NegativeInf)
+            ? txservice::TxKeyFactory::PackedNegativeInfinity()
+                  ->GetShallowCopy()
             : slice_start.GetShallowCopy();
 
     cass_statement_bind_bytes(
@@ -3727,8 +3750,8 @@ EloqDS::CassHandler::LoadRangeSlice(const txservice::TableName &table_name,
         reinterpret_cast<const uint8_t *>(mono_start.Data()),
         mono_start.Size());
 
-    const TxKey &slice_end = load_slice_req->EndKey();
-    if (slice_end.Type() != KeyType::PositiveInf)
+    const txservice::TxKey &slice_end = load_slice_req->EndKey();
+    if (slice_end.Type() != txservice::KeyType::PositiveInf)
     {
         cass_statement_bind_bytes(
             scan_stmt,
@@ -3804,9 +3827,10 @@ bool EloqDS::CassHandler::UpdateRangeSlices(
         }
     }
 
-    TxKey mono_key =
+    txservice::TxKey mono_key =
         range_start_key.Type() == txservice::KeyType::NegativeInf
-            ? TxKeyFactory::PackedNegativeInfinity()->GetShallowCopy()
+            ? txservice::TxKeyFactory::PackedNegativeInfinity()
+                  ->GetShallowCopy()
             : range_start_key.GetShallowCopy();
 
     CassBatch *update_batch = cass_batch_new(CASS_BATCH_TYPE_LOGGED);
@@ -3861,14 +3885,15 @@ bool EloqDS::CassHandler::UpdateRangeSlices(
                                 sizeof(uint32_t));
     }
 
-    assert(table_name.Engine() != TableEngine::None);
+    assert(table_name.Engine() != txservice::TableEngine::None);
     std::string table_key = table_name.Serialize();
 
     // The start key of the first slice is the same as the range's start key.
     // When storing slices' start keys, skips the first slice.
     for (size_t idx = 1; idx < slices.size(); ++idx)
     {
-        const TxKey slice_key = slices[idx]->StartTxKey().GetShallowCopy();
+        const txservice::TxKey slice_key =
+            slices[idx]->StartTxKey().GetShallowCopy();
 
         if (slice_key_bytes.size() + slice_key.Size() + sizeof(uint32_t) >=
             128 * 1024)
@@ -4217,7 +4242,7 @@ bool EloqDS::CassHandler::FetchTable(const txservice::TableName &table_name,
             schema_image.append(SerializeSchemaImage(
                 frm,
                 CassCatalogInfo(kv_table_name, kv_index_name).Serialize(),
-                TableKeySchemaTs(key_schemas_ts, table_name.Engine())
+                txservice::TableKeySchemaTs(key_schemas_ts, table_name.Engine())
                     .Serialize()));
             assert(!schema_image.empty());
             found = true;
@@ -4576,18 +4601,19 @@ bool EloqDS::CassHandler::DropKvTable(const std::string &kv_table_name) const
     return ok;
 }
 
-void EloqDS::CassHandler::DeleteDataFromKvTable(const TableName *table_name,
-                                                void *table_data)
+void EloqDS::CassHandler::DeleteDataFromKvTable(
+    const txservice::TableName *table_name, void *table_data)
 {
     UpsertTableData *upsert_table_data =
         static_cast<UpsertTableData *>(table_data);
 
-    assert(upsert_table_data->op_type_ == OperationType::DropTable ||
-           upsert_table_data->op_type_ == OperationType::TruncateTable ||
-           upsert_table_data->op_type_ == OperationType::DropIndex);
+    assert(upsert_table_data->op_type_ == txservice::OperationType::DropTable ||
+           upsert_table_data->op_type_ ==
+               txservice::OperationType::TruncateTable ||
+           upsert_table_data->op_type_ == txservice::OperationType::DropIndex);
     const std::string &physical_table_name =
-        (upsert_table_data->op_type_ == OperationType::DropTable ||
-         upsert_table_data->op_type_ == OperationType::TruncateTable)
+        (upsert_table_data->op_type_ == txservice::OperationType::DropTable ||
+         upsert_table_data->op_type_ == txservice::OperationType::TruncateTable)
             ? upsert_table_data->schema_->GetKVCatalogInfo()->GetKvTableName(
                   *table_name)
             : (upsert_table_data->drop_indexes_it_->second);
@@ -4598,10 +4624,13 @@ void EloqDS::CassHandler::DeleteDataFromKvTable(const TableName *table_name,
 
     std::optional<std::vector<uint32_t>> table_range_ids;
 #ifdef RANGE_PARTITION_ENABLED
-    const TableName range_table_name{
-        table_name->String(), TableType::RangePartition, table_name->Engine()};
-    table_range_ids = Sharder::Instance().GetLocalCcShards()->GetTableRangeIds(
-        range_table_name, upsert_table_data->node_group_id_);
+    const txservice::TableName range_table_name{
+        table_name->String(),
+        txservice::TableType::RangePartition,
+        table_name->Engine()};
+    table_range_ids =
+        txservice::Sharder::Instance().GetLocalCcShards()->GetTableRangeIds(
+            range_table_name, upsert_table_data->node_group_id_);
 #else
     std::vector<uint32_t> partition_ids(HashPartitionFinder::MaxPartitionCount);
     std::iota(partition_ids.begin(), partition_ids.end(), 0);
@@ -4616,7 +4645,7 @@ void EloqDS::CassHandler::DeleteDataFromKvTable(const TableName *table_name,
     }
     else
     {
-        assert(table_name->Engine() != TableEngine::None);
+        assert(table_name->Engine() != txservice::TableEngine::None);
         std::string table_key = table_name->Serialize();
 
         std::string query("SELECT \"___partition_id___\" FROM ");
@@ -4658,14 +4687,14 @@ void EloqDS::CassHandler::OnFetchTableRangeId(CassFuture *future, void *data)
         if (drop_table_data->table_data_->ref_count_.fetch_sub(1) == 1)
         {
             drop_table_data->table_data_->hd_res_->SetError(
-                CcErrorCode::DATA_STORE_ERR);
+                txservice::CcErrorCode::DATA_STORE_ERR);
             // Release object
             delete drop_table_data->table_data_;
         }
         else
         {
             drop_table_data->table_data_->SetErrorCode(
-                CcErrorCode::DATA_STORE_ERR);
+                txservice::CcErrorCode::DATA_STORE_ERR);
         }
 
         delete drop_table_data;
@@ -4730,14 +4759,14 @@ void EloqDS::CassHandler::OnDeleteRangesFromKvTable(CassFuture *future,
         if (drop_table_data->table_data_->ref_count_.fetch_sub(1) == 1)
         {
             drop_table_data->table_data_->hd_res_->SetError(
-                CcErrorCode::DATA_STORE_ERR);
+                txservice::CcErrorCode::DATA_STORE_ERR);
             // Release object
             delete drop_table_data->table_data_;
         }
         else
         {
             drop_table_data->table_data_->SetErrorCode(
-                CcErrorCode::DATA_STORE_ERR);
+                txservice::CcErrorCode::DATA_STORE_ERR);
         }
 
         delete drop_table_data;
@@ -4902,7 +4931,7 @@ bool EloqDS::CassHandler::CreateMvccArchivesTable()
 void EloqDS::CassHandler::DecodeArchiveRowFromCassRow(
     const txservice::TableName &table_name,
     const CassRow *row,
-    TxRecord &payload,
+    txservice::TxRecord &payload,
     txservice::RecordStatus &payload_status,
     uint64_t &commit_ts)
 {
@@ -5119,7 +5148,8 @@ bool EloqDS::CassHandler::FetchArchives(
         const CassRow *row = cass_iterator_get_row(iterator);
 
         txservice::VersionTxRecord &akv_rec = archives.emplace_back();
-        std::unique_ptr<TxRecord> tmp_rec = TxRecordFactory::CreateTxRecord();
+        std::unique_ptr<txservice::TxRecord> tmp_rec =
+            txservice::TxRecordFactory::CreateTxRecord();
         DecodeArchiveRowFromCassRow(table_name,
                                     row,
                                     *(tmp_rec),
@@ -5331,9 +5361,10 @@ bool EloqDS::CassHandler::ExecuteSelectStatement(
     return true;
 }
 
-bool EloqDS::CassHandler::UpsertRanges(const txservice::TableName &table_name,
-                                       std::vector<SplitRangeInfo> range_info,
-                                       uint64_t version)
+bool EloqDS::CassHandler::UpsertRanges(
+    const txservice::TableName &table_name,
+    std::vector<txservice::SplitRangeInfo> range_info,
+    uint64_t version)
 {
     assert(table_name.StringView() != txservice::empty_sv);
 
@@ -5354,11 +5385,11 @@ bool EloqDS::CassHandler::UpsertRanges(const txservice::TableName &table_name,
 }
 
 bool EloqDS::CassHandler::DeleteOutOfRangeDataInternal(
-    const TableSchema *table_schema,
-    const TableName &table_name,
+    const txservice::TableSchema *table_schema,
+    const txservice::TableName &table_name,
     std::string delete_from_partition_sql,
     int32_t partition_id,
-    const TxKey *start_k)
+    const txservice::TxKey *start_k)
 {
     auto rs = ExecuteStatement(
         session_,
@@ -5443,7 +5474,7 @@ bool EloqDS::CassHandler::GetNextRangePartitionId(
     int32_t next_partition_id = -1;
     cass_bool_t update_result = cass_false;
 
-    assert(table_name.Engine() != TableEngine::None);
+    assert(table_name.Engine() != txservice::TableEngine::None);
     std::string table_key = table_name.Serialize();
 
     for (int i = 0; i < retry_count; i++)
@@ -5732,7 +5763,7 @@ bool EloqDS::BatchReadExecutor::AddStatement(CassStatement *stmt)
 
 // add statement and execute
 bool EloqDS::BatchReadExecutor::AddStatement(CassStatement *stmt,
-                                             const TxKey *key)
+                                             const txservice::TxKey *key)
 {
     assert(futures_.size() < max_futures_size_);
     futures_.emplace_back(cass_session_execute(session_, stmt), stmt, key);
@@ -5803,7 +5834,7 @@ CassError EloqDS::BatchReadExecutor::Retry()
 }
 
 void EloqDS::BatchReadExecutor::ParseReadResult(const CassResult *result,
-                                                const TxKey *key)
+                                                const txservice::TxKey *key)
 {
     const CassRow *row = cass_result_first_row(result);
 
@@ -5823,18 +5854,18 @@ void EloqDS::BatchReadExecutor::ParseReadResult(const CassResult *result,
 
         if (deleted == cass_false)
         {
-            std::unique_ptr<TxRecord> eloq_rec =
-                TxRecordFactory::CreateTxRecord();
+            std::unique_ptr<txservice::TxRecord> eloq_rec =
+                txservice::TxRecordFactory::CreateTxRecord();
             table_schema_->RecordSchema()->EncodeToTxRecord(
                 table_name_, row, *eloq_rec);
-            if (table_name_.Engine() == TableEngine::EloqKv)
+            if (table_name_.Engine() == txservice::TableEngine::EloqKv)
             {
                 assert(false);
                 ref.SetNonVersionedPayload(eloq_rec.get());
             }
             else
             {
-                assert(table_name_.Engine() != TableEngine::None);
+                assert(table_name_.Engine() != txservice::TableEngine::None);
                 ref.SetVersionedPayload(std::move(eloq_rec));
             }
 
@@ -5902,7 +5933,7 @@ bool EloqDS::CassHandler::PutArchivesAll(
 
     size_t flush_idx = 0;
     while (flush_idx < batch.size() &&
-           Sharder::Instance().LeaderTerm(node_group) > 0)
+           txservice::Sharder::Instance().LeaderTerm(node_group) > 0)
     {
         for (; cass_batch.PendingFutureCount() < max_futures_ &&
                flush_idx < batch.size();
@@ -5929,7 +5960,7 @@ bool EloqDS::CassHandler::PutArchivesAll(
                 statement, 2, static_cast<int64_t>(ref.commit_ts_));
             // bind deleted
             cass_bool_t deleted = cass_bool_t::cass_false;
-            if (ref.payload_status_ == RecordStatus::Deleted)
+            if (ref.payload_status_ == txservice::RecordStatus::Deleted)
             {
                 deleted = cass_bool_t::cass_true;
             }
@@ -5937,7 +5968,7 @@ bool EloqDS::CassHandler::PutArchivesAll(
             // bind payload and unpack_info
             if (ref.Payload() != nullptr)
             {
-                const TxRecord *payload = ref.Payload();
+                const txservice::TxRecord *payload = ref.Payload();
 
                 if (table_name.Type() == txservice::TableType::Primary ||
                     table_name.Type() == txservice::TableType::UniqueSecondary)
@@ -6014,14 +6045,14 @@ bool EloqDS::CassHandler::CopyBaseToArchive(
         return false;
     }
 
-    std::vector<FlushRecord> archive_vec;
+    std::vector<txservice::FlushRecord> archive_vec;
     archive_vec.reserve(write_batch_ * max_futures_);
     BatchReadExecutor read_executor(
         session_, max_futures_, table_name, table_schema, archive_vec);
 
     size_t flush_idx = 0;
     while (flush_idx < batch.size() &&
-           Sharder::Instance().LeaderTerm(node_group) > 0)
+           txservice::Sharder::Instance().LeaderTerm(node_group) > 0)
     {
         archive_vec.clear();
 
@@ -6032,7 +6063,7 @@ bool EloqDS::CassHandler::CopyBaseToArchive(
                    flush_idx < batch.size();
                  ++flush_idx)
             {
-                const TxKey &tx_key = batch[flush_idx].first;
+                const txservice::TxKey &tx_key = batch[flush_idx].first;
 
                 CassStatement *statement = cass_prepared_bind(read_prepared);
                 cass_statement_set_is_idempotent(statement, cass_true);
@@ -6277,7 +6308,7 @@ EloqDS::CassCatalogInfo::CassCatalogInfo(const std::string &kv_table_name,
     std::vector<std::string> tokens(begin, end);
     for (auto it = tokens.begin(); it != tokens.end(); ++it)
     {
-        TableType table_type = TableName::Type(*it);
+        txservice::TableType table_type = txservice::TableName::Type(*it);
         assert(table_type == txservice::TableType::Secondary ||
                table_type == txservice::TableType::UniqueSecondary);
 
@@ -6321,7 +6352,7 @@ void EloqDS::CassCatalogInfo::Deserialize(const char *buf, size_t &offset)
         std::vector<std::string> tokens(begin, end);
         for (auto it = tokens.begin(); it != tokens.end(); ++it)
         {
-            TableType table_type = TableName::Type(*it);
+            txservice::TableType table_type = txservice::TableName::Type(*it);
             assert(table_type == txservice::TableType::Secondary ||
                    table_type == txservice::TableType::UniqueSecondary);
 
@@ -6381,7 +6412,7 @@ std::string EloqDS::CassCatalogInfo::Serialize() const
 
 EloqDS::CassHandler::UpsertTableData::UpsertTableData(
     CassHandler *cass_hd,
-    NodeGroupId node_group_id,
+    txservice::NodeGroupId node_group_id,
     const txservice::TableName *table_name,
     const txservice::TableSchema *old_table_schema,
     const txservice::TableSchema *new_table_schema,
@@ -6412,8 +6443,8 @@ EloqDS::CassHandler::UpsertTableData::UpsertTableData(
       defer_unpin_(std::move(defer_unpin))
 
 {
-    schema_ = (op_type == OperationType::DropTable ||
-               op_type == OperationType::TruncateTable)
+    schema_ = (op_type == txservice::OperationType::DropTable ||
+               op_type == txservice::OperationType::TruncateTable)
                   ? old_table_schema
                   : new_table_schema;
 
@@ -6430,26 +6461,26 @@ EloqDS::CassHandler::UpsertTableData::UpsertTableData(
     }
     switch (op_type_)
     {
-    case OperationType::CreateTable:
-    case OperationType::DropTable:
+    case txservice::OperationType::CreateTable:
+    case txservice::OperationType::DropTable:
         // base table + index tables + main UpsertTable thread
         ref_count_ = index_cnt + 2;
         break;
-    case OperationType::TruncateTable:
+    case txservice::OperationType::TruncateTable:
         // base table + index tables + main UpsertTable thread
         ref_count_ = index_cnt + 2;
         break;
-    case OperationType::Update:
+    case txservice::OperationType::Update:
         // main UpsertTable thread
         ref_count_ = 1;
         break;
-    case OperationType::AddIndex:
+    case txservice::OperationType::AddIndex:
         assert(alter_table_info_->index_add_count_ ==
                alter_table_info_->index_add_names_.size());
         // index tables + main UpsertTable thread
         ref_count_ = alter_table_info_->index_add_count_ + 1;
         break;
-    case OperationType::DropIndex:
+    case txservice::OperationType::DropIndex:
         assert(alter_table_info_->index_drop_count_ ==
                alter_table_info_->index_drop_names_.size());
         ref_count_ = alter_table_info_->index_drop_count_ + 1;
@@ -6470,8 +6501,8 @@ bool EloqDS::CassHandler::UpsertTableData::IsSKTableIteratorEnd()
 {
     switch (op_type_)
     {
-    case OperationType::CreateTable:
-    case OperationType::DropTable:
+    case txservice::OperationType::CreateTable:
+    case txservice::OperationType::DropTable:
     {
         uint index_cnt = schema_->IndexesSize();
 
@@ -6486,12 +6517,12 @@ bool EloqDS::CassHandler::UpsertTableData::IsSKTableIteratorEnd()
         }
         break;
     }
-    case OperationType::AddIndex:
+    case txservice::OperationType::AddIndex:
     {
         assert(alter_table_info_->index_add_count_ > 0);
         return add_indexes_it_ == alter_table_info_->index_add_names_.cend();
     }
-    case OperationType::DropIndex:
+    case txservice::OperationType::DropIndex:
     {
         assert(alter_table_info_->index_drop_count_ > 0);
         return drop_indexes_it_ == alter_table_info_->index_drop_names_.cend();
@@ -6511,8 +6542,8 @@ void EloqDS::CassHandler::UpsertTableData::
 {
     switch (op_type_)
     {
-    case OperationType::CreateTable:
-    case OperationType::DropTable:
+    case txservice::OperationType::CreateTable:
+    case txservice::OperationType::DropTable:
     {
         uint index_cnt = schema_->IndexesSize();
 
@@ -6531,7 +6562,7 @@ void EloqDS::CassHandler::UpsertTableData::
         }
         break;
     }
-    case OperationType::AddIndex:
+    case txservice::OperationType::AddIndex:
     {
         assert(alter_table_info_->index_add_count_ > 0 &&
                alter_table_info_->index_add_count_ ==
@@ -6540,7 +6571,7 @@ void EloqDS::CassHandler::UpsertTableData::
         upserting_table_name_ = &(add_indexes_it_->first);
         break;
     }
-    case OperationType::DropIndex:
+    case txservice::OperationType::DropIndex:
     {
         assert(alter_table_info_->index_drop_count_ > 0 &&
                alter_table_info_->index_drop_count_ ==
@@ -6562,8 +6593,8 @@ EloqDS::CassHandler::UpsertTableData::MarkNextSKTableForUpserting()
 {
     switch (op_type_)
     {
-    case OperationType::CreateTable:
-    case OperationType::DropTable:
+    case txservice::OperationType::CreateTable:
+    case txservice::OperationType::DropTable:
     {
         assert(schema_->IndexesSize() > 0);
 
@@ -6588,7 +6619,7 @@ EloqDS::CassHandler::UpsertTableData::MarkNextSKTableForUpserting()
         upserting_table_name_ = &key_pair.first;
         break;
     }
-    case OperationType::AddIndex:
+    case txservice::OperationType::AddIndex:
     {
         if (add_indexes_it_ != alter_table_info_->index_add_names_.cend() &&
             ++add_indexes_it_ != alter_table_info_->index_add_names_.cend())
@@ -6597,7 +6628,7 @@ EloqDS::CassHandler::UpsertTableData::MarkNextSKTableForUpserting()
         }
         break;
     }
-    case OperationType::DropIndex:
+    case txservice::OperationType::DropIndex:
     {
         if (drop_indexes_it_ != alter_table_info_->index_drop_names_.cend() &&
             ++drop_indexes_it_ != alter_table_info_->index_drop_names_.cend())
@@ -6636,7 +6667,7 @@ bool EloqDS::CassHandler::InitPreBuiltTables()
         }
 
         {
-          assert(table_name.Engine() != TableEngine::None);
+          assert(table_name.Engine() != txservice::TableEngine::None);
           std::string table_key = table_name.Serialize();
 
           std::string upsert_query("INSERT INTO ");
@@ -6653,8 +6684,8 @@ bool EloqDS::CassHandler::InitPreBuiltTables()
         7);
           // Bind tablename
           cass_statement_bind_string(upsert_stmt, 0, table_key.data());
-          const TxKey *packed_neg_inf_key=
-        TxKeyFactory::PackedNegativeInfinity();
+          const txservice::TxKey *packed_neg_inf_key=
+        txservice::TxKeyFactory::PackedNegativeInfinity();
           // Bind mono_key
           cass_statement_bind_bytes(
               upsert_stmt, 1,
