@@ -21,16 +21,11 @@
  */
 #include "cass_scanner.h"
 
-#include <iomanip>  // std::setfill,std::setw
-#include <memory>
-#include <tuple>
 #include <utility>
 
 #include "cass_handler.h"
-#include "cass_scanner.h"
 #include "partition.h"
 #include "schema.h"
-#include "type.h"
 
 namespace EloqDS
 {
@@ -113,9 +108,9 @@ std::string CassScanner::BuildPushedCondStr()
 }
 
 void CassScanner::EncodeCassRow(const CassRow *row,
-                                const RecordSchema *rec_sch,
-                                TxKey *key,
-                                TxRecord *rec,
+                                const txservice::RecordSchema *rec_sch,
+                                txservice::TxKey *key,
+                                txservice::TxRecord *rec,
                                 uint64_t &version_ts_,
                                 bool &deleted_)
 {
@@ -136,7 +131,7 @@ void CassScanner::EncodeCassRow(const CassRow *row,
 
     if (!deleted_)
     {
-        rec_sch->EncodeToTxRecord(table_name_, row, *rec);
+        rec_sch_->EncodeToTxRecord(table_name_, row, *rec);
     }
 }
 
@@ -184,7 +179,7 @@ CassError CassScanner::BuildScanPartitionPrepared()
     // For redis, here only one field ___encoded_blob___ can be alternative. But
     // this field is not  need for scan, so does not need to append
     // anything.
-    if (table_name_.Engine() != TableEngine::EloqKv)
+    if (table_name_.Engine() != txservice::TableEngine::EloqKv)
     {
         scan_str.append("\"___encoded_blob___\",");
     }
@@ -242,7 +237,7 @@ CassError CassScanner::BuildScanPartitionPrepared()
         }
     }
 
-    if (start_key_->Type() == KeyType::PositiveInf)
+    if (start_key_->Type() == txservice::KeyType::PositiveInf)
     {
         assert(!scan_forward_);
     }
@@ -414,8 +409,9 @@ bool HashPartitionCassScanner<Direction>::AddShardScan(CassStatement *scan_st,
 
         const CassRow *row = cass_iterator_get_row(scan_it);
 
-        ScanHeapTuple<TxKey, TxRecord> heap_tuple(shard_scan_res_.size() - 1);
-        if (table_name_.Engine() == TableEngine::EloqKv)
+        ScanHeapTuple<txservice::TxKey, txservice::TxRecord> heap_tuple(
+            shard_scan_res_.size() - 1);
+        if (table_name_.Engine() == txservice::TableEngine::EloqKv)
         {
             EncodeCassRowObj(row,
                              rec_sch_,
@@ -454,12 +450,13 @@ void HashPartitionCassScanner<Direction>::Current(
 {
     if (heap_cache_.size() == 0)
     {
-        key = TxKey();
+        key = txservice::TxKey();
         rec = nullptr;
         return;
     }
 
-    const ScanHeapTuple<TxKey, TxRecord> &top = heap_cache_.top();
+    const ScanHeapTuple<txservice::TxKey, txservice::TxRecord> &top =
+        heap_cache_.top();
     key = top.key_.get()->GetShallowCopy();
     rec = top.rec_.get();
     version_ts = top.version_ts_;
@@ -483,7 +480,8 @@ bool HashPartitionCassScanner<Direction>::MoveNext()
         return true;
     }
 
-    const ScanHeapTuple<TxKey, TxRecord> &top = heap_cache_.top();
+    const ScanHeapTuple<txservice::TxKey, txservice::TxRecord> &top =
+        heap_cache_.top();
     // sid is the offset in shard_scan_XX vectors.
     uint32_t sid = top.sid_;
     heap_cache_.pop();
@@ -492,8 +490,8 @@ bool HashPartitionCassScanner<Direction>::MoveNext()
     if (cass_iterator_next(shard_it))
     {
         const CassRow *row = cass_iterator_get_row(shard_it);
-        ScanHeapTuple<TxKey, TxRecord> heap_tuple(sid);
-        if (table_name_.Engine() == TableEngine::EloqKv)
+        ScanHeapTuple<txservice::TxKey, txservice::TxRecord> heap_tuple(sid);
+        if (table_name_.Engine() == txservice::TableEngine::EloqKv)
         {
             EncodeCassRowObj(row,
                              rec_sch_,
@@ -544,9 +542,10 @@ bool HashPartitionCassScanner<Direction>::MoveNext()
                 shard_scan_it_[sid] = scan_it;
 
                 const CassRow *row = cass_iterator_get_row(scan_it);
-                ScanHeapTuple<TxKey, TxRecord> heap_tuple(sid);
+                ScanHeapTuple<txservice::TxKey, txservice::TxRecord> heap_tuple(
+                    sid);
 
-                if (table_name_.Engine() == TableEngine::EloqKv)
+                if (table_name_.Engine() == txservice::TableEngine::EloqKv)
                 {
                     EncodeCassRowObj(row,
                                      rec_sch_,
@@ -602,16 +601,16 @@ bool RangePartitionCassScanner::Init()
     RangeScanPartitionFinder partition_finder;
     partition_iterator_ = std::unique_ptr<PartitionIterator>();
 
-    const TxKey *start_key = nullptr;
+    const txservice::TxKey *start_key = nullptr;
     if (start_key_ == nullptr)
     {
         if (scan_forward_)
         {
-            start_key = TxKeyFactory::NegInfTxKey();
+            start_key = txservice::TxKeyFactory::NegInfTxKey();
         }
         else
         {
-            start_key = TxKeyFactory::PosInfTxKey();
+            start_key = txservice::TxKeyFactory::PosInfTxKey();
         }
     }
     else
@@ -673,7 +672,7 @@ void RangePartitionCassScanner::Current(txservice::TxKey &key,
 {
     if (!initialized_ || scan_finished_)
     {
-        key = TxKey();
+        key = txservice::TxKey();
         rec = nullptr;
         return;
     }
@@ -689,7 +688,7 @@ bool RangePartitionCassScanner::CassIteratorNext()
     if (cass_iterator_next(scan_it_))
     {
         const CassRow *row = cass_iterator_get_row(scan_it_);
-        if (table_name_.Engine() == TableEngine::EloqKv)
+        if (table_name_.Engine() == txservice::TableEngine::EloqKv)
         {
             EncodeCassRowObj(row,
                              rec_sch_,
@@ -706,7 +705,6 @@ bool RangePartitionCassScanner::CassIteratorNext()
                           current_version_ts_,
                           current_deleted_);
         }
-
         return true;
     }
     else if (cass_result_has_more_pages(scan_res_.get()))

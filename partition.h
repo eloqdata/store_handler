@@ -36,7 +36,9 @@
 #include "tx_util.h"
 #include "type.h"
 
-using namespace txservice;
+#ifndef ON_KEY_OBJECT
+#include "sequences.h"
+#endif
 
 namespace EloqDS
 {
@@ -71,7 +73,7 @@ public:
 
 #ifdef RANGE_PARTITION_ENABLED
     Partition(int32_t pk1,
-              NodeGroupId range_owner,
+              txservice::NodeGroupId range_owner,
               const std::vector<int32_t> &new_pk1,
               const std::vector<txservice::TxKey> &new_key,
               txservice::TxKey end_key)
@@ -94,7 +96,7 @@ public:
           end_key_(rhs.end_key_.GetShallowCopy())
     {
         new_key_.reserve(rhs.new_key_.size());
-        for (const TxKey &tx_key : rhs.new_key_)
+        for (const txservice::TxKey &tx_key : rhs.new_key_)
         {
             new_key_.emplace_back(tx_key.GetShallowCopy());
         }
@@ -154,7 +156,7 @@ public:
         }
     }
 
-    NodeGroupId RangeOwner()
+    txservice::NodeGroupId RangeOwner()
     {
         return range_owner_;
     }
@@ -164,7 +166,9 @@ public:
         return &end_key_;
     }
 
-    void Reset(int32_t pk1, NodeGroupId range_owner, txservice::TxKey end_key)
+    void Reset(int32_t pk1,
+               txservice::NodeGroupId range_owner,
+               txservice::TxKey end_key)
     {
         pk1_ = pk1;
         range_owner_ = range_owner;
@@ -174,7 +178,7 @@ public:
     }
 
     void Reset(int32_t pk1,
-               NodeGroupId range_owner,
+               txservice::NodeGroupId range_owner,
                const std::vector<int32_t> &new_pk1,
                const std::vector<txservice::TxKey> &new_key,
                txservice::TxKey end_key)
@@ -209,7 +213,7 @@ public:
 private:
     int32_t pk1_{-1};
 #ifdef RANGE_PARTITION_ENABLED
-    NodeGroupId range_owner_{UINT32_MAX};
+    txservice::NodeGroupId range_owner_{UINT32_MAX};
     std::vector<int32_t> new_pk1_;
     std::vector<txservice::TxKey> new_key_;
     txservice::TxKey end_key_;
@@ -221,7 +225,7 @@ class PartitionIterator
 {
 public:
     PartitionIterator(PartitionType pt, const txservice::TxKey &start_key)
-        : pt_(pt), start_key_(start_key){};
+        : pt_(pt), start_key_(start_key) {};
     virtual ~PartitionIterator() = default;
     virtual Partition Current() = 0;
     virtual PartitionResultType MoveNext() = 0;
@@ -313,7 +317,7 @@ public:
         scan_batch_.clear();
 
         // issue scan request
-        TxKey start_tx_key = start_key_.GetShallowCopy();
+        txservice::TxKey start_tx_key = start_key_.GetShallowCopy();
         txservice::ScanOpenTxRequest scan_open_req(
             &range_table_name_,
             0,
@@ -473,7 +477,7 @@ public:
         // pointer.
         txm_ = nullptr;
 
-        if (err != TxErrorCode::NO_ERROR)
+        if (err != txservice::TxErrorCode::NO_ERROR)
         {
             // Abort() will be called internally if error occurred during
             // commit.
@@ -503,7 +507,7 @@ private:
 
     txservice::TxKey key_;
     txservice::TxKey end_key_;
-    NodeGroupId range_owner_;
+    txservice::NodeGroupId range_owner_;
     std::vector<int32_t> current_new_pk1_;
     std::vector<txservice::TxKey> new_key_;
     bool finished_;
@@ -569,7 +573,7 @@ private:
 class HashPartitionFinder : public PartitionFinder
 {
 public:
-    HashPartitionFinder(){};
+    HashPartitionFinder() {};
     ~HashPartitionFinder() = default;
 
     static constexpr size_t MaxPartitionCount =
@@ -630,7 +634,7 @@ public:
         for (uint idx = 0; idx < ckpt_rec.size(); idx++)
         {
             txservice::FlushRecord &cur_rec = ckpt_rec[idx];
-            TxKey tx_key = cur_rec.Key();
+            txservice::TxKey tx_key = cur_rec.Key();
             FindPartition(table_name, tx_key, part);
             if (part.Pk1() != last_pk)
             {
@@ -693,7 +697,8 @@ public:
 
         const txservice::RangeInfo *range_entry = range_record.GetRangeInfo();
         int32_t pk1 = range_entry->PartitionId();
-        NodeGroupId range_owner = range_record.GetRangeOwnerNg()->BucketOwner();
+        txservice::NodeGroupId range_owner =
+            range_record.GetRangeOwnerNg()->BucketOwner();
         if (range_entry->IsDirty())
         {
             out_partition.Reset(pk1,
@@ -735,11 +740,11 @@ public:
         // ckpt vec is already sorted in CkptScanCc
         Partition part;
         int32_t last_pk = -1;
-        const TxKey *partition_end_key = nullptr;
+        const txservice::TxKey *partition_end_key = nullptr;
         for (uint idx = 0; idx < ckpt_rec.size(); idx++)
         {
             txservice::FlushRecord &cur_rec = ckpt_rec[idx];
-            TxKey tx_key = cur_rec.Key();
+            txservice::TxKey tx_key = cur_rec.Key();
             if (last_pk == -1 || (partition_end_key != nullptr &&
                                   !(tx_key < *partition_end_key)))
             {

@@ -566,6 +566,7 @@ bool EloqDS::CassHandler::PutAllExecute(
         {
             using namespace txservice;
             FlushRecord &ckpt_rec = batch.at(flush_idx);
+
             if (last_pk == -1)
             {
                 last_pk = ckpt_rec.partition_id_;
@@ -594,7 +595,6 @@ bool EloqDS::CassHandler::PutAllExecute(
                 const TxRecord *payload = ckpt_rec.Payload();
                 tuple_size += payload->Length();
             }
-
             CassError rc = cass_batch.AddBatchStatement(statement, tuple_size);
             if (rc != CASS_OK)
             {
@@ -731,6 +731,7 @@ const CassPrepared *EloqDS::CassHandler::GetDeletePrepared(
 {
     const CassPrepared *delete_prepared = GetCachedPreparedStmt(
         cass_eloq_kv_table_name, 0, CassPreparedType::Delete);
+    // TODO(lokax): redis. Delete data from
 
     if (delete_prepared == nullptr)
     {
@@ -1260,6 +1261,7 @@ void EloqDS::CassHandler::UpsertCatalog(UpsertTableData *table_data)
     case OperationType::TruncateTable:
     {
         std::string table_key = table_data->table_name_->Serialize();
+
         std::string update_str("UPDATE ");
         update_str.append(table_data->cass_hd_->keyspace_name_);
         update_str.append(".");
@@ -1415,6 +1417,7 @@ void EloqDS::CassHandler::UpsertTableStatistics(UpsertTableData *table_data)
     if (table_data->op_type_ == OperationType::DropTable)
     {
         std::string table_key = table_data->table_name_->Serialize();
+
         std::string delete_str_1("DELETE FROM ");
         delete_str_1.append(table_data->cass_hd_->keyspace_name_);
         delete_str_1.append(".");
@@ -1999,6 +2002,7 @@ void EloqDS::CassHandler::PrepareTableRanges(UpsertTableData *table_data)
     if (table_data->op_type_ == OperationType::DropTable ||
         table_data->op_type_ == OperationType::DropIndex)
     {
+        assert(table_name->Engine() != TableEngine::None);
         std::string table_key = table_name->Serialize();
 
         std::string delete_str("DELETE FROM ");
@@ -2128,7 +2132,6 @@ void EloqDS::CassHandler::CheckTableRangesVersion(UpsertTableData *table_data)
         // For`table_ranges`, can not use USING TIMESTAMP to control overwrite
         // policy, because cassandra treats list type specially. So should check
         // the version manually and skip if version is the same.
-
         assert(table_name->Engine() != TableEngine::None);
         std::string table_key = table_name->Serialize();
 
@@ -2377,6 +2380,7 @@ void EloqDS::CassHandler::OnFetchCatalog(CassFuture *future, void *fetch_req)
         std::string kv_index_names(item, item_length);
         cass_value_get_string(cass_row_get_column(row, 4), &item, &item_length);
         std::string key_schemas_ts(item, item_length);
+
         catalog_image.append(SerializeSchemaImage(
             frm,
             CassCatalogInfo(kv_table_name, kv_index_names).Serialize(),
@@ -2402,6 +2406,7 @@ void EloqDS::CassHandler::FetchCurrentTableStatistics(
 {
     fetch_cc->SetStoreHandler(this);
 
+    assert(ccm_table_name.Engine() != TableEngine::None);
     std::string table_key = ccm_table_name.Serialize();
 
     std::string query_str("SELECT version FROM ");
@@ -2459,6 +2464,7 @@ void EloqDS::CassHandler::FetchTableStatistics(
     const txservice::TableName &ccm_table_name,
     FetchTableStatisticsCc *fetch_cc)
 {
+    assert(ccm_table_name.Engine() != TableEngine::None);
     std::string table_key = ccm_table_name.Serialize();
 
     std::string query_str(
@@ -2468,6 +2474,7 @@ void EloqDS::CassHandler::FetchTableStatistics(
     query_str.append(cass_table_statistics_name);
     query_str.append(" WHERE tablename=? AND version=?");
     CassStatement *query_stmt = cass_statement_new(query_str.c_str(), 2);
+
     cass_statement_bind_string_n(
         query_stmt, 0, table_key.data(), table_key.size());
     cass_statement_bind_int64(query_stmt, 1, fetch_cc->CurrentVersion());
@@ -2578,6 +2585,7 @@ bool EloqDS::CassHandler::UpsertTableStatistics(
         &sample_pool_map,
     uint64_t version)
 {
+    assert(ccm_table_name.Engine() != TableEngine::None);
     std::string table_key = ccm_table_name.Serialize();
 
     {
@@ -3654,6 +3662,7 @@ EloqDS::CassHandler::LoadRangeSlice(const txservice::TableName &table_name,
                 {
                     if (scan_slice_data->ddl_skip_kv_)
                     {
+                        // skip kv
                         scan_slice_data->load_slice_req_->SetKvFinish(true);
                     }
                     else
@@ -3867,6 +3876,7 @@ bool EloqDS::CassHandler::UpdateRangeSlices(
             CassStatement *update_slice_stmt =
                 cass_prepared_bind(update_slice_prepared);
             cass_statement_set_is_idempotent(update_slice_stmt, cass_true);
+
             // Bind TableName
             cass_statement_bind_string(update_slice_stmt, 0, table_key.data());
             // Bind mono_key
@@ -5817,7 +5827,6 @@ void EloqDS::BatchReadExecutor::ParseReadResult(const CassResult *result,
                 TxRecordFactory::CreateTxRecord();
             table_schema_->RecordSchema()->EncodeToTxRecord(
                 table_name_, row, *eloq_rec);
-
             if (table_name_.Engine() == TableEngine::EloqKv)
             {
                 assert(false);
@@ -6275,6 +6284,7 @@ EloqDS::CassCatalogInfo::CassCatalogInfo(const std::string &kv_table_name,
         const std::string &index_name_str = *it;
         const std::string &kv_index_name_str = *(++it);
         const std::string &table_engine_str = *(++it);
+        assert(table_engine_str.size() == 1);
 
         txservice::TableEngine table_engine =
             static_cast<txservice::TableEngine>(table_engine_str[0]);
@@ -6321,7 +6331,7 @@ void EloqDS::CassCatalogInfo::Deserialize(const char *buf, size_t &offset)
             assert(table_engine_str.size() == 1);
 
             txservice::TableEngine table_engine =
-                static_cast<txservice::TableEngine>(table_engine_str[0]);
+                static_cast<txservice::TableEngine>(table_engine_str.at(0));
             txservice::TableName index_table_name(
                 index_name_str, table_type, table_engine);
             kv_index_names_.emplace(index_table_name, kv_index_name_str);
@@ -6626,6 +6636,9 @@ bool EloqDS::CassHandler::InitPreBuiltTables()
         }
 
         {
+          assert(table_name.Engine() != TableEngine::None);
+          std::string table_key = table_name.Serialize();
+
           std::string upsert_query("INSERT INTO ");
           upsert_query.append(keyspace_name_);
           upsert_query.append(".");
@@ -6689,7 +6702,9 @@ bool EloqDS::CassHandler::InitPreBuiltTables()
           insert_range_partition_id_str.append(cass_last_range_id_name);
           insert_range_partition_id_str.append(" (tablename, "
                                                "last_partition_id) VALUES (?,
-        ?)"); CassStatement *upsert_stmt=
+        ?)");
+
+          CassStatement *upsert_stmt=
               cass_statement_new(insert_range_partition_id_str.c_str(), 2);
           cass_statement_bind_string(upsert_stmt, 0, table_key.data());
           cass_statement_bind_int32(upsert_stmt, 1, initial_partition_id);

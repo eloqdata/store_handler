@@ -46,7 +46,7 @@ public:
         CassSession *cass_session,
         const std::string &keyspace_name,
         const txservice::KeySchema *key_sch,
-        const RecordSchema *rec_sch,
+        const txservice::RecordSchema *rec_sch,
         const txservice::TableName &table_name,
         const txservice::KVCatalogInfo *kv_info,
         const txservice::TxKey *start_key,
@@ -85,7 +85,7 @@ protected:
         int16_t pk2,
         size_t page_size);
     void EncodeCassRow(const CassRow *row,
-                       const RecordSchema *rec_sch,
+                       const txservice::RecordSchema *rec_sch,
                        txservice::TxKey *key,
                        txservice::TxRecord *rec,
                        uint64_t &version_ts_,
@@ -105,7 +105,7 @@ protected:
     const std::string_view keyspace_name_v_;
     // primary key or secondary key schema
     const txservice::KeySchema *key_sch_;
-    const RecordSchema *rec_sch_;
+    const txservice::RecordSchema *rec_sch_;
     const txservice::TableName
         table_name_;  // not string owner, sv -> MysqlTableSchema
     const txservice::KVCatalogInfo *kv_info_;
@@ -126,7 +126,7 @@ public:
         CassSession *cass_session,
         const std::string &keyspace_name,
         const txservice::KeySchema *key_sch,
-        const RecordSchema *rec_sch,
+        const txservice::RecordSchema *rec_sch,
         const txservice::TableName &table_name,
         const txservice::KVCatalogInfo *kv_info,
         const txservice::TxKey &start_key,
@@ -197,11 +197,11 @@ public:
         CassSession *cass_session,
         const std::string &keyspace_name,
         const txservice::KeySchema *key_sch,
-        const RecordSchema *rec_sch,
+        const txservice::RecordSchema *rec_sch,
         const txservice::TableName &table_name,
         uint32_t ng_id,
         const txservice::KVCatalogInfo *kv_info,
-        const TxKey &start_key,
+        const txservice::TxKey &start_key,
         bool inclusive,
         const std::vector<txservice::store::DataStoreSearchCond> &pushdown_cond,
         bool scan_forward,
@@ -227,11 +227,11 @@ public:
           scan_it_(nullptr),
           scan_finished_(false)
     {
-        if (start_key.Type() == KeyType::NegativeInf)
+        if (start_key.Type() == txservice::KeyType::NegativeInf)
         {
             start_key_ = txservice::TxKeyFactory::NegInfTxKey();
         }
-        else if (start_key.Type() == KeyType::PositiveInf)
+        else if (start_key.Type() == txservice::KeyType::PositiveInf)
         {
             start_key_ = txservice::TxKeyFactory::PosInfTxKey();
         }
