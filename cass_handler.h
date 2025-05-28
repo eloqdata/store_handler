@@ -248,6 +248,7 @@ public:
         const txservice::TableSchema *table_schema) override;
 
     bool GetNextRangePartitionId(const txservice::TableName &tablename,
+                                 const txservice::TableSchema *table_schema,
                                  uint32_t range_cnt,
                                  int32_t &out_next_partition_id,
                                  int retry_count) override;
@@ -304,31 +305,31 @@ public:
     bool FetchTable(const txservice::TableName &table_name,
                     std::string &schema_image,
                     bool &found,
-                    uint64_t &version_ts) const override;
+                    uint64_t &version_ts) override;
 
     bool DiscoverAllTableNames(
         std::vector<std::string> &norm_name_vec,
         const std::function<void()> *yield_fptr = nullptr,
-        const std::function<void()> *resume_fptr = nullptr) const override;
+        const std::function<void()> *resume_fptr = nullptr) override;
 
     //-- database
     bool UpsertDatabase(std::string_view db,
-                        std::string_view definition) const override;
-    bool DropDatabase(std::string_view db) const override;
+                        std::string_view definition) override;
+    bool DropDatabase(std::string_view db) override;
     bool FetchDatabase(
         std::string_view db,
         std::string &definition,
         bool &found,
         const std::function<void()> *yield_fptr = nullptr,
-        const std::function<void()> *resume_fptr = nullptr) const override;
+        const std::function<void()> *resume_fptr = nullptr) override;
     bool FetchAllDatabase(
         std::vector<std::string> &dbnames,
         const std::function<void()> *yield_fptr = nullptr,
-        const std::function<void()> *resume_fptr = nullptr) const override;
+        const std::function<void()> *resume_fptr = nullptr) override;
 
-    bool DropKvTable(const std::string &kv_table_name) const override;
+    bool DropKvTable(const std::string &kv_table_name) override;
 
-    void DropKvTableAsync(const std::string &kv_table_name) const override;
+    void DropKvTableAsync(const std::string &kv_table_name) override;
 
     void DeleteDataFromKvTable(const txservice::TableName *table_name,
                                void *table_data);
@@ -694,7 +695,7 @@ private:
 
 #ifndef ON_KEY_OBJECT
     static void UpsertSequence(UpsertTableData *table_data);
-    static void OnUpsertSequence(CassFuture *future, void *data);
+    static void OnUpsertSequence(bool upsert_res, void *data);
 #endif
 
     static void OnLoadRangeSlice(CassFuture *future, void *data);

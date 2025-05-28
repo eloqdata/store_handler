@@ -39,12 +39,17 @@
 #include "data_store_service_config.h"
 #include "data_store_service_util.h"
 #include "ds_request.pb.h"
-#include "kv_store.h"
 #include "thread_worker_pool.h"
 
 namespace EloqDS
 {
-#if ROCKSDB_CLOUD_FS()
+
+enum class WriteOpType
+{
+    DELETE = 0,
+    PUT = 1,
+};
+
 /**
  * @brief Wrapper class for any object that needs to be cached with TTL.
  */
@@ -56,7 +61,7 @@ public:
         UpdateLastAccessTime();
     }
 
-    ~TTLWrapper() = default;
+    virtual ~TTLWrapper() = default;
 
     // Delete copy operations to avoid accidental copies.
     TTLWrapper(const TTLWrapper &) = delete;
@@ -153,6 +158,11 @@ public:
      */
     void Clear();
 
+    /**
+     * @brief Force to erase all in use iters
+     */
+    void ForceEraseIters();
+
 private:
     // Scan iterator TTL check interval in milliseconds
     static const uint64_t TTL_CHECK_INTERVAL_MS_{3000};
@@ -189,128 +199,261 @@ public:
                                   DSShardStatus open_mode,
                                   bool create_db_if_missing = false);
 
-    // =======================================================
-    // Group: External RPC function interface called by Client
-    // =======================================================
+    brpc::Server *GetBrpcServer()
+    {
+        std::shared_lock<std::shared_mutex> lk(serv_mux_);
+        return server_.get();
+    }
 
-    void FetchRecords(::google::protobuf::RpcController *controller,
-                      const ::EloqDS::remote::FetchRecordsRequest *request,
-                      ::EloqDS::remote::FetchRecordsResponse *response,
-                      ::google::protobuf::Closure *done) override;
+    /**
+     * @brief RPC handler for point read operation
+     * @param controller RPC controller
+     * @param request Write request
+     * @param response Write response
+     * @param done Callback function
+     */
+    void Read(::google::protobuf::RpcController *controller,
+              const ::EloqDS::remote::ReadRequest *request,
+              ::EloqDS::remote::ReadResponse *response,
+              ::google::protobuf::Closure *done) override;
 
+    /**
+     * @brief Point read operation
+     * @param table_name Table name
+     * @param partition_id Partition id
+     * @param key Key
+     * @param record Record (output)
+     * @param ts Timestamp (output)
+     * @param result Result (output)
+     * @param done Callback function
+     */
+    void Read(const std::string_view table_name,
+              const uint32_t partition_id,
+              const std::string_view key,
+              std::string *record,
+              uint64_t *ts,
+              uint64_t *ttl,
+              ::EloqDS::remote::CommonResult *result,
+              ::google::protobuf::Closure *done);
+
+    /**
+     * @brief RPC handler for batch write operation
+     * @param controller RPC controller
+     * @param request Write request
+     * @param response Write response
+     * @param done Callback function
+     */
     void BatchWriteRecords(
         ::google::protobuf::RpcController *controller,
         const ::EloqDS::remote::BatchWriteRecordsRequest *request,
         ::EloqDS::remote::BatchWriteRecordsResponse *response,
         ::google::protobuf::Closure *done) override;
 
-    void CkptEnd(::google::protobuf::RpcController *controller,
-                 const ::EloqDS::remote::CkptEndRequest *request,
-                 ::EloqDS::remote::CkptEndResponse *response,
-                 ::google::protobuf::Closure *done) override;
+    /**
+     * @brief Batch write operation
+     * @param table_name Table name
+     * @param partition_id Partition id
+     * @param keys Keys
+     * @param records Records
+     * @param ts Timestamps
+     * @param op_types Operation types
+     * @param need_flush Need flush
+     * @param result Result (output)
+     * @param done Callback function
+     */
+    void BatchWriteRecords(std::string_view table_name,
+                           int32_t partition_id,
+                           const std::vector<std::string_view> &key_parts,
+                           const std::vector<std::string_view> &record_parts,
+                           const std::vector<uint64_t> &ts,
+                           const std::vector<uint64_t> &ttl,
+                           const std::vector<WriteOpType> &op_types,
+                           bool skip_wal,
+                           remote::CommonResult &result,
+                           ::google::protobuf::Closure *done,
+                           const uint16_t key_parts_count,
+                           const uint16_t record_parts_count);
 
-    void FetchTableCatalog(
-        ::google::protobuf::RpcController *controller,
-        const ::EloqDS::remote::FetchTableCatalogRequest *request,
-        ::EloqDS::remote::FetchTableCatalogResponse *response,
-        ::google::protobuf::Closure *done) override;
+    /**
+     * @brief RPC handler for flush data operation
+     *        Flush data operation guarantees all data in memory is persisted to
+     * disk.
+     * @param controller RPC controller
+     * @param request Checkpoint end request
+     * @param response Checkpoint end response
+     * @param done Callback function
+     */
+    void FlushData(::google::protobuf::RpcController *controller,
+                   const ::EloqDS::remote::FlushDataRequest *request,
+                   ::EloqDS::remote::FlushDataResponse *response,
+                   ::google::protobuf::Closure *done) override;
 
-    void UpsertTable(::google::protobuf::RpcController *controller,
-                     const ::EloqDS::remote::UpsertTableRequest *request,
-                     ::EloqDS::remote::UpsertTableResponse *response,
+    /**
+     * @brief Flush data operation
+     * @param table_name Table name
+     * @param shard_id Shard id
+     * @param result Result (output)
+     * @param done Callback function
+     */
+    void FlushData(const std::string_view table_name,
+                   const uint32_t shard_id,
+                   remote::CommonResult &result,
+                   ::google::protobuf::Closure *done);
+
+    /**
+     * @brief Delete range of data operation
+     * @param shard_id Shard id
+     * @param table_name Table name
+     * @param result Result (output)
+     * @param done Callback function
+     */
+    void DeleteRange(::google::protobuf::RpcController *controller,
+                     const ::EloqDS::remote::DeleteRangeRequest *request,
+                     ::EloqDS::remote::DeleteRangeResponse *response,
                      ::google::protobuf::Closure *done) override;
 
-    // =======================================================================
-    // Group: External local function called by service client if this service
-    //        is co-located with client
-    // =======================================================================
+    /**
+     * @brief Delete range of data operation
+     * @param table_name Table name
+     * @param partition_id Partition id
+     * @param start_key Start key,
+     *        if empty, delete from the beginning of the table
+     * @param end_key End key
+     *        if empty, delete to the end of the table
+     * @param result Result (output)
+     * @param done Callback function
+     */
+    void DeleteRange(const std::string_view table_name,
+                     const uint32_t partition_id,
+                     const std::string_view start_key,
+                     const std::string_view end_key,
+                     const bool skip_wal,
+                     remote::CommonResult &result,
+                     ::google::protobuf::Closure *done);
 
-    void BatchWriteRecords(
-        uint32_t req_shard_id,
-        std::vector<EloqDS::remote::BatchWriteRecordsRequest::record> &&batch,
-        const std::string &kv_table_name,
-        std::function<void(const ::EloqDS::remote::CommonResult &result)>
-            on_finish);
+    /**
+     * @brief RPC handler for create table operation
+     * @param controller RPC controller
+     * @param request Create table request
+     * @param response Create table response
+     * @param done Callback function
+     */
+    void CreateTable(::google::protobuf::RpcController *controller,
+                     const ::EloqDS::remote::CreateTableRequest *request,
+                     ::EloqDS::remote::CreateTableResponse *response,
+                     ::google::protobuf::Closure *done) override;
 
-    void CkptEnd(
-        uint32_t req_shard_id,
-        const std::string &table_name,
-        std::function<void(const ::EloqDS::remote::CommonResult &result)>
-            on_finish);
+    /**
+     * @brief Create table operation
+     * @param table_name Table name
+     * @param result Result (output)
+     * @param done Callback function
+     */
+    void CreateTable(const std::string_view table_name,
+                     uint32_t shard_id,
+                     remote::CommonResult &result,
+                     ::google::protobuf::Closure *done);
 
-    void FetchTableCatalog(
-        uint32_t req_shard_id,
-        const std::string table_name,
-        std::function<void(std::string &&schema_image,
-                           bool found,
-                           uint64_t version_ts,
-                           const ::EloqDS::remote::CommonResult &result)>
-            on_finish);
+    /**
+     * @brief RPC handler for drop table operation
+     * @param controller RPC controller
+     * @param request Drop table request
+     * @param response Drop table response
+     * @param done Callback function
+     */
+    void DropTable(::google::protobuf::RpcController *controller,
+                   const ::EloqDS::remote::DropTableRequest *request,
+                   ::EloqDS::remote::DropTableResponse *response,
+                   ::google::protobuf::Closure *done) override;
 
-    void UpsertTable(
-        uint32_t req_shard_id,
-        std::string table_name_str,
-        std::string old_schema_img,
-        std::string new_schema_img,
-        ::EloqDS::remote::UpsertTableOperationType op_type,
-        uint64_t commit_ts,
-        std::function<void(const EloqDS::remote::CommonResult &result)>
-            on_finish);
+    /**
+     * @brief Drop table operation
+     * @param table_name Table name
+     * @param result Result (output)
+     * @param done Callback function
+     */
+    void DropTable(const std::string_view table_name,
+                   uint32_t shard_id,
+                   remote::CommonResult &result,
+                   ::google::protobuf::Closure *done);
 
-    bool FetchRecords(
-        uint32_t req_shard_id,
-        std::vector<::EloqDS::remote::FetchRecordsRequest::key> &&keys,
-        std::function<
-            void(std::vector<::EloqDS::remote::FetchRecordsResponse::record>
-                     &&records,
-                 const ::EloqDS::remote::CommonResult &result)> on_finish);
+    /**
+     * @brief RPC handler for scan next operation
+     * @param controller RPC controller
+     * @param request Scan request
+     * @param response Scan response
+     * @param done Callback function
+     */
+    void ScanNext(::google::protobuf::RpcController *controller,
+                  const ::EloqDS::remote::ScanRequest *request,
+                  ::EloqDS::remote::ScanResponse *response,
+                  ::google::protobuf::Closure *done) override;
 
-    void PrepareShardingError(uint32_t req_shard_id,
-                              uint32_t shard_id,
-                              ::EloqDS::remote::CommonResult *result)
-    {
-        cluster_manager_.PrepareShardingError(req_shard_id, shard_id, result);
-    }
+    /**
+     * @brief Scan next operation
+     * @param table_name Table name
+     * @param partition_id Partition id
+     * @param start_key Start key
+     * @param end_key End key
+     * @param inclusive_start Inclusive start
+     * @param scan_forward Scan forward
+     * @param batch_size Batch size
+     * @param search_conditions Search conditions
+     * @param items Items (output)
+     * @param session_id Session ID (output)
+     * @param result Result (output)
+     * @param done Callback function
+     */
+    void ScanNext(const std::string_view table_name,
+                  uint32_t partition_id,
+                  const std::string_view start_key,
+                  const std::string_view end_key,
+                  bool inclusive_start,
+                  bool inclusive_end,
+                  bool scan_forward,
+                  uint32_t batch_size,
+                  const std::vector<remote::SearchCondition> *search_conditions,
+                  std::vector<ScanTuple> *items,
+                  std::string *session_id,
+                  ::EloqDS::remote::CommonResult *result,
+                  ::google::protobuf::Closure *done);
 
-    // =======================================================================
-    // Group: External function for data scan operation
-    // =======================================================================
+    /**
+     * @brief RPC handler for scan close operation
+     * @param controller RPC controller
+     * @param request Scan request
+     * @param response Scan response
+     * @param done Callback function
+     */
+    void ScanClose(::google::protobuf::RpcController *controller,
+                   const ::EloqDS::remote::ScanRequest *request,
+                   ::EloqDS::remote::ScanResponse *response,
+                   ::google::protobuf::Closure *done) override;
+
+    /**
+     * @brief Scan close operation
+     * @param table_name Table name
+     * @param partition_id Partition id
+     * @param session_id Session ID
+     * @param result Result (output)
+     * @param done Callback function
+     */
+    void ScanClose(const std::string_view table_name,
+                   uint32_t partition_id,
+                   std::string *session_id,
+                   ::EloqDS::remote::CommonResult *result,
+                   ::google::protobuf::Closure *done);
+
+    /**
+     * @brief Append the key string of this node to the specified string stream.
+     */
+    void AppendThisNodeKey(std::stringstream &ss);
 
     /**
      * @brief Generate a session id for scan operation
      * @return Session id
      */
     std::string GenerateSessionId();
-
-    /**
-     * @brief Scan open operation
-     * @param scan_req Scan request
-     * @param on_finish Callback function
-     */
-    void ScanOpen(
-        const ::EloqDS::remote::ScanRequest &scan_req,
-        std::function<void(const ::EloqDS::remote::ScanResponse &resp)>
-            on_finish);
-
-    /**
-     * @brief Scan next operation
-     * @param scan_req Scan request
-     * @param on_finish Callback function
-     */
-    void ScanNext(
-        const ::EloqDS::remote::ScanRequest &scan_req,
-        std::function<void(const ::EloqDS::remote::ScanResponse &resp)>
-            on_finish);
-
-    /**
-     * @brief Scan close operation
-     * @param scan_req Scan request
-     * @param on_finish Callback function
-     */
-    void ScanClose(
-        const ::EloqDS::remote::ScanRequest &scan_req,
-        std::function<void(const ::EloqDS::remote::ScanResponse &resp)>
-            on_finish);
 
     /**
      * @brief Emplace scan iterator into scan iter cache
@@ -341,17 +484,24 @@ public:
      */
     void EraseScanIter(uint32_t shard_id, const std::string &session_id);
 
-    // =======================================================================
-    // Group: External function for backup operation
-    // =======================================================================
-    void CreateSnapshotForBackup(
-        const ::EloqDS::remote::CreateSnapshotRequest &request,
-        std::function<void(
-            const ::EloqDS::remote::CreateSnapshotResponse &resp)> on_finish);
+    /**
+     * @brief Force to erase all remained scan iterator from scan iter cache by
+     * shard id
+     * @param shard_id Shard id
+     */
+    void ForceEraseScanIters(uint32_t shard_id);
 
-    // =======================================================================
-    // Group: External data store service node management RPC interface
-    // =======================================================================
+    /**
+     * @brief Preapre sharding error
+     *        Fill the error code and the topology change in the result
+     */
+    void PrepareShardingError(uint32_t partition_id,
+                              ::EloqDS::remote::CommonResult *result)
+    {
+        uint32_t shard_id =
+            cluster_manager_.GetShardIdByPartitionId(partition_id);
+        cluster_manager_.PrepareShardingError(shard_id, result);
+    }
 
     void FetchDSSClusterConfig(
         ::google::protobuf::RpcController *controller,
@@ -401,31 +551,13 @@ public:
     static bool FetchConfigFromPeer(const std::string &peer_addr,
                                     DataStoreServiceClusterManager &config);
 
-    void ScanOpen(::google::protobuf::RpcController *controller,
-                  const ::EloqDS::remote::ScanRequest *request,
-                  ::EloqDS::remote::ScanResponse *response,
-                  ::google::protobuf::Closure *done) override;
-
-    void ScanNext(::google::protobuf::RpcController *controller,
-                  const ::EloqDS::remote::ScanRequest *request,
-                  ::EloqDS::remote::ScanResponse *response,
-                  ::google::protobuf::Closure *done) override;
-
-    void ScanClose(::google::protobuf::RpcController *controller,
-                   const ::EloqDS::remote::ScanRequest *request,
-                   ::EloqDS::remote::ScanResponse *response,
-                   ::google::protobuf::Closure *done) override;
-
-    void CreateSnapshotForBackup(
-        ::google::protobuf::RpcController *controller,
-        const ::EloqDS::remote::CreateSnapshotRequest *request,
-        ::EloqDS::remote::CreateSnapshotResponse *response,
-        ::google::protobuf::Closure *done) override;
-
     // =======================================================================
     // Group: Internal function for shard related operations
     // =======================================================================
-    DSShardStatus FetchDSShardStatus(uint32_t shard_id);
+    DSShardStatus FetchDSShardStatus(uint32_t shard_id)
+    {
+        return cluster_manager_.FetchDSShardStatus(shard_id);
+    }
 
     void AddListenerForUpdateConfig(
         std::function<void(const DataStoreServiceClusterManager &)> listener)
@@ -434,10 +566,10 @@ public:
     }
 
 private:
-    /**
-     * @brief Append the key string of this node to the specified string stream.
-     */
-    void AppendThisNodeKey(std::stringstream &ss);
+    uint32_t GetShardIdByPartitionId(int32_t partition_id)
+    {
+        return cluster_manager_.GetShardIdByPartitionId(partition_id);
+    }
 
     bool SwitchToReadOnly(uint32_t shard_id, DSShardStatus expected);
 
@@ -469,6 +601,9 @@ private:
 
     // shard id to data store
     std::unordered_map<uint32_t, std::unique_ptr<DataStore>> data_store_map_;
+
+    // scan iterator cache
+    std::shared_mutex scan_iter_cache_map_mux_;
     std::unordered_map<uint32_t, std::unique_ptr<TTLWrapperCache>>
         scan_iter_cache_map_;
 
@@ -541,5 +676,5 @@ private:
     std::shared_mutex migrate_task_mux_;
     std::unordered_map<std::string, MigrateLog> migrate_task_map_;
 };
-#endif
+
 }  // namespace EloqDS

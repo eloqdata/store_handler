@@ -21,9 +21,8 @@
  */
 #pragma once
 
-#include <map>
-#include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace EloqDS
@@ -119,4 +118,21 @@ struct DSShard
     DSShardStatus status_{DSShardStatus::Closed};
     uint64_t version_{1};
 };
+
+struct ScanTuple
+{
+    ScanTuple(std::string &&key, std::string &&value, uint64_t ts, uint64_t ttl)
+        : key_(std::move(key)), value_(std::move(value)), ts_(ts), ttl_(ttl)
+    {
+    }
+
+    ScanTuple(const ScanTuple &rhs) = delete;
+    ScanTuple(ScanTuple &&rhs) = default;
+
+    std::string key_;
+    std::string value_;
+    uint64_t ts_;
+    uint64_t ttl_;
+};
+
 }  // namespace EloqDS

@@ -4,13 +4,15 @@ option cc_generic_services = true;
 import "google/protobuf/empty.proto";
 
 service DataStoreRpcService {
+  rpc Read(ReadRequest) returns (ReadResponse);
   rpc FetchRecords(FetchRecordsRequest) returns (FetchRecordsResponse);
   rpc BatchWriteRecords(BatchWriteRecordsRequest)
       returns (BatchWriteRecordsResponse);
-  rpc CkptEnd(CkptEndRequest) returns (CkptEndResponse);
-  rpc FetchTableCatalog(FetchTableCatalogRequest)
-      returns (FetchTableCatalogResponse);
-  rpc UpsertTable(UpsertTableRequest) returns (UpsertTableResponse);
+  rpc FlushData(FlushDataRequest) returns (FlushDataResponse);
+  rpc DeleteRange(DeleteRangeRequest) returns (DeleteRangeResponse);
+  rpc CreateTable(CreateTableRequest) returns (CreateTableResponse);
+  rpc DropTable(DropTableRequest) returns (DropTableResponse);
+
 
   //-----External node management RPC interface
   rpc FetchDSSClusterConfig(google.protobuf.Empty)
@@ -28,13 +30,8 @@ service DataStoreRpcService {
       returns (UpdateDSShardConfigResponse);
 
   //-----New scan operations
-  rpc ScanOpen(ScanRequest) returns (ScanResponse);
   rpc ScanNext(ScanRequest) returns (ScanResponse);
   rpc ScanClose(ScanRequest) returns (ScanResponse);
-
-  //-----Create snapshot
-  rpc CreateSnapshotForBackup(CreateSnapshotRequest)
-      returns (CreateSnapshotResponse);
 
   //-----FaultInject for tests
   rpc FaultInjectForTest(FaultInjectRequest) returns (FaultInjectResponse);
@@ -42,16 +39,20 @@ service DataStoreRpcService {
 
 enum DataStoreError {
   NO_ERROR = 0;
-  DB_NOT_OPEN = 1;
-  WRITE_TO_READ_ONLY_DB = 2;
-  REQUESTED_NODE_NOT_OWNER = 3;
-  WRITE_FAILED = 4;
-  READ_FAILED = 5;
-  TABLE_NOT_FOUND = 6;
-  UPSERT_TABLE_FAILED = 7;
-  UNKNOWN_ERROR = 8;
-  BACKUP_FAILED = 9;
-  STATUS_SWITCH_FAILED = 10;
+  UNKNOWN_ERROR = 1;
+  DB_NOT_OPEN = 2;
+  WRITE_TO_READ_ONLY_DB = 3;
+  REQUESTED_NODE_NOT_OWNER = 4;
+  WRITE_FAILED = 5;
+  READ_FAILED = 6;
+  TABLE_NOT_FOUND = 7;
+  UPSERT_TABLE_FAILED = 8;
+  NETWORK_ERROR = 9;
+  FLUSH_FAILED = 10;
+  INVALID_ARGUMENT = 11;
+  KEY_NOT_FOUND = 12;
+  BACKUP_FAILED = 13;
+  STATUS_SWITCH_FAILED = 14;
 }
 
 enum CcTableType {
@@ -82,12 +83,23 @@ message CommonResult {
   KeyShardingChanged new_key_sharding = 3;
 }
 
+message ReadRequest {
+  uint32 partition_id = 1;
+  string kv_table_name = 2;
+  bytes key_str = 3;
+}
+
+message ReadResponse {
+  bytes value = 1;
+  uint64 ts = 2;
+  uint64 ttl = 3;
+  CommonResult result = 4;
+}
+
 message FetchRecordsRequest {
   message key {
     string kv_table_name_str = 1;
-    CcTableType table_type = 2;
-    string key_str = 3;
-    uint32 key_shard_code = 4;
+    bytes key_str = 3;
   }
 
   repeated key keys = 1;
@@ -105,86 +117,69 @@ message FetchRecordsResponse {
   repeated record records = 2;
 }
 
+enum WriteOpType {
+  Delete = 0;
+  Put = 1;
+}
+
 message BatchWriteRecordsRequest {
-  message record {
-    string key = 1;
+  message Item {
+    bytes key = 1;
     bytes value = 2;
-    bool is_deleted = 3;
+    WriteOpType op_type = 3;
+    uint64 ts = 4;
+    uint64 ttl = 5;
   }
 
   string kv_table_name = 1;
-  uint32 key_shard_code = 2;
-  repeated record records = 3;
+  int32 partition_id = 2;
+  bool skip_wal = 3;
+  repeated Item items = 4;
 }
 
 message BatchWriteRecordsResponse {
   CommonResult result = 1;
 }
 
-message CkptEndRequest {
+message FlushDataRequest {
   string kv_table_name = 1;
-  uint32 key_shard_code = 2;
+  uint32 shard_id = 2;
 }
 
-message CkptEndResponse {
+message FlushDataResponse {
   CommonResult result = 1;
 }
 
-message FetchTableCatalogRequest {
-  string table_name = 1;
-  uint32 key_shard_code = 2;
+message DeleteRangeRequest {
+  string kv_table_name = 1;
+  int32 partition_id = 2;
+  bytes start_key = 3;
+  bytes end_key = 4;
+  bool skip_wal = 5;
 }
 
-message FetchTableCatalogResponse {
-  CommonResult result = 1;
-  bool found = 2;
-  string schema_img = 3;
-  uint64 version_ts = 4;
-}
-
-message ClusterNodeConfig {
-  uint32 node_id = 1;
-  string host_name = 2;
-  int32 port = 3;
-  bool is_candidate = 4;
-}
-
-message ClusterNodeGroupConfig {
-  uint32 node_group_id = 1;
-  repeated ClusterNodeConfig node_configs = 2;
-}
-
-message ReadClusterConfigRequest {
-  uint32 key_shard_code = 1;
-}
-
-message ReadClusterConfigResponse {
-  CommonResult result = 1;
-  uint64 version = 2;
-  bool uninitialized = 3;
-  repeated ClusterNodeGroupConfig cluster_configs = 4;
-}
-
-message UpsertTableRequest {
-  string table_name_str = 1;
-  string old_schema_img = 2;
-  string new_schema_img = 3;
-  uint32 op_type = 4;
-  uint64 commit_ts = 5;
-  uint32 key_shard_id = 6;
-}
-
-enum UpsertTableOperationType {
-  CreateTable = 0;
-  DropTable = 1;
-  TruncateTable = 2;
-  AddIndex = 3;
-  DropIndex = 4;
-}
-
-message UpsertTableResponse {
+message DeleteRangeResponse {
   CommonResult result = 1;
 }
+
+message CreateTableRequest {
+  string kv_table_name = 1;
+  uint32 shard_id = 2;
+}
+
+message CreateTableResponse {
+  CommonResult result = 1;
+}
+
+message DropTableRequest {
+  string kv_table_name = 1;
+  uint32 shard_id = 2;
+}
+
+message DropTableResponse {
+  CommonResult result = 1;
+}
+
 
 //-----External node management RPC interface
 
@@ -292,22 +287,24 @@ message UpdateDSShardConfigResponse {
 message SearchCondition {
   string field_name = 1;
   string op = 2;     // Operation type (e.g., EQ, LT, GT, etc.)
-  string value = 3;  // Serialized value to compare against
+  bytes value = 3;  // Serialized value to compare against
 }
 
 // Request message for scan operations
 message ScanRequest {
-  uint32 req_shard_id = 1;
-  string session_id = 2;
-  string kv_table_name_str = 3;
-  // it is true if start key is neg infinity
-  bool start_key_is_neg_inf = 4;
-  // it is true if start key is pos infinity
-  bool start_key_is_pos_inf = 5;
-  bytes start_key = 6;
-  bool inclusive = 7;     // Whether to include start_key in results
-  bool scan_forward = 8;  // Scan direction
-  uint32 batch_size = 9;  // Number of items to return in scan
+  string session_id = 1;
+  string kv_table_name_str = 2;
+  uint32 partition_id = 3;
+  // empty start_key will be treated as negitive infinity or
+  // positive infinity depends on scan_forward
+  bytes start_key = 4;
+  // empty end_key will be treated as negitive infinity or
+  // positive infinity depends on scan_forward
+  bytes end_key = 5;
+  bool inclusive_start = 6;  // Whether to include start_key in results
+  bool inclusive_end = 7;    // Whether to include end_key in results
+  bool scan_forward = 8;     // Scan direction
+  uint32 batch_size = 9;     // Number of items to return in scan
   repeated SearchCondition search_conditions = 10;
 }
 
@@ -316,10 +313,8 @@ message ScanResponse {
   message Item {
     bytes key = 1;
     bytes value = 2;
-    // decode will happen on client side for now,
-    // although it can be more efficent
-    // if we can do filtering and ttl checking on server side
-    // uint64 version = 3;
+    uint64 ts = 3;
+    uint64 ttl = 4;
     // bool deleted = 4;
   }
 

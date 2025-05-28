@@ -35,6 +35,9 @@
 #include <utility>
 #include <vector>
 
+#include "bthread/timer_thread.h"
+#include "cass/include/cassandra.h"
+#include "cass_scanner.h"
 #include "cc_map.h"
 #include "cc_req_misc.h"
 #include "data_store_handler.h"
@@ -43,20 +46,13 @@
 #include "metrics.h"
 #include "partition.h"
 #include "schema.h"
-
-#ifndef ON_KEY_OBJECT
-#include "sequences.h"
-#endif
-
-#include "bthread/timer_thread.h"
-#include "cass/include/cassandra.h"
-#include "cass_scanner.h"
 #include "tx_key.h"
 #include "tx_record.h"
 #include "tx_service/include/cc/cc_entry.h"
 #include "tx_service/include/cc/range_slice.h"
 #include "tx_service/include/error_messages.h"
 #include "tx_service/include/range_record.h"
+#include "tx_service/include/sequences/sequences.h"
 #include "tx_service/include/type.h"
 
 static const std::string cass_table_catalog_name = "table_catalogs";
@@ -117,6 +113,11 @@ EloqDS::CassHandler::CassHandler(const std::string &endpoint,
     cass_cluster_set_queue_size_io(cluster_, queue_size_io);
     cass_cluster_set_num_threads_io(cluster_, 10);
     session_ = cass_session_new();
+
+    // Add sequence table to pre-built tables
+    DLOG(INFO) << "AppendPreBuiltTable: "
+               << txservice::Sequences::table_name_sv_;
+    AppendPreBuiltTable(txservice::Sequences::table_name_);
 }
 
 EloqDS::CassHandler::~CassHandler()
@@ -1104,20 +1105,6 @@ void EloqDS::CassHandler::UpsertTable(
         }
         else
         {
-            // Fill ./mysql/sequences table schema for Sequences::instance_
-            // At this point the schema operation of ./mysql/sequences is
-            // irrevertible and the schema will not be changed so we can safely
-            // install the schema here.
-
-#ifndef ON_KEY_OBJECT
-            if (schema->GetBaseTableName() == Sequences::table_name_)
-            {
-                Sequences::SetTableSchema(schema);
-            }
-#else
-            assert(false);
-#endif
-
             OnUpsertCassTable(nullptr, table_data);
         }
         break;
@@ -1547,69 +1534,26 @@ void EloqDS::CassHandler::OnUpsertTableStatistics(CassFuture *future,
 #ifndef ON_KEY_OBJECT
 void EloqDS::CassHandler::UpsertSequence(UpsertTableData *table_data)
 {
-    CassStatement *statement = nullptr;
-    CassFuture *st_future = nullptr;
-    const CassCatalogInfo *cass_info = static_cast<const CassCatalogInfo *>(
-        Sequences::GetTableSchema()->GetKVCatalogInfo());
-
-    // Assign fixed partition id for sequences
-    int32_t pk1 = 0;
-
     if (table_data->op_type_ == txservice::OperationType::DropTable)
     {
-        std::string delete_str("DELETE FROM ");
-        delete_str.append(table_data->cass_hd_->keyspace_name_);
-        delete_str.append(".");
-        delete_str.append(cass_eloq_kv_table_name);
-        delete_str.append("  USING TIMESTAMP ");
-        delete_str.append(std::to_string(table_data->write_time_));
-        delete_str.append(" WHERE \"___mono_key___\" = 0x");
-        const std::string_view table_name =
-            table_data->table_name_->StringView();
-
-        std::stringstream ss;
-        ss << std::hex << std::setfill('0');
-        for (size_t pos = 0; pos < table_name.length(); ++pos)
-        {
-            ss << std::setw(2)
-               << static_cast<unsigned>(
-                      static_cast<uint8_t>(table_name.at(pos)));
-        }
-
-        delete_str.append(ss.str());
-        // Bind table uuid
-        delete_str.append(" and kvtablename = ");
-        delete_str.append("'");
-        delete_str.append(cass_info->kv_table_name_);
-        delete_str.append("'");
-        // Bind pk1
-        delete_str.append(" and pk1_=");
-        // delete_str.append(std::to_string(
-        // Sequences::GenHashPk1(table_data->table_name_->String())));
-        delete_str.append(std::to_string(pk1));
-        // Bind pk2
-        delete_str.append(" and pk2_=-1");
-
-        statement = cass_statement_new(delete_str.c_str(), 0);
-        st_future = cass_session_execute(table_data->session_, statement);
+        bool upsert_res = txservice::Sequences::DeleteSequence(
+            *(table_data->table_name_),
+            txservice::SequenceType::AutoIncrementColumn,
+            true);
+        assert(upsert_res);
+        OnUpsertSequence(upsert_res, table_data);
     }
     else
     {
         LOG(ERROR) << "Unsupported command for CassHandler::UpsertSequence.";
         return;
     }
-
-    cass_future_set_callback(st_future, OnUpsertSequence, table_data);
-
-    cass_future_free(st_future);
-    cass_statement_free(statement);
 }
 
-void EloqDS::CassHandler::OnUpsertSequence(CassFuture *future, void *data)
+void EloqDS::CassHandler::OnUpsertSequence(bool upsert_res, void *data)
 {
     UpsertTableData *table_data = static_cast<UpsertTableData *>(data);
-    CassError code = cass_future_error_code(future);
-    if (code == CASS_OK)
+    if (upsert_res)
     {
 #ifdef RANGE_PARTITION_ENABLED
         if (table_data->ddl_skip_kv_ && !table_data->is_bootstrap_)
@@ -1628,7 +1572,7 @@ void EloqDS::CassHandler::OnUpsertSequence(CassFuture *future, void *data)
     }
     else
     {
-        LOG(ERROR) << ErrorMessage(future);
+        LOG(ERROR) << "UpsertSequence failed";
         table_data->hd_res_->SetError(txservice::CcErrorCode::DATA_STORE_ERR);
         delete table_data;
     }
@@ -1765,19 +1709,8 @@ void EloqDS::CassHandler::UpsertInitialRangePartitionIdInternal(
         (table_data->op_type_ == txservice::OperationType::AddIndex &&
          !table_data->partition_id_initialized_.at(*tbl_name)))
     {
-#ifndef ON_KEY_OBJECT
-        if (tbl_name->StringView() == Sequences::mysql_seq_string)
-        {
-            // Assign fixed partition id for sequences range table
-            table_data->initial_partition_id_.try_emplace(*tbl_name, 0);
-        }
-        else
-#endif
-        {
-            table_data->initial_partition_id_.try_emplace(
-                *tbl_name,
-                Partition::InitialPartitionId(tbl_name->StringView()));
-        }
+        table_data->initial_partition_id_.try_emplace(
+            *tbl_name, Partition::InitialPartitionId(tbl_name->StringView()));
 
         assert(table_name.Engine() != txservice::TableEngine::None);
         std::string table_key = table_name.Serialize();
@@ -2388,12 +2321,19 @@ void EloqDS::CassHandler::OnFetchCatalog(CassFuture *future, void *fetch_req)
         cass_value_get_string(cass_row_get_column(row, 4), &item, &item_length);
         std::string key_schemas_ts(item, item_length);
 
-        catalog_image.append(SerializeSchemaImage(
-            frm,
-            CassCatalogInfo(kv_table_name, kv_index_names).Serialize(),
-            txservice::TableKeySchemaTs(key_schemas_ts,
-                                        fetch_cc->CatalogName().Engine())
-                .Serialize()));
+        if (fetch_cc->CatalogName() == txservice::Sequences::table_name_)
+        {
+            catalog_image.append(kv_table_name);
+        }
+        else
+        {
+            catalog_image.append(SerializeSchemaImage(
+                frm,
+                CassCatalogInfo(kv_table_name, kv_index_names).Serialize(),
+                txservice::TableKeySchemaTs(key_schemas_ts,
+                                            fetch_cc->CatalogName().Engine())
+                    .Serialize()));
+        }
 
         fetch_cc->SetFinish(txservice::RecordStatus::Normal, 0);
     }
@@ -2414,7 +2354,9 @@ void EloqDS::CassHandler::FetchCurrentTableStatistics(
 {
     fetch_cc->SetStoreHandler(this);
 
-    assert(ccm_table_name.Engine() != txservice::TableEngine::None);
+    assert(ccm_table_name.Engine() != txservice::TableEngine::None ||
+           ccm_table_name.StringView() == txservice::Sequences::table_name_sv_);
+
     std::string table_key = ccm_table_name.Serialize();
 
     std::string query_str("SELECT version FROM ");
@@ -2594,7 +2536,8 @@ bool EloqDS::CassHandler::UpsertTableStatistics(
         &sample_pool_map,
     uint64_t version)
 {
-    assert(ccm_table_name.Engine() != txservice::TableEngine::None);
+    assert(ccm_table_name.Engine() != txservice::TableEngine::None ||
+           ccm_table_name.StringView() == txservice::Sequences::table_name_sv_);
     std::string table_key = ccm_table_name.Serialize();
 
     {
@@ -2807,7 +2750,9 @@ bool EloqDS::CassHandler::UpsertTableStatistics(
 void EloqDS::CassHandler::FetchTableRanges(
     txservice::FetchTableRangesCc *fetch_cc)
 {
-    assert(fetch_cc->table_name_.Engine() != txservice::TableEngine::None);
+    assert(fetch_cc->table_name_.Engine() != txservice::TableEngine::None ||
+           fetch_cc->table_name_.StringView() ==
+               txservice::Sequences::table_name_sv_);
     std::string table_key = fetch_cc->table_name_.Serialize();
 
     std::string query(
@@ -2955,7 +2900,9 @@ void EloqDS::CassHandler::FetchRangeSlices(
         return;
     }
 
-    assert(fetch_cc->table_name_.Engine() != txservice::TableEngine::None);
+    assert(fetch_cc->table_name_.Engine() != txservice::TableEngine::None ||
+           fetch_cc->table_name_.StringView() ==
+               txservice::Sequences::table_name_sv_);
     std::string table_key = fetch_cc->table_name_.Serialize();
 
     std::string query(
@@ -3424,8 +3371,44 @@ void EloqDS::CassHandler::OnFetchRecord(CassFuture *future, void *data)
 
         if (!deleted)
         {
+#ifndef ON_KEY_OBJECT
+            if (table_name == txservice::Sequences::table_name_)
+            {
+                // TODO(lzx): Improve it after txservice support differnt type
+                // of table schema.
+
+                std::unique_ptr<txservice::TxRecord> tx_rec =
+                    txservice::TxRecordFactory::CreateTxRecord();
+                const CassValue *unpack_info_value =
+                    cass_row_get_column_by_name(row, "___unpack_info___");
+                const cass_byte_t *unpack_info = NULL;
+                size_t unpack_len = 0;
+                if (cass_value_is_null(unpack_info_value) == cass_false)
+                {
+                    cass_value_get_bytes(
+                        unpack_info_value, &unpack_info, &unpack_len);
+                }
+                tx_rec->SetUnpackInfo(unpack_info, unpack_len);
+
+                const cass_byte_t *encoded_blob = NULL;
+                size_t encoded_blob_len = 0;
+                cass_value_get_bytes(cass_row_get_column(row, 0),
+                                     &encoded_blob,
+                                     &encoded_blob_len);
+
+                tx_rec->SetEncodedBlob(encoded_blob, encoded_blob_len);
+                tx_rec->Serialize(fetch_cc->rec_str_);
+            }
+            else
+            {
+                fetch_cc->table_schema_->RecordSchema()
+                    ->EncodeToSerializeFormat(
+                        table_name, row, fetch_cc->rec_str_);
+            }
+#else
             fetch_cc->table_schema_->RecordSchema()->EncodeToSerializeFormat(
                 table_name, row, fetch_cc->rec_str_);
+#endif
         }
     }
 
@@ -3885,7 +3868,8 @@ bool EloqDS::CassHandler::UpdateRangeSlices(
                                 sizeof(uint32_t));
     }
 
-    assert(table_name.Engine() != txservice::TableEngine::None);
+    assert(table_name.Engine() != txservice::TableEngine::None ||
+           table_name.StringView() == txservice::Sequences::table_name_sv_);
     std::string table_key = table_name.Serialize();
 
     // The start key of the first slice is the same as the range's start key.
@@ -4186,7 +4170,7 @@ bool EloqDS::CassHandler::CreateCachedPrepareStmt(
 bool EloqDS::CassHandler::FetchTable(const txservice::TableName &table_name,
                                      std::string &schema_image,
                                      bool &found,
-                                     uint64_t &version_ts) const
+                                     uint64_t &version_ts)
 {
     found = false;
     // fetch the table list for all the eloq tables in Cassandra.
@@ -4277,7 +4261,7 @@ bool EloqDS::CassHandler::FetchTable(const txservice::TableName &table_name,
 bool EloqDS::CassHandler::DiscoverAllTableNames(
     std::vector<std::string> &norm_name_vec,
     const std::function<void()> *yield_fptr,
-    const std::function<void()> *resume_fptr) const
+    const std::function<void()> *resume_fptr)
 {
     // discovery all the table names in Cassandra.
     CassStatement *statement = NULL;
@@ -4351,7 +4335,7 @@ bool EloqDS::CassHandler::DiscoverAllTableNames(
 }
 
 bool EloqDS::CassHandler::UpsertDatabase(std::string_view db,
-                                         std::string_view definition) const
+                                         std::string_view definition)
 {
     std::string query("INSERT INTO ");
     query.append(keyspace_name_);
@@ -4387,7 +4371,7 @@ bool EloqDS::CassHandler::UpsertDatabase(std::string_view db,
     return ok;
 }
 
-bool EloqDS::CassHandler::DropDatabase(std::string_view db) const
+bool EloqDS::CassHandler::DropDatabase(std::string_view db)
 {
     std::string query("DELETE FROM ");
     query.append(keyspace_name_);
@@ -4422,7 +4406,7 @@ bool EloqDS::CassHandler::FetchDatabase(
     std::string &definition,
     bool &found,
     const std::function<void()> *yield_fptr,
-    const std::function<void()> *resume_fptr) const
+    const std::function<void()> *resume_fptr)
 {
     std::string query("SELECT * FROM ");
     query.append(keyspace_name_);
@@ -4499,7 +4483,7 @@ bool EloqDS::CassHandler::FetchDatabase(
 bool EloqDS::CassHandler::FetchAllDatabase(
     std::vector<std::string> &dbnames,
     const std::function<void()> *yield_fptr,
-    const std::function<void()> *resume_fptr) const
+    const std::function<void()> *resume_fptr)
 {
     std::string query("SELECT * FROM ");
     query.append(keyspace_name_);
@@ -4565,7 +4549,7 @@ bool EloqDS::CassHandler::FetchAllDatabase(
     return ok;
 }
 
-bool EloqDS::CassHandler::DropKvTable(const std::string &kv_table_name) const
+bool EloqDS::CassHandler::DropKvTable(const std::string &kv_table_name)
 {
     assert(cass_sys_tables.find(kv_table_name) == cass_sys_tables.end());
     if (cass_sys_tables.find(kv_table_name) != cass_sys_tables.end())
@@ -4839,8 +4823,7 @@ void EloqDS::CassHandler::OnDeleteDataFromKvTable(void *table_data)
     cass_batch_free(delete_batch);
 }
 
-void EloqDS::CassHandler::DropKvTableAsync(
-    const std::string &kv_table_name) const
+void EloqDS::CassHandler::DropKvTableAsync(const std::string &kv_table_name)
 {
     assert(cass_sys_tables.find(kv_table_name) == cass_sys_tables.end());
     if (cass_sys_tables.find(kv_table_name) != cass_sys_tables.end())
@@ -5450,6 +5433,7 @@ bool EloqDS::CassHandler::DeleteOutOfRangeData(
 
 bool EloqDS::CassHandler::GetNextRangePartitionId(
     const txservice::TableName &table_name,
+    const txservice::TableSchema *table_schema,
     uint32_t range_cnt,
     int32_t &out_next_partition_id,
     int retry_count)
@@ -5474,7 +5458,8 @@ bool EloqDS::CassHandler::GetNextRangePartitionId(
     int32_t next_partition_id = -1;
     cass_bool_t update_result = cass_false;
 
-    assert(table_name.Engine() != txservice::TableEngine::None);
+    assert(table_name.Engine() != txservice::TableEngine::None ||
+           table_name.StringView() == txservice::Sequences::table_name_sv_);
     std::string table_key = table_name.Serialize();
 
     for (int i = 0; i < retry_count; i++)
@@ -6652,115 +6637,114 @@ bool EloqDS::CassHandler::InitPreBuiltTables()
 {
     for (const auto &[table_name, kv_table_name] : pre_built_table_names_)
     {
+        std::string table_key = table_name.Serialize();
+
 #ifdef RANGE_PARTITION_ENABLED
-        assert(false && "mysql needs schema image");
 
-        /*
-        int32_t initial_partition_id= 0;
-        if (table_name == Sequences::mysql_seq_string)
+        assert(table_name == txservice::sequence_table_name);
+        int32_t initial_partition_id =
+            Partition::InitialPartitionId(table_name.StringView());
+
+        // Upsert table ranges info.
         {
-          initial_partition_id= 0;
+            uint64_t table_version = 100U;
+
+            std::string upsert_query("INSERT INTO ");
+            upsert_query.append(keyspace_name_);
+            upsert_query.append(".");
+            upsert_query.append(cass_range_table_name);
+            upsert_query.append(
+                " (\"tablename\", \"___mono_key___\", \"___segment_id___\", "
+                "\"___segment_cnt___\", \"___partition_id___\", "
+                "\"___version___\", \"___slice_version___\") VALUES "
+                "(?,?,?,?,?,?,?)");
+
+            CassStatement *upsert_stmt =
+                cass_statement_new(upsert_query.c_str(), 7);
+            // Bind tablename
+            cass_statement_bind_string(upsert_stmt, 0, table_key.data());
+            // cass_statement_bind_string(upsert_stmt, 0, table_name.data());
+            const txservice::TxKey *packed_neg_inf_key =
+                txservice::TxKeyFactory::PackedNegativeInfinity();
+            // Bind mono_key
+            cass_statement_bind_bytes(
+                upsert_stmt,
+                1,
+                reinterpret_cast<const uint8_t *>(packed_neg_inf_key->Data()),
+                packed_neg_inf_key->Size());  // mono_key
+
+            // Bind segment id
+            cass_statement_bind_int64(upsert_stmt, 2, 0);
+            // Bind segment count
+            cass_statement_bind_int64(upsert_stmt, 3, 1);
+            // Bind partition_id
+            cass_statement_bind_int32(upsert_stmt,
+                                      4,
+                                      initial_partition_id);  // partition_id
+            // Bind version
+            cass_statement_bind_int64(upsert_stmt,
+                                      5,
+                                      table_version);  // version
+            // Bind slice_version
+            cass_statement_bind_int64(upsert_stmt, 6, table_version);
+
+            CassFuture *upsert_future =
+                cass_session_execute(session_, upsert_stmt);
+            cass_future_wait(upsert_future);
+            auto rc = cass_future_error_code(upsert_future);
+            if (rc != CASS_OK)
+            {
+                LOG(ERROR) << "Insert initial partition id for "
+                           << table_name.StringView() << " failed. "
+                           << ErrorMessage(upsert_future);
+
+                cass_statement_free(upsert_stmt);
+                cass_future_free(upsert_future);
+                return false;
+            }
+            else
+            {
+                LOG(ERROR) << "Insert initial partition id for "
+                           << table_name.StringView() << " succeed. ";
+
+                cass_statement_free(upsert_stmt);
+                cass_future_free(upsert_future);
+            }
         }
-        else
+
+        // Upsert table last range partition id.
         {
-          initial_partition_id= Partition::InitialPartitionId(table_name);
-        }
+            std::string insert_range_partition_id_str = "INSERT INTO ";
+            insert_range_partition_id_str.append(keyspace_name_);
+            insert_range_partition_id_str.append(".");
+            insert_range_partition_id_str.append(cass_last_range_id_name);
+            insert_range_partition_id_str.append(
+                " (tablename, last_partition_id) VALUES (?,?)");
 
-        {
-          assert(table_name.Engine() != txservice::TableEngine::None);
-          std::string table_key = table_name.Serialize();
-
-          std::string upsert_query("INSERT INTO ");
-          upsert_query.append(keyspace_name_);
-          upsert_query.append(".");
-          upsert_query.append(cass_range_table_name);
-          upsert_query.append(
-              " (\"tablename\", \"___mono_key___\", \"___segment_id___\", "
-              "\"___segment_cnt___\", \"___partition_id___\", "
-              "\"___version___\", \"___slice_version___\") VALUES "
-              "(?,?,?,?,?,?,?)");
-
-          CassStatement *upsert_stmt= cass_statement_new(upsert_query.c_str(),
-        7);
-          // Bind tablename
-          cass_statement_bind_string(upsert_stmt, 0, table_key.data());
-          const txservice::TxKey *packed_neg_inf_key=
-        txservice::TxKeyFactory::PackedNegativeInfinity();
-          // Bind mono_key
-          cass_statement_bind_bytes(
-              upsert_stmt, 1,
-              reinterpret_cast<const uint8_t *>(packed_neg_inf_key->Data()),
-              packed_neg_inf_key->Size()); // mono_key
-
-          // Bind segment id
-          cass_statement_bind_int64(upsert_stmt, 2, 0);
-          // Bind segment count
-          cass_statement_bind_int64(upsert_stmt, 3, 1);
-          // Bind partition_id
-          cass_statement_bind_int32(upsert_stmt, 4,
-                                    initial_partition_id); // partition_id
-          // Bind version
-          cass_statement_bind_int64(upsert_stmt, 5,
-                                    1); // version
-          // Bind slice_version
-          cass_statement_bind_int64(upsert_stmt, 6, 1);
-
-          CassFuture *upsert_future= cass_session_execute(session_,
-        upsert_stmt); cass_future_wait(upsert_future); auto rc=
-        cass_future_error_code(upsert_future); if (rc != CASS_OK)
-          {
-            LOG(ERROR) << "Insert initial partition id for " << table_name
-                       << " failed. " << ErrorMessage(upsert_future);
-
+            CassStatement *upsert_stmt =
+                cass_statement_new(insert_range_partition_id_str.c_str(), 2);
+            cass_statement_bind_string(upsert_stmt, 0, table_key.data());
+            cass_statement_bind_int32(upsert_stmt, 1, initial_partition_id);
+            CassFuture *future = cass_session_execute(session_, upsert_stmt);
+            cass_future_wait(future);
+            auto rc = cass_future_error_code(future);
             cass_statement_free(upsert_stmt);
-            cass_future_free(upsert_future);
-            return false;
-          }
-          else
-          {
-            LOG(ERROR) << "Insert initial partition id for " << table_name
-                       << " succeed. ";
-
-            cass_statement_free(upsert_stmt);
-            cass_future_free(upsert_future);
-          }
+            cass_future_free(future);
+            if (rc != CASS_OK)
+            {
+                LOG(ERROR) << "Insert last partition id for "
+                           << table_name.StringView() << " failed. "
+                           << ErrorMessage(future);
+                return false;
+            }
+            else
+            {
+                LOG(ERROR) << "Insert last partition id for "
+                           << table_name.StringView() << " succeed. ";
+            }
         }
-
-        {
-          std::string insert_range_partition_id_str= "INSERT INTO ";
-          insert_range_partition_id_str.append(keyspace_name_);
-          insert_range_partition_id_str.append(".");
-          insert_range_partition_id_str.append(cass_last_range_id_name);
-          insert_range_partition_id_str.append(" (tablename, "
-                                               "last_partition_id) VALUES (?,
-        ?)");
-
-          CassStatement *upsert_stmt=
-              cass_statement_new(insert_range_partition_id_str.c_str(), 2);
-          cass_statement_bind_string(upsert_stmt, 0, table_key.data());
-          cass_statement_bind_int32(upsert_stmt, 1, initial_partition_id);
-          CassFuture *future= cass_session_execute(session_, upsert_stmt);
-          cass_future_wait(future);
-          auto rc= cass_future_error_code(future);
-          cass_statement_free(upsert_stmt);
-          cass_future_free(future);
-          if (rc != CASS_OK)
-          {
-            LOG(ERROR) << "Insert last partition id for " << table_name
-                       << " failed. " << ErrorMessage(future);
-            return false;
-          }
-          else
-          {
-            LOG(ERROR) << "Insert last partition id for " << table_name
-                       << " succeed. ";
-          }
-        }
-        */
 
 #endif
-        assert(table_name.Engine() == txservice::TableEngine::EloqKv);
-        std::string table_key = table_name.Serialize();
 
         // insert table into catalog table
         // create table catalog information stored in eloqkv_tables

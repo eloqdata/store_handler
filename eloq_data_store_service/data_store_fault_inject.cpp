@@ -29,6 +29,7 @@
 
 namespace EloqDS
 {
+
 // using namespace remote;
 void FaultInject::TriggerAction(FaultEntry *entry)
 {

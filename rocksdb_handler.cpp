@@ -19,6 +19,7 @@
  *    <http://www.gnu.org/licenses/>.
  *
  */
+
 #include "rocksdb_handler.h"
 
 #include <brpc/controller.h>
@@ -117,7 +118,7 @@ RocksDBHandler::RocksDBHandler(const EloqShare::RocksDBConfig &config,
       create_db_if_missing_(create_if_missing),
       tx_enable_cache_replacement_(tx_enable_cache_replacement)
 {
-    info_log_level_ = EloqShare::StringToInfoLogLevel(config.info_log_level_);
+    info_log_level_ = StringToInfoLogLevel(config.info_log_level_);
     query_worker_pool_ =
         std::make_unique<txservice::TxWorkerPool>(config.query_worker_num_);
     db_manage_worker_ = std::make_unique<txservice::TxWorkerPool>(1);
@@ -943,6 +944,7 @@ bool RocksDBHandler::DeleteOutOfRangeData(
 
 bool RocksDBHandler::GetNextRangePartitionId(
     const txservice::TableName &tablename,
+    const txservice::TableSchema *table_schema,
     uint32_t range_cnt,
     int32_t &out_next_partition_id,
     int retry_count)
@@ -1145,7 +1147,7 @@ bool RocksDBHandler::UpsertRanges(
 bool RocksDBHandler::FetchTable(const txservice::TableName &table_name,
                                 std::string &schema_image,
                                 bool &found,
-                                uint64_t &version_ts) const
+                                uint64_t &version_ts)
 {
     LOG(ERROR) << "RocksDBHandler::FetchTable not implemented";
     // Not implemented
@@ -1156,7 +1158,7 @@ bool RocksDBHandler::FetchTable(const txservice::TableName &table_name,
 bool RocksDBHandler::DiscoverAllTableNames(
     std::vector<std::string> &norm_name_vec,
     const std::function<void()> *yield_fptr,
-    const std::function<void()> *resume_fptr) const
+    const std::function<void()> *resume_fptr)
 {
     LOG(ERROR) << "RocksDBHandler::DiscoverAllTableNames not implemented";
     // Not implemented
@@ -1166,7 +1168,7 @@ bool RocksDBHandler::DiscoverAllTableNames(
 
 //-- database
 bool RocksDBHandler::UpsertDatabase(std::string_view db,
-                                    std::string_view definition) const
+                                    std::string_view definition)
 {
     DLOG(ERROR) << "RocksDBHandler::UpsertDatabase not implemented";
     // Not implemented
@@ -1175,7 +1177,7 @@ bool RocksDBHandler::UpsertDatabase(std::string_view db,
     return true;
 }
 
-bool RocksDBHandler::DropDatabase(std::string_view db) const
+bool RocksDBHandler::DropDatabase(std::string_view db)
 {
     LOG(ERROR) << "RocksDBHandler::DropDatabase not implemented";
     // Not implemented
@@ -1183,12 +1185,11 @@ bool RocksDBHandler::DropDatabase(std::string_view db) const
     return true;
 }
 
-bool RocksDBHandler::FetchDatabase(
-    std::string_view db,
-    std::string &definition,
-    bool &found,
-    const std::function<void()> *yield_fptr,
-    const std::function<void()> *resume_fptr) const
+bool RocksDBHandler::FetchDatabase(std::string_view db,
+                                   std::string &definition,
+                                   bool &found,
+                                   const std::function<void()> *yield_fptr,
+                                   const std::function<void()> *resume_fptr)
 {
     LOG(ERROR) << "RocksDBHandler::FetchDatabase not implemented";
     // Not implemented
@@ -1196,10 +1197,9 @@ bool RocksDBHandler::FetchDatabase(
     return true;
 }
 
-bool RocksDBHandler::FetchAllDatabase(
-    std::vector<std::string> &dbnames,
-    const std::function<void()> *yield_fptr,
-    const std::function<void()> *resume_fptr) const
+bool RocksDBHandler::FetchAllDatabase(std::vector<std::string> &dbnames,
+                                      const std::function<void()> *yield_fptr,
+                                      const std::function<void()> *resume_fptr)
 {
     LOG(ERROR) << "RocksDBHandler::FetchAllDatabase not implemented";
     // Not implemented
@@ -1207,7 +1207,7 @@ bool RocksDBHandler::FetchAllDatabase(
     return true;
 }
 
-bool RocksDBHandler::DropKvTable(const std::string &kv_table_name) const
+bool RocksDBHandler::DropKvTable(const std::string &kv_table_name)
 {
     LOG(ERROR) << "RocksDBHandler::DropKvTable not implemented";
     // Not implemented
@@ -1216,7 +1216,7 @@ bool RocksDBHandler::DropKvTable(const std::string &kv_table_name) const
     return true;
 }
 
-void RocksDBHandler::DropKvTableAsync(const std::string &kv_table_name) const
+void RocksDBHandler::DropKvTableAsync(const std::string &kv_table_name)
 {
     LOG(ERROR) << "RocksDBHandler::DropKvTableAsync not implemented";
     // Not implemented
@@ -1817,6 +1817,34 @@ void RocksDBHandler::OnShutdown()
     }
 }
 
+rocksdb::InfoLogLevel RocksDBHandler::StringToInfoLogLevel(
+    const std::string &log_level_str)
+{
+    if (log_level_str == "DEBUG")
+    {
+        return rocksdb::InfoLogLevel::DEBUG_LEVEL;
+    }
+    else if (log_level_str == "INFO")
+    {
+        return rocksdb::InfoLogLevel::INFO_LEVEL;
+    }
+    else if (log_level_str == "WARN")
+    {
+        return rocksdb::InfoLogLevel::WARN_LEVEL;
+    }
+    else if (log_level_str == "ERROR")
+    {
+        return rocksdb::InfoLogLevel::ERROR_LEVEL;
+    }
+    else
+    {
+        // If the log level string is not recognized, default to a specific log
+        // level, e.g., INFO_LEVEL Alternatively, you could throw an exception
+        // or handle the case as you see fit
+        return rocksdb::InfoLogLevel::INFO_LEVEL;
+    }
+}
+
 #if ROCKSDB_CLOUD_FS()
 RocksDBCloudHandlerImpl::RocksDBCloudHandlerImpl(
     const EloqShare::RocksDBCloudConfig &cloud_config,
@@ -2079,8 +2107,7 @@ bool RocksDBCloudHandlerImpl::OpenCloudDB(
     options.skip_stats_update_on_db_open = true;
     // Important! keep atomic_flush true, since we disabled WAL
     options.atomic_flush = true;
-    auto db_event_listener =
-        std::make_shared<EloqShare::RocksDBEventListener>();
+    auto db_event_listener = std::make_shared<RocksDBEventListener>();
     options.listeners.emplace_back(db_event_listener);
 
     // The following two configuration items are setup for purpose of removing
@@ -2174,7 +2201,7 @@ bool RocksDBCloudHandlerImpl::OpenCloudDB(
     std::unique_lock<std::shared_mutex> db_lk(db_mux_);
     // set ttl compaction filter
     assert(ttl_compaction_filter_ == nullptr);
-    ttl_compaction_filter_ = std::make_unique<EloqShare::TTLCompactionFilter>();
+    ttl_compaction_filter_ = std::make_unique<EloqKV::TTLCompactionFilter>();
 
     cf_options.compaction_filter =
         static_cast<rocksdb::CompactionFilter *>(ttl_compaction_filter_.get());
@@ -2530,8 +2557,7 @@ bool RocksDBHandlerImpl::StartDB(bool is_ng_leader, uint32_t *next_leader_node)
     options.info_log_level = info_log_level_;
     // Important! keep atomic_flush true, since we disabled WAL
     options.atomic_flush = true;
-    auto db_event_listener =
-        std::make_shared<EloqShare::RocksDBEventListener>();
+    auto db_event_listener = std::make_shared<RocksDBEventListener>();
     options.listeners.emplace_back(db_event_listener);
 
     // The following two configuration items are setup for purpose of removing
@@ -2611,7 +2637,7 @@ bool RocksDBHandlerImpl::StartDB(bool is_ng_leader, uint32_t *next_leader_node)
     std::unique_lock<std::shared_mutex> db_lk(db_mux_);
     // set ttl compaction filter
     assert(ttl_compaction_filter_ == nullptr);
-    ttl_compaction_filter_ = std::make_unique<EloqShare::TTLCompactionFilter>();
+    ttl_compaction_filter_ = std::make_unique<EloqKV::TTLCompactionFilter>();
 
     cf_options.compaction_filter =
         static_cast<rocksdb::CompactionFilter *>(ttl_compaction_filter_.get());
@@ -2643,7 +2669,7 @@ bool RocksDBHandlerImpl::StartDB(bool is_ng_leader, uint32_t *next_leader_node)
 
         for (const auto &pre_built_table : pre_built_tables_)
         {
-            std::string cf = pre_built_table.first.String();
+            std::string cf = pre_built_table.second;
             cfds.emplace_back(cf, cf_options);
         }
     }
@@ -3157,6 +3183,5 @@ bool RocksDBHandlerImpl::SendFileToRemoteNode(const std::string &snapshot_path,
     return res == 0;
 }
 
-#endif
-
+#endif  // ROCKSDB_CLOUD_FS()
 }  // namespace EloqKV

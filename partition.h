@@ -36,10 +36,6 @@
 #include "tx_util.h"
 #include "type.h"
 
-#ifndef ON_KEY_OBJECT
-#include "sequences.h"
-#endif
-
 namespace EloqDS
 {
 
@@ -587,13 +583,6 @@ public:
         int32_t pk1_hash = 0;
 #else
         int32_t pk1_hash;
-#ifndef ON_KEY_OBJECT
-        if (table_name.StringView() == Sequences::mysql_seq_string)
-        {
-            pk1_hash = 0;
-        }
-        else
-#endif
         {
             size_t hash = key.Hash();
             // In the tx service, we use the lower 10 bits to distribute keys

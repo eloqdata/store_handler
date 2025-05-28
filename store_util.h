@@ -27,18 +27,11 @@
 #include <string>
 #include <vector>
 
-#include "ds_request.pb.h"
-#include "kv_store.h"
-#include "redis_object.h"
+// #include "ds_request.pb.h"
+#include "store_handler/kv_store.h"
+#include "tx_service/include/cc/cc_entry.h"  // FlushRecord
 
-#if defined(KV_DATA_STORE_TYPE_ROCKSDB)
-#include <rocksdb/db.h>
-
-#include "rocksdb/compaction_filter.h"
-#endif
-#if ROCKSDB_CLOUD_FS()
-#include <rocksdb/cloud/cloud_storage_provider.h>
-#endif
+// TODO(lzx): check this file is used, if not, remove it.
 
 namespace EloqShare
 {
@@ -94,217 +87,93 @@ void DeserializeStringToVector(const std::string &str,
     vec.push_back(converter(str.substr(start)));
 }
 
-::EloqDS::remote::UpsertTableOperationType UpsertTableOperationTypeConverter(
-    txservice::OperationType op_type);
-
-txservice::OperationType OperationTypeConverter(
-    ::EloqDS::remote::UpsertTableOperationType op_type);
-
-void ExtractNodesConfigs(
-    const std::unordered_map<uint32_t,
-                             std::vector<::EloqDS::remote::ClusterNodeConfig>>
-        &ng_configs,
-    std::vector<::EloqDS::remote::ClusterNodeConfig> &nodes);
-
-#if defined(KV_DATA_STORE_TYPE_ROCKSDB)
-
-rocksdb::InfoLogLevel StringToInfoLogLevel(const std::string &log_level_str);
-
-void SerializeFlushRecord(const txservice::FlushRecord &flush_rec,
-                          std::vector<char> &buf);
-void SerializeFlushRecord(const txservice::FlushRecord &flush_rec,
-                          std::string &rec_str);
-class TTLCompactionFilter : public rocksdb::CompactionFilter
+template <typename T>
+void SerializeVector(const std::vector<T> &vec, std::string &str)
 {
-public:
-    bool Filter(int level,
-                const rocksdb::Slice &key,
-                const rocksdb::Slice &existing_value,
-                std::string *new_value,
-                bool *value_changed) const override
+    // The vector size
+    size_t cnt = vec.size();
+    size_t val_len = sizeof(cnt);
+    const char *val_ptr = reinterpret_cast<const char *>(&cnt);
+    str.append(val_ptr, val_len);
+
+    // The vector content
+    val_len = sizeof(T);
+    for (size_t i = 0; i < vec.size(); ++i)
     {
-        // Ensure the value contains enough bytes to decode object type and the
-        // ttl
-        assert(existing_value.size() >=
-               (1 /*delete*/ + sizeof(int64_t) /*commit_ts*/));
-
-        bool is_deleted = existing_value[0];
-
-        // Check if the 10th byte of the value matches
-        // RedisObjectType::TTLString
-        if (!existing_value.empty() && !is_deleted &&
-            static_cast<EloqKV::RedisObjectType>(existing_value[9]) ==
-                EloqKV::RedisObjectType::TTLString)
-        {
-            assert(existing_value.size() >= (10 + sizeof(uint64_t) /*ttl*/));
-            uint64_t ttl;
-            std::memcpy(&ttl, existing_value.data() + 10, sizeof(uint64_t));
-
-            // Get the current timestamp in microseconds
-            auto current_timestamp =
-                txservice::LocalCcShards::ClockTsInMillseconds();
-
-            // Check if the timestamp is smaller than the current timestamp
-            if (ttl < current_timestamp)
-            {
-                return true;  // Mark the key for deletion
-            }
-        }
-
-        return false;  // Keep the key
+        const T &val = vec[i];
+        val_ptr = reinterpret_cast<const char *>(&val);
+        str.append(val_ptr, val_len);
     }
+}
 
-    const char *Name() const override
-    {
-        return "TTLCompactionFilter";
-    }
-};
+template <>
+void SerializeVector<std::string>(const std::vector<std::string> &vec,
+                                  std::string &str);
 
-// RocksDBEventListener is used to listen the flush event of RocksDB for
-// recording unexpected write slow and stall when flushing
-class RocksDBEventListener : public rocksdb::EventListener
+template <typename T>
+void DeserializeToVector(const char *str, size_t length, std::vector<T> &vec)
 {
-public:
-    void OnCompactionBegin(rocksdb::DB *db,
-                           const rocksdb::CompactionJobInfo &ci) override
+    if (!length)
     {
-        DLOG(INFO) << "Compaction begin, job_id: " << ci.job_id
-                   << " ,thread: " << ci.thread_id
-                   << " ,output_level: " << ci.output_level
-                   << " ,input_files_size: " << ci.input_files.size()
-                   << " ,compaction_reason: "
-                   << static_cast<int>(ci.compaction_reason);
+        return;
     }
 
-    void OnCompactionCompleted(rocksdb::DB *db,
-                               const rocksdb::CompactionJobInfo &ci) override
+    size_t offset = 0;
+    // The vector size.
+    size_t vec_size = *(reinterpret_cast<const size_t *>(str + offset));
+    offset += sizeof(size_t);
+
+    // The vector content
+    for (size_t i = 0; i < vec_size; ++i)
     {
-        DLOG(INFO) << "Compaction end, job_id: " << ci.job_id
-                   << " ,thread: " << ci.thread_id
-                   << " ,output_level: " << ci.output_level
-                   << " ,input_files_size: " << ci.input_files.size()
-                   << " ,compaction_reason: "
-                   << static_cast<int>(ci.compaction_reason);
+        vec.emplace_back(*reinterpret_cast<const T *>(str + offset));
+        offset += sizeof(T);
     }
 
-    void OnFlushBegin(rocksdb::DB *db,
-                      const rocksdb::FlushJobInfo &flush_job_info) override
+    assert(offset == length);
+}
+
+template <>
+void DeserializeToVector<std::string>(const char *str,
+                                      size_t length,
+                                      std::vector<std::string> &vec);
+
+// void SerializeFlushRecord(const txservice::FlushRecord &flush_rec,
+//                           std::vector<char> &buf);
+// void SerializeFlushRecord(const txservice::FlushRecord &flush_rec,
+//                           std::string &rec_str);
+
+template <typename T>
+T swap_endian(T x)
+{
+    T val = x;
+    uint8_t *byte = reinterpret_cast<uint8_t *>(&val);
+    size_t size = sizeof(T);
+    for (size_t i = 0; i < size / 2; ++i)
     {
-        if (flush_job_info.triggered_writes_slowdown ||
-            flush_job_info.triggered_writes_stop)
-        {
-            LOG(INFO) << "Flush begin, file: " << flush_job_info.file_path
-                      << " ,job_id: " << flush_job_info.job_id
-                      << " ,thread: " << flush_job_info.thread_id
-                      << " ,file_number: " << flush_job_info.file_number
-                      << " ,triggered_writes_slowdown: "
-                      << flush_job_info.triggered_writes_slowdown
-                      << " ,triggered_writes_stop: "
-                      << flush_job_info.triggered_writes_stop
-                      << " ,smallest_seqno: " << flush_job_info.smallest_seqno
-                      << " ,largest_seqno: " << flush_job_info.largest_seqno
-                      << " ,flush_reason: "
-                      << GetFlushReason(flush_job_info.flush_reason);
-        }
+        std::swap(byte[i], byte[size - 1 - i]);
     }
+    return val;
+}
 
-    void OnFlushCompleted(rocksdb::DB *db,
-                          const rocksdb::FlushJobInfo &flush_job_info) override
-    {
-        if (flush_job_info.triggered_writes_slowdown ||
-            flush_job_info.triggered_writes_stop)
-        {
-            LOG(INFO) << "Flush end, file: " << flush_job_info.file_path
-                      << " ,job_id: " << flush_job_info.job_id
-                      << " ,thread: " << flush_job_info.thread_id
-                      << " ,file_number: " << flush_job_info.file_number
-                      << " ,triggered_writes_slowdown: "
-                      << flush_job_info.triggered_writes_slowdown
-                      << " ,triggered_writes_stop: "
-                      << flush_job_info.triggered_writes_stop
-                      << " ,smallest_seqno: " << flush_job_info.smallest_seqno
-                      << " ,largest_seqno: " << flush_job_info.largest_seqno
-                      << " ,flush_reason: "
-                      << GetFlushReason(flush_job_info.flush_reason);
-        }
-    }
-
-    std::string GetFlushReason(rocksdb::FlushReason flush_reason)
-    {
-        switch (flush_reason)
-        {
-        case rocksdb::FlushReason::kOthers:
-            return "kOthers";
-        case rocksdb::FlushReason::kGetLiveFiles:
-            return "kGetLiveFiles";
-        case rocksdb::FlushReason::kShutDown:
-            return "kShutDown";
-        case rocksdb::FlushReason::kExternalFileIngestion:
-            return "kExternalFileIngestion";
-        case rocksdb::FlushReason::kManualCompaction:
-            return "kManualCompaction";
-        case rocksdb::FlushReason::kWriteBufferManager:
-            return "kWriteBufferManager";
-        case rocksdb::FlushReason::kWriteBufferFull:
-            return "kWriteBufferFull";
-        case rocksdb::FlushReason::kTest:
-            return "kTest";
-        case rocksdb::FlushReason::kDeleteFiles:
-            return "kDeleteFiles";
-        case rocksdb::FlushReason::kAutoCompaction:
-            return "kAutoCompaction";
-        case rocksdb::FlushReason::kManualFlush:
-            return "kManualFlush";
-        case rocksdb::FlushReason::kErrorRecovery:
-            return "kErrorRecovery";
-        case rocksdb::FlushReason::kErrorRecoveryRetryFlush:
-            return "kErrorRecoveryRetryFlush";
-        case rocksdb::FlushReason::kWalFull:
-            return "kWalFull";
-        default:
-            return "unknown";
-        }
-    }
-};
-
-#if ROCKSDB_CLOUD_FS()
-std::string MakeCloudManifestCookie(int64_t cc_ng_id, int64_t term);
-
-std::string MakeCloudManifestFile(const std::string &dbname,
-                                  int64_t cc_ng_id,
-                                  int64_t term);
-
-bool IsCloudManifestFile(const std::string &filename);
-
-// Helper function to split a string by a delimiter
-std::vector<std::string> SplitString(const std::string &str, char delimiter);
-
-bool IsCloudManifestFile(const std::string &filename);
-
-bool GetCookieFromCloudManifestFile(const std::string &filename,
-                                    int64_t &cc_ng_id,
-                                    int64_t &term);
-
-int64_t FindMaxTermFromCloudManifestFiles(
-    const std::shared_ptr<ROCKSDB_NAMESPACE::CloudStorageProvider>
-        &storage_provider,
-    const std::string &bucket_prefix,
-    const std::string &bucket_name,
-    const int64_t cc_ng_id_in_cookie);
-
-void DeserializeRecord(const char *payload,
-                       const size_t payload_size,
-                       std::string &rec_str,
-                       bool &is_deleted,
-                       int64_t &version_ts);
-
-void DeserializeToTxRecord(const char *payload,
-                           const size_t payload_size,
-                           txservice::TxRecord::Uptr &typed_rec,
-                           bool &is_deleted,
-                           int64_t &version_ts);
+template <typename T, std::enable_if_t<std::is_unsigned<T>::value, bool> = true>
+T host_to_big_endian(T val)
+{
+#if __BYTE_ORDER == __LITTLE_ENDIAN
+    return swap_endian(val);
+#else
+    return val;
 #endif
+}
 
+template <typename T, std::enable_if_t<std::is_unsigned<T>::value, bool> = true>
+T big_endian_to_host(T val)
+{
+#if __BYTE_ORDER == __LITTLE_ENDIAN
+    return swap_endian(val);
+#else
+    return val;
 #endif
+}
 
 }  // namespace EloqShare

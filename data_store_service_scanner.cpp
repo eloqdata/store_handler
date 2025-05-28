@@ -19,7 +19,8 @@
  *    <http://www.gnu.org/licenses/>.
  *
  */
-#include "store_handler/data_store_service_scanner.h"
+
+#include "data_store_service_scanner.h"
 
 #include <glog/logging.h>
 
@@ -28,56 +29,360 @@
 #include <utility>
 #include <vector>
 
+#include "data_store_service_client_closure.h"
+#include "object_pool.h"
+#include "store_util.h"
+#include "tx_service/include/tx_key.h"
+
 namespace EloqDS
 {
-#if ROCKSDB_CLOUD_FS()
-DataStoreServiceScanner::DataStoreServiceScanner(
-    DataStoreServiceClient *client,
-    const txservice::KeySchema *key_sch,
-    const txservice::RecordSchema *rec_sch,
-    const txservice::TableName &table_name,
-    const txservice::KVCatalogInfo *kv_info,
-    const txservice::TxKey &start_key,
-    bool inclusive,
-    const std::vector<txservice::store::DataStoreSearchCond> &pushdown_cond,
-    bool scan_forward)
-    : client_(client),
+
+thread_local ObjectPool<SinglePartitionScanner> single_partition_scanner_pool_;
+
+bool SinglePartitionScanner::FetchNextBatch()
+{
+    if (IsRunOutOfData())
+    {
+        return false;
+    }
+
+    if (!scanner_)
+    {
+        LOG(ERROR) << "Invalid scanner parameters: scanner is null";
+        return false;
+    }
+
+    DataStoreServiceClient *client = scanner_->GetClient();
+    if (!client)
+    {
+        LOG(ERROR) << "Invalid scanner parameters: client is null";
+        return false;
+    }
+
+    ResetCache();
+
+    scanner_->IncrementInFlightFetchCount();
+    client->ScanNext(
+        scanner_->GetTableName(),
+        partition_id_,
+        last_key_,
+        scanner_->GetEndKey(),
+        session_id_,
+        // only set inclusive_start for the first batch
+        first_batch_fetched_ ? false : scanner_->IsInclusiveStart(),
+        scanner_->IsInclusiveEnd(),
+        scanner_->IsScanForward(),
+        scanner_->GetBatchSize(),
+        scanner_->SearchConditions(),
+        this,
+        ProcessScanNextResult);
+
+    first_batch_fetched_ = true;
+
+    return true;
+}
+
+bool SinglePartitionScanner::ScanClose()
+{
+    if (!scanner_)
+    {
+        LOG(ERROR) << "Invalid scanner parameters: scanner is null";
+        return false;
+    }
+
+    DataStoreServiceClient *client = scanner_->GetClient();
+    if (!client)
+    {
+        LOG(ERROR) << "Invalid scanner parameters: client is null";
+        return false;
+    }
+
+    scanner_->IncrementInFlightFetchCount();
+
+    assert(last_batch_size_ <= scanner_->GetBatchSize());
+    // If parition scanner is not run out of data,
+    // we need to close the scanner
+    if (last_batch_size_ == scanner_->GetBatchSize())
+    {
+        client->ScanClose(scanner_->GetTableName(),
+                          partition_id_,
+                          session_id_,
+                          this,
+                          ProcessScanCloseResult);
+    }
+
+    return true;
+}
+
+void SinglePartitionScanner::ProcessScanNextResult(
+    void *data,
+    ::google::protobuf::Closure *closure,
+    DataStoreServiceClient &client,
+    const remote::CommonResult &result)
+{
+    SinglePartitionScanner *sp_scanner =
+        static_cast<SinglePartitionScanner *>(data);
+
+    ScanNextClosure *scan_next_closure =
+        static_cast<ScanNextClosure *>(closure);
+
+    if (result.error_code() != remote::DataStoreError::NO_ERROR)
+    {
+        LOG(ERROR) << "Failed to fetch next batch: " << result.error_msg();
+        sp_scanner->scanner_->SetError(
+            static_cast<remote::DataStoreError>(result.error_code()),
+            result.error_msg());
+        sp_scanner->scanner_->DecrementInFlightFetchCount();
+        return;
+    }
+
+    uint32_t items_size = scan_next_closure->ItemsSize();
+    sp_scanner->last_batch_size_ = items_size;
+    sp_scanner->session_id_ = scan_next_closure->GetSessionId();
+
+    uint64_t now = txservice::LocalCcShards::ClockTsInMillseconds();
+    for (uint32_t i = 0; i < items_size; i++)
+    {
+        std::string key, value;
+        uint64_t ts, ttl;
+        scan_next_closure->GetItem(i, key, value, ts, ttl);
+        if (i == sp_scanner->last_batch_size_ - 1)
+        {
+            sp_scanner->last_key_ = key;
+        }
+
+        if (ttl > 0 && ttl < now)
+        {
+            // TTL expired record
+            DLOG(INFO) << "TTL expired record, key: " << key << ", ttl: " << ttl
+                       << ", now: " << now;
+            continue;
+        }
+
+        sp_scanner->scan_cache_.emplace_back(
+            std::move(key), std::move(value), ts, ttl);
+    }
+
+    sp_scanner->scanner_->DecrementInFlightFetchCount();
+}
+
+void SinglePartitionScanner::ProcessScanCloseResult(
+    void *data,
+    ::google::protobuf::Closure *closure,
+    DataStoreServiceClient &client,
+    const remote::CommonResult &result)
+{
+    SinglePartitionScanner *sp_scanner =
+        static_cast<SinglePartitionScanner *>(data);
+
+    if (result.error_code() != remote::DataStoreError::NO_ERROR)
+    {
+        LOG(ERROR) << "Failed to fetch next batch: " << result.error_msg();
+        sp_scanner->scanner_->SetError(
+            static_cast<remote::DataStoreError>(result.error_code()),
+            result.error_msg());
+    }
+
+    sp_scanner->scanner_->DecrementInFlightFetchCount();
+}
+
+bool SinglePartitionScanner::IsRunOutOfData()
+{
+    return last_batch_size_ < scanner_->GetBatchSize();
+}
+
+ScanTuple &SinglePartitionScanner::NextScanTuple()
+{
+    assert(head_ < scan_cache_.size());
+    return scan_cache_[head_++];
+}
+
+void SinglePartitionScanner::ResetCache()
+{
+    head_ = 0;
+    scan_cache_.clear();
+}
+
+template <bool ScanForward>
+DataStoreServiceHashPartitionScanner<ScanForward>::
+    DataStoreServiceHashPartitionScanner(
+        DataStoreServiceClient *client,
+        const txservice::KeySchema *key_sch,
+        const txservice::RecordSchema *rec_sch,
+        const txservice::TableName &table_name,
+        const txservice::KVCatalogInfo *kv_info,
+        const txservice::TxKey &start_key,
+        bool inclusive,
+        const std::vector<txservice::store::DataStoreSearchCond> &pushdown_cond,
+        size_t batch_size)
+    : DataStoreServiceScanner(client,
+                              kv_info->GetKvTableName(table_name),
+                              inclusive,  // inclusive_start
+                              false,      // inclusive_end
+                              "",         // end_key
+                              ScanForward,
+                              batch_size),
       key_sch_(key_sch),
       rec_sch_(rec_sch),
-      table_name_(table_name),
       kv_info_(kv_info),
-      inclusive_(inclusive),
-      scan_forward_(scan_forward),
       pushdown_condition_(pushdown_cond),
-      batch_size_(100),
-      initialized_(false),
-      session_id_("")
+      initialized_(false)
 {
     assert(client_ != nullptr);
-    const EloqKV::EloqKey *start_key_ptr = start_key.GetKey<EloqKV::EloqKey>();
-    if (start_key_ptr == EloqKV::EloqKey::NegativeInfinity())
+    const txservice::TxKey *neg_inf_key =
+        txservice::TxKeyFactory::NegInfTxKey();
+    const txservice::TxKey *pos_inf_key =
+        txservice::TxKeyFactory::PosInfTxKey();
+    if (start_key == *neg_inf_key || start_key == *pos_inf_key)
     {
-        last_key_is_neg_inf_ = true;
-    }
-    else if (start_key_ptr == EloqKV::EloqKey::PositiveInfinity())
-    {
-        last_key_is_pos_inf_ = true;
+        start_key_ = "";
     }
     else
     {
-        last_key_ = std::make_unique<std::string>(start_key_ptr->KVSerialize());
+        start_key_ = start_key.ToString();
     }
-}
+    end_key_ = "";
 
-DataStoreServiceScanner::~DataStoreServiceScanner()
-{
-    if (initialized_)
+    // convert pushdown conditions to search conditions
+    for (const auto &cond : pushdown_cond)
     {
-        CloseScan();
+        remote::SearchCondition search_cond;
+        search_cond.set_field_name(cond.field_name_);
+        search_cond.set_op(cond.op_);
+        search_cond.set_value(cond.val_str_);
+        search_conditions_.emplace_back(std::move(search_cond));
     }
 }
 
-bool DataStoreServiceScanner::Init()
+template <bool ScanForward>
+DataStoreServiceHashPartitionScanner<
+    ScanForward>::~DataStoreServiceHashPartitionScanner()
+{
+    // wait for all in-flight fetches to complete
+    WaitUntilInFlightFetchesComplete();
+    CloseScan();
+}
+
+template <bool ScanForward>
+void DataStoreServiceHashPartitionScanner<ScanForward>::Current(
+    txservice::TxKey &key,
+    const txservice::TxRecord *&rec,
+    uint64_t &version_ts,
+    bool &deleted)
+{
+    if (!initialized_)
+    {
+        LOG(ERROR) << "Scanner is not initialized";
+        return;
+    }
+
+    if (error_code_ != remote::DataStoreError::NO_ERROR)
+    {
+        LOG(ERROR) << "Scanner error, error code: " << error_code_
+                   << ", error msg: " << error_msg_;
+        key = txservice::TxKey();
+        rec = nullptr;
+        version_ts = 0;
+        deleted = false;
+        return;
+    }
+
+    if (IsRunOutOfData())
+    {
+        key = txservice::TxKey();
+        rec = nullptr;
+        version_ts = 0;
+        deleted = false;
+        return;
+    }
+
+    const ScanHeapTuple<txservice::TxKey, txservice::TxRecord> &top =
+        result_cache_.top();
+    key = top.key_->GetShallowCopy();
+    rec = top.rec_.get();
+    version_ts = top.version_ts_;
+    deleted = top.deleted_;
+}
+
+template <bool ScanForward>
+bool DataStoreServiceHashPartitionScanner<ScanForward>::IsRunOutOfData()
+{
+    if (!initialized_)
+    {
+        return true;
+    }
+
+    // when the scanner is initialized, the result cache is empty and
+    // there is no in-flight fetch
+    return result_cache_.empty() &&
+           in_flying_fetch_cnt_.load(std::memory_order_acquire) == 0;
+}
+
+template <bool ScanForward>
+bool DataStoreServiceHashPartitionScanner<ScanForward>::MoveNext()
+{
+    // Initialize if not already done
+    if (!initialized_)
+    {
+        return Init();
+    }
+
+    // Quick check if scanner is completely empty
+    if (IsRunOutOfData())
+    {
+        return false;
+    }
+
+    if (error_code_ != remote::DataStoreError::NO_ERROR)
+    {
+        LOG(ERROR) << "Scanner error, error code: " << error_code_
+                   << ", error msg: " << error_msg_;
+        return false;
+    }
+
+    // Extract the next item from the result cache
+    const ScanHeapTuple<txservice::TxKey, txservice::TxRecord> &top =
+        result_cache_.top();
+    uint32_t part_id = top.sid_;
+    result_cache_.pop();
+
+    // Get the corresponding partition scanner
+    SinglePartitionScanner *part_scanner = partition_scanners_[part_id];
+
+    // Handle scanner lifecycle
+    assert(part_scanner != nullptr);
+    if (!part_scanner->IsCacheEmpty())
+    {
+        AddScanTuple(part_scanner, part_id);
+    }
+    else
+    {
+        if (part_scanner->IsRunOutOfData())
+        {
+            // Free the partition scanner if it's run out of data
+            PoolableGuard guard(part_scanner);
+            partition_scanners_[part_id] = nullptr;
+        }
+        else
+        {
+            // Fetch next batch asynchronously
+            DLOG(INFO) << "Fetching next batch for partition scanner "
+                       << part_id;
+            part_scanner->FetchNextBatch();
+
+            // Wait the result of this partition.
+            WaitUntilInFlightFetchesComplete();
+
+            // Get the key
+            AddScanTuple(part_scanner, part_id);
+        }
+    }
+
+    return true;
+}
+
+template <bool ScanForward>
+bool DataStoreServiceHashPartitionScanner<ScanForward>::Init()
 {
     if (initialized_)
     {
@@ -92,368 +397,111 @@ bool DataStoreServiceScanner::Init()
         return false;
     }
 
-    request_.clear_session_id();
-    request_.set_inclusive(inclusive_);
-    request_.set_kv_table_name_str(kv_info_->kv_table_name_);
-    request_.set_batch_size(batch_size_);
-    request_.set_scan_forward(scan_forward_);
-    for (const auto &cond : pushdown_condition_)
+    partition_scanners_.reserve(HASH_PARTITION_COUNT);
+    for (uint32_t part_cnt = 0; part_cnt < HASH_PARTITION_COUNT; part_cnt++)
     {
-        auto *pb_cond = request_.add_search_conditions();
-        pb_cond->set_field_name(cond.field_name_);
-        pb_cond->set_op(cond.op_);
-        pb_cond->set_value(cond.val_str_);
+        auto *part_scanner = single_partition_scanner_pool_.NextObject();
+        part_scanner->Reset(this, part_cnt, start_key_);
+        partition_scanners_.push_back(part_scanner);
+        // ignore the return value, since the scanner is not used
+        part_scanner->FetchNextBatch();
     }
 
-    if (!FetchNextBatch())
+    // Wait the initial HASH_PARTITION_COUNT fetches to finish,
+    // otherwise the result_cache_ is not overall ordered
+    WaitUntilInFlightFetchesComplete();
+
+    // Get the keys
+    for (uint32_t part_id = 0; part_id < HASH_PARTITION_COUNT; ++part_id)
     {
-        LOG(ERROR) << "Failed to fetch initial batch";
-        return false;
+        auto &part_scanner = partition_scanners_[part_id];
+        if (!part_scanner->IsCacheEmpty())
+        {
+            AddScanTuple(part_scanner, part_id);
+        }
+        else
+        {
+            // There must be no data in this partition. Recycly this scanner.
+            PoolableGuard guard(part_scanner);
+            part_scanner = nullptr;
+        }
     }
 
     return true;
 }
 
-bool DataStoreServiceScanner::MoveNext()
+template <bool ScanForward>
+void DataStoreServiceHashPartitionScanner<ScanForward>::AddScanTuple(
+    SinglePartitionScanner *part_scanner, uint32_t part_id)
 {
-    if (!initialized_ && !Init())
-    {
-        return false;
-    }
+    assert(part_scanner);
+    auto &part_scan_tuple = part_scanner->NextScanTuple();
+    ScanHeapTuple<txservice::TxKey, txservice::TxRecord> scan_tuple(part_id);
 
-    if (!result_cache_.empty())
+    scan_tuple.key_->SetPackedKey(part_scan_tuple.key_.data(),
+                                  part_scan_tuple.key_.size());
+
+    size_t offset = 0;
+#ifdef ON_KEY_OBJECT
+    txservice::TxObject *tx_obj =
+        static_cast<txservice::TxObject *>(scan_tuple.rec_.get());
+    txservice::TxRecord::Uptr obj_uptr =
+        tx_obj->DeserializeObject(part_scan_tuple.value_.data(), offset);
+    scan_tuple.rec_.reset(obj_uptr.release());
+#else
+    scan_tuple.rec_->Deserialize(part_scan_tuple.value_.data(), offset);
+#endif
+
+    scan_tuple.version_ts_ = part_scan_tuple.ts_;
+    scan_tuple.deleted_ = false;
+
+    result_cache_.push(std::move(scan_tuple));
+}
+
+template <bool ScanForward>
+void DataStoreServiceHashPartitionScanner<ScanForward>::End()
+{
+    // do nothing
+}
+
+template <bool ScanForward>
+bool DataStoreServiceHashPartitionScanner<ScanForward>::CloseScan()
+{
+    DLOG(INFO) << "Closing scanner";
+    if (!initialized_)
     {
-        const auto &item = result_cache_.front();
-        // fill the current key and record strings
-        current_item_ = std::move(item);
-        result_cache_.pop_front();
         return true;
     }
 
-    return FetchNextBatch();
-}
-
-void DataStoreServiceScanner::Current(txservice::TxKey &key,
-                                      const txservice::TxRecord *&rec,
-                                      uint64_t &version_ts,
-                                      bool &deleted)
-{
-    assert(initialized_);
-
-    while (true)
+    // close all partition scanners if they are not run out of data
+    for (auto *part_scanner : partition_scanners_)
     {
-        if (IsRunOutOfData())
+        if (part_scanner != nullptr && !part_scanner->IsRunOutOfData())
         {
-            key = txservice::TxKey();
-            rec = nullptr;
-            version_ts = 0;
-            deleted = false;
-            return;
-        }
-
-        const std::string &key_str = current_item_.key();
-        const std::string &val_str = current_item_.value();
-        bool is_deleted = false;
-        int64_t version = 0;
-        current_key_ = std::make_unique<EloqKV::EloqKey>(key_str);
-        EloqShare::DeserializeToTxRecord(
-            val_str.c_str(), val_str.size(), current_rec_, is_deleted, version);
-        assert(is_deleted == false);
-
-        bool fail = false;
-        for (auto &cond : pushdown_condition_)
-        {
-            if (cond.field_name_ == "type")
-            {
-                EloqKV::RedisObjectType type_cond =
-                    static_cast<EloqKV::RedisObjectType>(cond.val_str_[0]);
-                EloqKV::RedisObjectType type_rec =
-                    static_cast<EloqKV::RedisEloqObject *>(current_rec_.get())
-                        ->ObjectType();
-                if (type_cond != type_rec)
-                {
-                    fail = true;
-                    break;
-                }
-            }
-        }
-
-        if (fail)
-        {
-            MoveNext();
-            continue;
-        }
-
-        key = txservice::TxKey(current_key_.get());
-        rec = current_rec_.get();
-        version_ts = version;
-        deleted = is_deleted;
-        break;
-    }
-}
-
-void DataStoreServiceScanner::End()
-{
-    initialized_ = false;
-    result_cache_.clear();
-}
-
-bool DataStoreServiceScanner::CloseScan()
-{
-    if (!client_)
-    {
-        LOG(ERROR) << "Invalid scanner parameters: client is null";
-        return false;
-    }
-
-    bthread::Mutex mutex;
-    bthread::ConditionVariable cv;
-    bool done = false;
-    bool ret = false;
-
-    if (!initialized_)
-    {
-        ret = true;
-        done = true;
-    }
-    else if (IsRunOutOfData())
-    {
-        // no need to close scan, since the scan is already closed on the server
-        ret = true;
-        done = true;
-    }
-    else if (!session_id_.empty())
-    {
-        request_.clear_session_id();
-        request_.set_session_id(session_id_);
-
-        client_->ScanCloseWithRetry(
-            request_,
-            [&ret, &done, &cv, &mutex](
-                const EloqDS::remote::ScanResponse &response)
-            {
-                auto &result = response.result();
-                if (result.error_code() !=
-                    EloqDS::remote::DataStoreError::NO_ERROR)
-                {
-                    LOG(ERROR)
-                        << "Failed to close scan: " << result.error_msg();
-                    ret = false;
-                }
-                else
-                {
-                    ret = true;
-                }
-
-                std::unique_lock<bthread::Mutex> lk(mutex);
-                done = true;
-                cv.notify_one();
-            },
-            0);
-
-        std::unique_lock<bthread::Mutex> lk(mutex);
-        while (!done)
-        {
-            cv.wait(lk);
+            part_scanner->ScanClose();
         }
     }
 
-    return ret;
-}
+    // wait until all in-flight scan close finish
+    WaitUntilInFlightFetchesComplete();
 
-bool DataStoreServiceScanner::IsRunOutOfData()
-{
-    return initialized_ && last_key_ == nullptr && !last_key_is_neg_inf_ &&
-           !last_key_is_pos_inf_ && result_cache_.empty();
-}
-
-bool DataStoreServiceScanner::FetchNextBatch()
-{
-    // data is drain
-    if (IsRunOutOfData())
+    // free all partition scanners
+    for (auto *part_scanner : partition_scanners_)
     {
-        return false;
-    }
-
-    if (!client_)
-    {
-        LOG(ERROR) << "Invalid scanner parameters: client is null";
-        return false;
-    }
-
-    // clear the result cache
-    result_cache_.clear();
-
-    if (initialized_)
-    {
-        request_.clear_inclusive();
-        request_.set_inclusive(false);
-    }
-
-    request_.clear_start_key();
-    request_.clear_start_key_is_neg_inf();
-    request_.clear_start_key_is_pos_inf();
-
-    if (last_key_is_neg_inf_)
-    {
-        request_.set_start_key_is_neg_inf(true);
-    }
-    else if (last_key_is_pos_inf_)
-    {
-        request_.set_start_key_is_pos_inf(true);
-    }
-    else
-    {
-        request_.set_start_key(*last_key_);
-    }
-
-    request_.clear_session_id();
-    if (!session_id_.empty())
-    {
-        request_.set_session_id(session_id_);
-    }
-
-    bthread::Mutex mutex;
-    bthread::ConditionVariable cv;
-    bool done, ret = true;
-
-    done = false;
-    ret = true;
-
-    if (session_id_.empty())
-    {
-        // scan open
-        client_->ScanOpenWithRetry(
-            request_,
-            [this, &ret, &done, &cv, &mutex](
-                const EloqDS::remote::ScanResponse &response)
-            {
-                auto common_result = response.result();
-                if (common_result.error_code() !=
-                    EloqDS::remote::DataStoreError::NO_ERROR)
-                {
-                    LOG(ERROR)
-                        << "Failed to open scan: " << common_result.error_msg();
-
-                    std::unique_lock<bthread::Mutex> lk(mutex);
-                    ret = false;
-                    done = true;
-                    cv.notify_one();
-                    return;
-                }
-
-                for (const auto &item : response.items())
-                {
-                    result_cache_.push_back(std::move(item));
-                }
-
-                // set the session id
-                session_id_ = response.session_id();
-                // session id should not be empty when data is not drained
-                assert(!session_id_.empty() ||
-                       result_cache_.size() < batch_size_);
-
-                // if the result is less than batch size, it means
-                // the scan is done
-                if (result_cache_.size() < batch_size_)
-                {
-                    last_key_ = nullptr;
-                    // no need to close scan, since the scan is already closed
-                    // on the server
-                }
-                else
-                {
-                    // set the last key when the result is full
-                    last_key_ = std::make_unique<std::string>(
-                        result_cache_.back().key());
-                }
-                last_key_is_neg_inf_ = false;
-                last_key_is_pos_inf_ = false;
-
-                std::unique_lock<bthread::Mutex> lk(mutex);
-                done = true;
-                cv.notify_one();
-            },
-            0);
-    }
-    else
-    {
-        // scan next
-        client_->ScanNextWithRetry(
-            request_,
-            [this, &ret, &done, &cv, &mutex](
-                const EloqDS::remote::ScanResponse &response)
-            {
-                auto common_result = response.result();
-                if (common_result.error_code() !=
-                    EloqDS::remote::DataStoreError::NO_ERROR)
-                {
-                    LOG(ERROR) << "Failed to fetch next batch: "
-                               << common_result.error_msg();
-
-                    std::unique_lock<bthread::Mutex> lk(mutex);
-                    ret = false;
-                    done = true;
-                    cv.notify_one();
-                    return;
-                }
-
-                for (const auto &item : response.items())
-                {
-                    result_cache_.push_back(std::move(item));
-                }
-
-                session_id_ = response.session_id();
-                // session id should not be empty when data is not drained
-                assert(!session_id_.empty() ||
-                       result_cache_.size() < batch_size_);
-
-                // if the result is less than batch size, it means
-                // the scan is done
-                if (result_cache_.size() < batch_size_)
-                {
-                    last_key_ = nullptr;
-                    // no need to close scan, since the scan is already closed
-                    // on the server
-                }
-                else
-                {
-                    // set the last key when the result is full
-                    last_key_ = std::make_unique<std::string>(
-                        result_cache_.back().key());
-                }
-                last_key_is_neg_inf_ = false;
-                last_key_is_pos_inf_ = false;
-
-                std::unique_lock<bthread::Mutex> lk(mutex);
-                done = true;
-                cv.notify_one();
-            },
-            0);
-    }
-
-    std::unique_lock<bthread::Mutex> lk(mutex);
-    while (!done)
-    {
-        cv.wait(lk);
-    }
-
-    // either the above scan is done or failed
-    if (result_cache_.empty())
-    {
-        if (!ret)
+        if (part_scanner)
         {
-            LOG(ERROR) << "Failed to fetch next batch";
-            last_key_ = nullptr;
-            CloseScan();
+            DLOG(INFO) << "Free partition scanner "
+                       << part_scanner->GetPartitionId();
+            PoolableGuard guard(part_scanner);
         }
+    }
 
-        return ret;
-    }
-    else
-    {
-        return MoveNext();
-    }
+    DLOG(INFO) << "Freeing partition scanners";
+
+    return true;
 }
-#endif
+
+template class DataStoreServiceHashPartitionScanner<true>;
+template class DataStoreServiceHashPartitionScanner<false>;
+
 }  // namespace EloqDS

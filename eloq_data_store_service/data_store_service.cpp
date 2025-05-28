@@ -36,10 +36,34 @@
 #include <vector>
 
 #include "data_store_fault_inject.h"  // ACTION_FAULT_INJECTOR
+#include "internal_request.h"
+#include "object_pool.h"
 
 namespace EloqDS
 {
-#if ROCKSDB_CLOUD_FS()
+
+thread_local ObjectPool<FlushDataRpcRequest> rpc_flush_data_req_pool_;
+thread_local ObjectPool<FlushDataLocalRequest> local_flush_data_req_pool_;
+
+thread_local ObjectPool<DeleteRangeRpcRequest> rpc_delete_range_req_pool_;
+thread_local ObjectPool<DeleteRangeLocalRequest> local_delete_range_req_pool_;
+
+thread_local ObjectPool<WriteRecordsLocalRequest>
+    local_write_records_request_pool_;
+thread_local ObjectPool<WriteRecordsRpcRequest> rpc_write_records_request_pool_;
+
+thread_local ObjectPool<ReadLocalRequest> local_read_request_pool_;
+thread_local ObjectPool<ReadRpcRequest> rpc_read_request_pool_;
+
+thread_local ObjectPool<CreateTableRpcRequest> rpc_create_table_req_pool_;
+thread_local ObjectPool<CreateTableLocalRequest> local_create_table_req_pool_;
+
+thread_local ObjectPool<DropTableRpcRequest> rpc_drop_table_req_pool_;
+thread_local ObjectPool<DropTableLocalRequest> local_drop_table_req_pool_;
+
+thread_local ObjectPool<ScanLocalRequest> local_scan_request_pool_;
+thread_local ObjectPool<ScanRpcRequest> rpc_scan_request_pool_;
+
 TTLWrapperCache::TTLWrapperCache()
 {
     ttl_check_running_ = true;
@@ -161,6 +185,16 @@ void TTLWrapperCache::Clear()
     }
 }
 
+void TTLWrapperCache::ForceEraseIters()
+{
+    std::unique_lock<bthread::Mutex> lk(mutex_);
+    auto it = ttl_wrapper_cache_.begin();
+    while (it != ttl_wrapper_cache_.end())
+    {
+        it = ttl_wrapper_cache_.erase(it);
+    }
+}
+
 DataStoreService::DataStoreService(
     const DataStoreServiceClusterManager &config,
     const std::string &config_file_path,
@@ -179,6 +213,7 @@ DataStoreService::DataStoreService(
 DataStoreService::~DataStoreService()
 {
     std::unique_lock<std::shared_mutex> lk(serv_mux_);
+
     if (server_ != nullptr)
     {
         server_->Stop(0);
@@ -191,6 +226,18 @@ DataStoreService::~DataStoreService()
     }
 
     migrate_worker_.Shutdown();
+
+    // shutdown all data_store
+    if (!data_store_map_.empty())
+    {
+        for (auto &it : data_store_map_)
+        {
+            if (it.second != nullptr)
+            {
+                it.second->Shutdown();
+            }
+        }
+    }
 }
 
 bool DataStoreService::StartService()
@@ -232,6 +279,7 @@ void DataStoreService::ConnectDataStore(
     // create scan iterator cache for each data store
     for (auto &data_store : data_store_map_)
     {
+        std::unique_lock<std::shared_mutex> lk(scan_iter_cache_map_mux_);
         scan_iter_cache_map_.emplace(data_store.first,
                                      std::make_unique<TTLWrapperCache>());
     }
@@ -243,12 +291,6 @@ void DataStoreService::DisconnectDataStore()
     for (auto &data_store : data_store_map_)
     {
         data_store.second->Shutdown();
-        // close all scan iterators after close db
-        auto scan_iter_cache = scan_iter_cache_map_.find(data_store.first);
-        if (scan_iter_cache != scan_iter_cache_map_.end())
-        {
-            scan_iter_cache_map_.erase(scan_iter_cache);
-        }
     }
     data_store_map_.clear();
 }
@@ -274,12 +316,13 @@ bool DataStoreService::ConnectAndStartDataStore(uint32_t data_shard_id,
         }
         else
         {
-            bool res = data_store_map_[data_shard_id]->Connect();
+            bool res = data_store_map_[data_shard_id]->Initialize();
             if (!res)
             {
-                LOG(ERROR) << "Failed to connect to data store";
+                LOG(ERROR) << "Failed to initialize data store";
                 return false;
             }
+
             res = data_store_map_[data_shard_id]->StartDB();
             if (!res)
             {
@@ -305,20 +348,19 @@ bool DataStoreService::ConnectAndStartDataStore(uint32_t data_shard_id,
     }
     return true;
 }
-
-void DataStoreService::FetchRecords(
-    ::google::protobuf::RpcController *controller,
-    const ::EloqDS::remote::FetchRecordsRequest *request,
-    ::EloqDS::remote::FetchRecordsResponse *response,
-    ::google::protobuf::Closure *done)
+void DataStoreService::Read(::google::protobuf::RpcController *controller,
+                            const ::EloqDS::remote::ReadRequest *request,
+                            ::EloqDS::remote::ReadResponse *response,
+                            ::google::protobuf::Closure *done)
 {
-    uint32_t req_shard_id = request->key_shard_code();
-    uint32_t shard_id = cluster_manager_.GetShardIdByKey("");
+    uint32_t partition_id = request->partition_id();
+    uint32_t shard_id = cluster_manager_.GetShardIdByPartitionId(partition_id);
+
     auto *result = response->mutable_result();
-    if (req_shard_id != shard_id || !cluster_manager_.IsOwnerOfShard(shard_id))
+    if (!cluster_manager_.IsOwnerOfShard(shard_id))
     {
         brpc::ClosureGuard done_guard(done);
-        cluster_manager_.PrepareShardingError(req_shard_id, shard_id, result);
+        cluster_manager_.PrepareShardingError(shard_id, result);
         return;
     }
 
@@ -331,62 +373,392 @@ void DataStoreService::FetchRecords(
         return;
     }
 
-    std::vector<::EloqDS::remote::FetchRecordsRequest::key> keys;
-    for (int i = 0; i < request->keys_size(); i++)
-    {
-        keys.push_back(request->keys(i));
-    }
+    ReadRpcRequest *req = rpc_read_request_pool_.NextObject();
+    req->Reset(this, request, response, done);
 
-    data_store_map_[shard_id]->BatchFetchRecords(
-        req_shard_id,
-        std::move(keys),
-        [done, response](
-            std::vector<::EloqDS::remote::FetchRecordsResponse::record>
-                &&records,
-            const ::EloqDS::remote::CommonResult &result)
-        {
-            brpc::ClosureGuard done_guard(done);
-            for (size_t i = 0; i < records.size(); i++)
-            {
-                auto *record = response->add_records();
-                *record = std::move(records[i]);
-            }
-            auto *resp_result = response->mutable_result();
-            *resp_result = result;
-        });
+    data_store_map_[shard_id]->Read(req);
 }
 
-bool DataStoreService::FetchRecords(
-    uint32_t req_shard_id,
-    std::vector<::EloqDS::remote::FetchRecordsRequest::key> &&keys,
-    std::function<void(
-        std::vector<::EloqDS::remote::FetchRecordsResponse::record> &&records,
-        const ::EloqDS::remote::CommonResult &result)> on_finish)
+void DataStoreService::Read(const std::string_view table_name,
+                            const uint32_t partition_id,
+                            const std::string_view key,
+                            std::string *record,
+                            uint64_t *ts,
+                            uint64_t *ttl,
+                            ::EloqDS::remote::CommonResult *result,
+                            ::google::protobuf::Closure *done)
 {
-    auto shard_id = cluster_manager_.GetShardIdByKey("");
-    ::EloqDS::remote::CommonResult result;
-    if (req_shard_id != shard_id || !cluster_manager_.IsOwnerOfShard(shard_id))
+    uint32_t shard_id = cluster_manager_.GetShardIdByPartitionId(partition_id);
+
+    if (!cluster_manager_.IsOwnerOfShard(shard_id))
     {
-        cluster_manager_.PrepareShardingError(req_shard_id, shard_id, &result);
-        result.set_error_msg("Requested data not on local node.");
-        DLOG(ERROR) << "Requested data not on local node.";
-        on_finish({}, result);
-        return false;
+        brpc::ClosureGuard done_guard(done);
+        cluster_manager_.PrepareShardingError(shard_id, result);
+        return;
     }
 
     std::shared_lock<std::shared_mutex> lk(serv_mux_);
     if (!data_store_map_[shard_id])
     {
-        result.set_error_code(::EloqDS::remote::DataStoreError::DB_NOT_OPEN);
-        result.set_error_msg("KV store not opened yet.");
-        on_finish({}, result);
-        DLOG(ERROR) << "KV store not opened yet.";
-        return false;
+        brpc::ClosureGuard done_guard(done);
+        record->clear();
+        *ts = 0;
+        result->set_error_code(::EloqDS::remote::DataStoreError::DB_NOT_OPEN);
+        result->set_error_msg("KV store not opened yet.");
+        return;
     }
 
-    data_store_map_[shard_id]->BatchFetchRecords(
-        req_shard_id, std::move(keys), on_finish);
-    return true;
+    ReadLocalRequest *req = local_read_request_pool_.NextObject();
+    req->Reset(
+        this, table_name, partition_id, key, record, ts, ttl, result, done);
+
+    data_store_map_[shard_id]->Read(req);
+}
+
+void DataStoreService::FlushData(
+    ::google::protobuf::RpcController *controller,
+    const ::EloqDS::remote::FlushDataRequest *request,
+    ::EloqDS::remote::FlushDataResponse *response,
+    ::google::protobuf::Closure *done)
+{
+    // This object helps to call done->Run() in RAII style. If you need to
+    // process the request asynchronously, pass done_guard.release().
+    brpc::ClosureGuard done_guard(done);
+
+    ::EloqDS::remote::CommonResult *result = response->mutable_result();
+
+    uint32_t shard_id = request->shard_id();
+    auto shard_status = FetchDSShardStatus(shard_id);
+    if (shard_status != DSShardStatus::ReadWrite)
+    {
+        if (shard_status == DSShardStatus::Closed)
+        {
+            PrepareShardingError(shard_id, result);
+        }
+        else
+        {
+            assert(shard_status == DSShardStatus::ReadOnly);
+            result->set_error_code(
+                ::EloqDS::remote::DataStoreError::WRITE_TO_READ_ONLY_DB);
+            result->set_error_msg("Write to read-only DB.");
+        }
+        return;
+    }
+
+    std::shared_lock<std::shared_mutex> lk(serv_mux_);
+    if (!data_store_map_[shard_id])
+    {
+        result->set_error_code(::EloqDS::remote::DataStoreError::DB_NOT_OPEN);
+        result->set_error_msg("KV store not opened yet.");
+        return;
+    }
+
+    FlushDataRpcRequest *req = rpc_flush_data_req_pool_.NextObject();
+    req->Reset(request, response, done);
+
+    // Process request async.
+    data_store_map_[shard_id]->FlushData(req);
+    done_guard.release();
+}
+
+void DataStoreService::FlushData(const std::string_view table_name,
+                                 const uint32_t shard_id,
+                                 remote::CommonResult &result,
+                                 ::google::protobuf::Closure *done)
+{
+    auto shard_status = FetchDSShardStatus(shard_id);
+    if (shard_status != DSShardStatus::ReadWrite)
+    {
+        brpc::ClosureGuard done_guard(done);
+        if (shard_status == DSShardStatus::Closed)
+        {
+            PrepareShardingError(shard_id, &result);
+        }
+        else
+        {
+            assert(shard_status == DSShardStatus::ReadOnly);
+            result.set_error_code(
+                ::EloqDS::remote::DataStoreError::WRITE_TO_READ_ONLY_DB);
+            result.set_error_msg("Write to read-only DB.");
+        }
+        return;
+    }
+
+    std::shared_lock<std::shared_mutex> lk(serv_mux_);
+    if (!data_store_map_[shard_id])
+    {
+        brpc::ClosureGuard done_guard(done);
+        result.set_error_code(::EloqDS::remote::DataStoreError::DB_NOT_OPEN);
+        result.set_error_msg("KV store not opened yet.");
+        return;
+    }
+
+    FlushDataLocalRequest *req = local_flush_data_req_pool_.NextObject();
+    req->Reset(table_name, result, done);
+
+    // Process request async.
+    data_store_map_[shard_id]->FlushData(req);
+}
+
+void DataStoreService::DeleteRange(
+    ::google::protobuf::RpcController *controller,
+    const ::EloqDS::remote::DeleteRangeRequest *request,
+    ::EloqDS::remote::DeleteRangeResponse *response,
+    ::google::protobuf::Closure *done)
+{
+    // This object helps to call done->Run() in RAII style. If you need to
+    // process the request asynchronously, pass done_guard.release().
+    brpc::ClosureGuard done_guard(done);
+
+    ::EloqDS::remote::CommonResult *result = response->mutable_result();
+
+    uint32_t shard_id = GetShardIdByPartitionId(request->partition_id());
+    auto shard_status = FetchDSShardStatus(shard_id);
+    if (shard_status != DSShardStatus::ReadWrite)
+    {
+        if (shard_status == DSShardStatus::Closed)
+        {
+            PrepareShardingError(shard_id, result);
+        }
+        else
+        {
+            assert(shard_status == DSShardStatus::ReadOnly);
+            result->set_error_code(
+                ::EloqDS::remote::DataStoreError::WRITE_TO_READ_ONLY_DB);
+            result->set_error_msg("Write to read-only DB.");
+        }
+        return;
+    }
+
+    std::shared_lock<std::shared_mutex> lk(serv_mux_);
+    if (!data_store_map_[shard_id])
+    {
+        result->set_error_code(::EloqDS::remote::DataStoreError::DB_NOT_OPEN);
+        result->set_error_msg("KV store not opened yet.");
+        return;
+    }
+
+    DeleteRangeRpcRequest *req = rpc_delete_range_req_pool_.NextObject();
+    req->Reset(request, response, done);
+
+    // Process request async.
+    data_store_map_[shard_id]->DeleteRange(req);
+    done_guard.release();
+}
+
+void DataStoreService::DeleteRange(const std::string_view table_name,
+                                   const uint32_t partition_id,
+                                   const std::string_view start_key,
+                                   const std::string_view end_key,
+                                   const bool skip_wal,
+                                   remote::CommonResult &result,
+                                   ::google::protobuf::Closure *done)
+{
+    uint32_t shard_id = GetShardIdByPartitionId(partition_id);
+
+    auto shard_status = FetchDSShardStatus(shard_id);
+    if (shard_status != DSShardStatus::ReadWrite)
+    {
+        brpc::ClosureGuard done_guard(done);
+        if (shard_status == DSShardStatus::Closed)
+        {
+            PrepareShardingError(shard_id, &result);
+        }
+        else
+        {
+            assert(shard_status == DSShardStatus::ReadOnly);
+            result.set_error_code(
+                ::EloqDS::remote::DataStoreError::WRITE_TO_READ_ONLY_DB);
+            result.set_error_msg("Write to read-only DB.");
+        }
+        return;
+    }
+
+    std::shared_lock<std::shared_mutex> lk(serv_mux_);
+    if (!data_store_map_[shard_id])
+    {
+        brpc::ClosureGuard done_guard(done);
+        result.set_error_code(::EloqDS::remote::DataStoreError::DB_NOT_OPEN);
+        result.set_error_msg("KV store not opened yet.");
+        return;
+    }
+
+    DeleteRangeLocalRequest *req = local_delete_range_req_pool_.NextObject();
+    req->Reset(
+        table_name, partition_id, start_key, end_key, skip_wal, result, done);
+
+    // Process request async.
+    data_store_map_[shard_id]->DeleteRange(req);
+}
+
+void DataStoreService::CreateTable(
+    ::google::protobuf::RpcController *controller,
+    const ::EloqDS::remote::CreateTableRequest *request,
+    ::EloqDS::remote::CreateTableResponse *response,
+    ::google::protobuf::Closure *done)
+{
+    // This object helps to call done->Run() in RAII style. If you need to
+    // process the request asynchronously, pass done_guard.release().
+    brpc::ClosureGuard done_guard(done);
+
+    ::EloqDS::remote::CommonResult *result = response->mutable_result();
+
+    uint32_t shard_id = request->shard_id();
+    auto shard_status = FetchDSShardStatus(shard_id);
+    if (shard_status != DSShardStatus::ReadWrite)
+    {
+        if (shard_status == DSShardStatus::Closed)
+        {
+            PrepareShardingError(shard_id, result);
+        }
+        else
+        {
+            assert(shard_status == DSShardStatus::ReadOnly);
+            result->set_error_code(
+                ::EloqDS::remote::DataStoreError::WRITE_TO_READ_ONLY_DB);
+            result->set_error_msg("Write to read-only DB.");
+        }
+        return;
+    }
+
+    std::shared_lock<std::shared_mutex> lk(serv_mux_);
+    if (!data_store_map_[shard_id])
+    {
+        result->set_error_code(::EloqDS::remote::DataStoreError::DB_NOT_OPEN);
+        result->set_error_msg("KV store not opened yet.");
+        return;
+    }
+
+    CreateTableRpcRequest *req = rpc_create_table_req_pool_.NextObject();
+    req->Reset(request, response, done);
+
+    // Process request async.
+    data_store_map_[shard_id]->CreateTable(req);
+    done_guard.release();
+}
+
+void DataStoreService::CreateTable(const std::string_view table_name,
+                                   uint32_t shard_id,
+                                   remote::CommonResult &result,
+                                   ::google::protobuf::Closure *done)
+{
+    auto shard_status = FetchDSShardStatus(shard_id);
+    if (shard_status != DSShardStatus::ReadWrite)
+    {
+        brpc::ClosureGuard done_guard(done);
+        if (shard_status == DSShardStatus::Closed)
+        {
+            PrepareShardingError(shard_id, &result);
+        }
+        else
+        {
+            assert(shard_status == DSShardStatus::ReadOnly);
+            result.set_error_code(
+                ::EloqDS::remote::DataStoreError::WRITE_TO_READ_ONLY_DB);
+            result.set_error_msg("Write to read-only DB.");
+        }
+        return;
+    }
+
+    std::shared_lock<std::shared_mutex> lk(serv_mux_);
+    if (!data_store_map_[shard_id])
+    {
+        brpc::ClosureGuard done_guard(done);
+        result.set_error_code(::EloqDS::remote::DataStoreError::DB_NOT_OPEN);
+        result.set_error_msg("KV store not opened yet.");
+        return;
+    }
+
+    CreateTableLocalRequest *req = local_create_table_req_pool_.NextObject();
+    req->Reset(table_name, result, done);
+
+    // Process request async.
+    data_store_map_[shard_id]->CreateTable(req);
+}
+
+void DataStoreService::DropTable(
+    ::google::protobuf::RpcController *controller,
+    const ::EloqDS::remote::DropTableRequest *request,
+    ::EloqDS::remote::DropTableResponse *response,
+    ::google::protobuf::Closure *done)
+{
+    // This object helps to call done->Run() in RAII style. If you need to
+    // process the request asynchronously, pass done_guard.release().
+    brpc::ClosureGuard done_guard(done);
+
+    ::EloqDS::remote::CommonResult *result = response->mutable_result();
+
+    uint32_t shard_id = request->shard_id();
+    auto shard_status = FetchDSShardStatus(shard_id);
+    if (shard_status != DSShardStatus::ReadWrite)
+    {
+        if (shard_status == DSShardStatus::Closed)
+        {
+            PrepareShardingError(shard_id, result);
+        }
+        else
+        {
+            assert(shard_status == DSShardStatus::ReadOnly);
+            result->set_error_code(
+                ::EloqDS::remote::DataStoreError::WRITE_TO_READ_ONLY_DB);
+            result->set_error_msg("Write to read-only DB.");
+        }
+        return;
+    }
+
+    std::shared_lock<std::shared_mutex> lk(serv_mux_);
+    if (!data_store_map_[shard_id])
+    {
+        result->set_error_code(::EloqDS::remote::DataStoreError::DB_NOT_OPEN);
+        result->set_error_msg("KV store not opened yet.");
+        return;
+    }
+
+    DropTableRpcRequest *req = rpc_drop_table_req_pool_.NextObject();
+    req->Reset(request, response, done);
+
+    // Process request async.
+    data_store_map_[shard_id]->DropTable(req);
+    done_guard.release();
+}
+
+void DataStoreService::DropTable(const std::string_view table_name,
+                                 uint32_t shard_id,
+                                 remote::CommonResult &result,
+                                 ::google::protobuf::Closure *done)
+{
+    auto shard_status = FetchDSShardStatus(shard_id);
+    if (shard_status != DSShardStatus::ReadWrite)
+    {
+        brpc::ClosureGuard done_guard(done);
+        if (shard_status == DSShardStatus::Closed)
+        {
+            PrepareShardingError(shard_id, &result);
+        }
+        else
+        {
+            assert(shard_status == DSShardStatus::ReadOnly);
+            result.set_error_code(
+                ::EloqDS::remote::DataStoreError::WRITE_TO_READ_ONLY_DB);
+            result.set_error_msg("Write to read-only DB.");
+        }
+        return;
+    }
+
+    std::shared_lock<std::shared_mutex> lk(serv_mux_);
+    if (!data_store_map_[shard_id])
+    {
+        brpc::ClosureGuard done_guard(done);
+        result.set_error_code(::EloqDS::remote::DataStoreError::DB_NOT_OPEN);
+        result.set_error_msg("KV store not opened yet.");
+        return;
+    }
+
+    DropTableLocalRequest *req = local_drop_table_req_pool_.NextObject();
+    req->Reset(table_name, result, done);
+
+    // Process request async.
+    data_store_map_[shard_id]->DropTable(req);
 }
 
 void DataStoreService::BatchWriteRecords(
@@ -395,15 +767,9 @@ void DataStoreService::BatchWriteRecords(
     ::EloqDS::remote::BatchWriteRecordsResponse *response,
     ::google::protobuf::Closure *done)
 {
-    uint32_t req_shard_id = request->key_shard_code();
-    uint32_t shard_id = cluster_manager_.GetShardIdByKey("");
-    auto *result = response->mutable_result();
-    if (req_shard_id != shard_id)
-    {
-        brpc::ClosureGuard done_guard(done);
-        cluster_manager_.PrepareShardingError(req_shard_id, shard_id, result);
-        return;
-    }
+    uint32_t partition_id = request->partition_id();
+    uint32_t shard_id = GetShardIdByPartitionId(partition_id);
+    ::EloqDS::remote::CommonResult *result = response->mutable_result();
 
     auto shard_status = cluster_manager_.FetchDSShardStatus(shard_id);
     if (shard_status != DSShardStatus::ReadWrite)
@@ -411,8 +777,9 @@ void DataStoreService::BatchWriteRecords(
         brpc::ClosureGuard done_guard(done);
         if (shard_status == DSShardStatus::Closed)
         {
-            cluster_manager_.PrepareShardingError(
-                req_shard_id, shard_id, result);
+            result->set_error_code(
+                ::EloqDS::remote::DataStoreError::REQUESTED_NODE_NOT_OWNER);
+            result->set_error_msg("Requested data not on local node.");
         }
         else
         {
@@ -434,581 +801,50 @@ void DataStoreService::BatchWriteRecords(
         return;
     }
 
-    std::vector<EloqDS::remote::BatchWriteRecordsRequest::record> records;
-    for (int i = 0; i < request->records_size(); i++)
-    {
-        records.push_back(request->records(i));
-    }
+    // TODO(lzx): fetch req from pool.
+    WriteRecordsRpcRequest *batch_write_req =
+        rpc_write_records_request_pool_.NextObject();
+    batch_write_req->Reset(request, response, done);
 
-    data_store_map_[shard_id]->BatchWriteRecords(
-        req_shard_id,
-        std::move(records),
-        request->kv_table_name(),
-        [done, response](const ::EloqDS::remote::CommonResult &result)
-        {
-            brpc::ClosureGuard done_guard(done);
-            auto *resp_result = response->mutable_result();
-            *resp_result = result;
-        });
-}
-
-void DataStoreService::CkptEnd(::google::protobuf::RpcController *controller,
-                               const ::EloqDS::remote::CkptEndRequest *request,
-                               ::EloqDS::remote::CkptEndResponse *response,
-                               ::google::protobuf::Closure *done)
-{
-    uint32_t req_shard_id = request->key_shard_code();
-    uint32_t shard_id = cluster_manager_.GetShardIdByKey("");
-    auto *result = response->mutable_result();
-    if (req_shard_id != shard_id)
-    {
-        brpc::ClosureGuard done_guard(done);
-        cluster_manager_.PrepareShardingError(req_shard_id, shard_id, result);
-        return;
-    }
-
-    auto shard_status = cluster_manager_.FetchDSShardStatus(shard_id);
-    if (shard_status != DSShardStatus::ReadWrite)
-    {
-        brpc::ClosureGuard done_guard(done);
-        if (shard_status == DSShardStatus::Closed)
-        {
-            cluster_manager_.PrepareShardingError(
-                req_shard_id, shard_id, result);
-        }
-        else
-        {
-            assert(shard_status == DSShardStatus::ReadOnly);
-            result->set_error_code(
-                ::EloqDS::remote::DataStoreError::WRITE_TO_READ_ONLY_DB);
-            result->set_error_msg("Write to read-only DB.");
-        }
-        return;
-    }
-
-    std::shared_lock<std::shared_mutex> lk(serv_mux_);
-    if (!data_store_map_[shard_id])
-    {
-        brpc::ClosureGuard done_guard(done);
-        result->set_error_code(::EloqDS::remote::DataStoreError::DB_NOT_OPEN);
-        result->set_error_msg("KV store not opened yet.");
-        return;
-    }
-
-    data_store_map_[shard_id]->CkptEnd(
-        req_shard_id,
-        request->kv_table_name(),
-        [done, response](const ::EloqDS::remote::CommonResult &result)
-        {
-            brpc::ClosureGuard done_guard(done);
-            auto *resp_result = response->mutable_result();
-            *resp_result = result;
-        });
-}
-
-void DataStoreService::FetchTableCatalog(
-    ::google::protobuf::RpcController *controller,
-    const ::EloqDS::remote::FetchTableCatalogRequest *request,
-    ::EloqDS::remote::FetchTableCatalogResponse *response,
-    ::google::protobuf::Closure *done)
-{
-    uint32_t req_shard_id = request->key_shard_code();
-    uint32_t shard_id = cluster_manager_.GetShardIdByKey("");
-    auto *result = response->mutable_result();
-    if (req_shard_id != shard_id || !cluster_manager_.IsOwnerOfShard(shard_id))
-    {
-        brpc::ClosureGuard done_guard(done);
-        cluster_manager_.PrepareShardingError(req_shard_id, shard_id, result);
-        return;
-    }
-
-    std::shared_lock<std::shared_mutex> lk(serv_mux_);
-    if (!data_store_map_[shard_id])
-    {
-        brpc::ClosureGuard done_guard(done);
-        result->set_error_code(::EloqDS::remote::DataStoreError::DB_NOT_OPEN);
-        result->set_error_msg("KV store not opened yet.");
-        return;
-    }
-
-    data_store_map_[shard_id]->FetchTableCatalog(
-        req_shard_id,
-        request->table_name(),
-        [done, response](std::string &&schema_image,
-                         bool found,
-                         uint64_t version_ts,
-                         const ::EloqDS::remote::CommonResult &result)
-        {
-            brpc::ClosureGuard done_guard(done);
-            response->set_schema_img(std::move(schema_image));
-            response->set_version_ts(version_ts);
-            response->set_found(found);
-            auto *resp_result = response->mutable_result();
-            *resp_result = result;
-        });
-}
-
-void DataStoreService::FetchTableCatalog(
-    uint32_t req_shard_id,
-    const std::string ccm_table_name,
-    std::function<void(std::string &&schema_image,
-                       bool found,
-                       uint64_t version_ts,
-                       const ::EloqDS::remote::CommonResult &result)> on_finish)
-{
-    auto shard_id = cluster_manager_.GetShardIdByKey("");
-    ::EloqDS::remote::CommonResult result;
-    if (req_shard_id != shard_id || !cluster_manager_.IsOwnerOfShard(shard_id))
-    {
-        DLOG(ERROR) << "Requested data not on local node."
-                    << " req_shard_id: " << req_shard_id
-                    << " shard_id: " << shard_id << " IsOwnerOfShard: "
-                    << cluster_manager_.IsOwnerOfShard(shard_id);
-        cluster_manager_.PrepareShardingError(req_shard_id, shard_id, &result);
-        on_finish("", false, 0, result);
-        return;
-    }
-
-    std::shared_lock<std::shared_mutex> lk(serv_mux_);
-    if (!data_store_map_[shard_id])
-    {
-        result.set_error_code(::EloqDS::remote::DataStoreError::DB_NOT_OPEN);
-        result.set_error_msg("KV store not opened yet.");
-        on_finish("", false, 0, result);
-        return;
-    }
-
-    data_store_map_[shard_id]->FetchTableCatalog(
-        req_shard_id, ccm_table_name, on_finish);
-}
-
-void DataStoreService::UpsertTable(
-    ::google::protobuf::RpcController *controller,
-    const ::EloqDS::remote::UpsertTableRequest *request,
-    ::EloqDS::remote::UpsertTableResponse *response,
-    ::google::protobuf::Closure *done)
-{
-    uint32_t req_shard_id = request->key_shard_id();
-    uint32_t shard_id = cluster_manager_.GetShardIdByKey("");
-    auto *result = response->mutable_result();
-    if (req_shard_id != shard_id)
-    {
-        brpc::ClosureGuard done_guard(done);
-        cluster_manager_.PrepareShardingError(req_shard_id, shard_id, result);
-        return;
-    }
-
-    auto shard_status = cluster_manager_.FetchDSShardStatus(shard_id);
-    if (shard_status != DSShardStatus::ReadWrite)
-    {
-        brpc::ClosureGuard done_guard(done);
-        if (shard_status == DSShardStatus::Closed)
-        {
-            // shard id changed means the dss node group changed
-            cluster_manager_.PrepareShardingError(
-                req_shard_id, shard_id, result);
-            result->set_error_msg("Requested data not on local node.");
-        }
-        else
-        {
-            assert(shard_status == DSShardStatus::ReadOnly);
-            result->set_error_code(
-                ::EloqDS::remote::DataStoreError::WRITE_TO_READ_ONLY_DB);
-            result->set_error_msg("Write to read-only DB.");
-        }
-        return;
-    }
-
-    std::shared_lock<std::shared_mutex> lk(serv_mux_);
-    if (!data_store_map_[shard_id])
-    {
-        brpc::ClosureGuard done_guard(done);
-        result->set_error_code(::EloqDS::remote::DataStoreError::DB_NOT_OPEN);
-        result->set_error_msg("KV store not opened yet.");
-        return;
-    }
-
-    data_store_map_[shard_id]->UpsertTable(
-        req_shard_id,
-        request->table_name_str(),
-        request->old_schema_img(),
-        request->new_schema_img(),
-        static_cast<::EloqDS::remote::UpsertTableOperationType>(
-            request->op_type()),
-        request->commit_ts(),
-        [response, done](const ::EloqDS::remote::CommonResult &result)
-        {
-            brpc::ClosureGuard done_guard(done);
-            auto *resp_result = response->mutable_result();
-            *resp_result = result;
-        });
-}
-
-void DataStoreService::ScanOpen(
-    const ::EloqDS::remote::ScanRequest &scan_req,
-    std::function<void(const ::EloqDS::remote::ScanResponse &)> on_finish)
-{
-    uint32_t req_shard_id = scan_req.req_shard_id();
-    uint32_t shard_id = cluster_manager_.GetShardIdByKey("");
-    ::EloqDS::remote::ScanResponse response;
-    auto *result = response.mutable_result();
-    if (req_shard_id != shard_id || !cluster_manager_.IsOwnerOfShard(shard_id))
-    {
-        cluster_manager_.PrepareShardingError(req_shard_id, shard_id, result);
-        result->set_error_msg("Requested data not on local node.");
-        DLOG(ERROR) << "Requested data not on local node.";
-        on_finish(response);
-        return;
-    }
-
-    std::shared_lock<std::shared_mutex> lk(serv_mux_);
-    if (!data_store_map_[shard_id])
-    {
-        result->set_error_code(::EloqDS::remote::DataStoreError::DB_NOT_OPEN);
-        result->set_error_msg("KV store not opened yet.");
-        DLOG(ERROR) << "KV store not opened yet.";
-        on_finish(response);
-        return;
-    }
-
-    data_store_map_[shard_id]->ScanOpen(
-        scan_req,
-        [on_finish](const ::EloqDS::remote::ScanResponse &response)
-        { on_finish(response); });
+    data_store_map_[shard_id]->BatchWriteRecords(batch_write_req);
 }
 
 void DataStoreService::ScanNext(
-    const ::EloqDS::remote::ScanRequest &scan_req,
-    std::function<void(const ::EloqDS::remote::ScanResponse &)> on_finish)
+    const std::string_view table_name,
+    uint32_t partition_id,
+    const std::string_view start_key,
+    const std::string_view end_key,
+    bool inclusive_start,
+    bool inclusive_end,
+    bool scan_forward,
+    uint32_t batch_size,
+    const std::vector<remote::SearchCondition> *search_conditions,
+    std::vector<ScanTuple> *items,
+    std::string *session_id,
+    ::EloqDS::remote::CommonResult *result,
+    ::google::protobuf::Closure *done)
 {
-    uint32_t req_shard_id = scan_req.req_shard_id();
-    uint32_t shard_id = cluster_manager_.GetShardIdByKey("");
-    ::EloqDS::remote::ScanResponse response;
-    auto *result = response.mutable_result();
-    if (req_shard_id != shard_id || !cluster_manager_.IsOwnerOfShard(shard_id))
-    {
-        cluster_manager_.PrepareShardingError(req_shard_id, shard_id, result);
-        result->set_error_msg("Requested data not on local node.");
-        DLOG(ERROR) << "Requested data not on local node.";
-        on_finish(response);
-        return;
-    }
+    uint32_t shard_id = GetShardIdByPartitionId(partition_id);
 
-    std::shared_lock<std::shared_mutex> lk(serv_mux_);
-    if (!data_store_map_[shard_id])
-    {
-        result->set_error_code(::EloqDS::remote::DataStoreError::DB_NOT_OPEN);
-        result->set_error_msg("KV store not opened yet.");
-        DLOG(ERROR) << "KV store not opened yet.";
-        on_finish(response);
-        return;
-    }
-
-    data_store_map_[shard_id]->ScanNext(
-        scan_req,
-        [on_finish](const ::EloqDS::remote::ScanResponse &response)
-        { on_finish(response); });
-}
-
-void DataStoreService::ScanClose(
-    const ::EloqDS::remote::ScanRequest &scan_req,
-    std::function<void(const ::EloqDS::remote::ScanResponse &)> on_finish)
-{
-    uint32_t req_shard_id = scan_req.req_shard_id();
-    uint32_t shard_id = cluster_manager_.GetShardIdByKey("");
-    ::EloqDS::remote::ScanResponse response;
-    auto *result = response.mutable_result();
-    if (req_shard_id != shard_id || !cluster_manager_.IsOwnerOfShard(shard_id))
-    {
-        cluster_manager_.PrepareShardingError(req_shard_id, shard_id, result);
-        result->set_error_msg("Requested data not on local node.");
-        DLOG(ERROR) << "Requested data not on local node.";
-        on_finish(response);
-        return;
-    }
-
-    std::shared_lock<std::shared_mutex> lk(serv_mux_);
-    if (!data_store_map_[shard_id])
-    {
-        result->set_error_code(::EloqDS::remote::DataStoreError::DB_NOT_OPEN);
-        result->set_error_msg("KV store not opened yet.");
-        DLOG(ERROR) << "KV store not opened yet.";
-        on_finish(response);
-        return;
-    }
-
-    data_store_map_[shard_id]->ScanClose(
-        scan_req,
-        [on_finish](const ::EloqDS::remote::ScanResponse &response)
-        { on_finish(response); });
-}
-
-void DataStoreService::CreateSnapshotForBackup(
-    const ::EloqDS::remote::CreateSnapshotRequest &request,
-    std::function<void(const ::EloqDS::remote::CreateSnapshotResponse &resp)>
-        on_finish)
-{
-    uint32_t req_shard_id = request.req_shard_id();
-    uint32_t shard_id = cluster_manager_.GetShardIdByKey("");
-    ::EloqDS::remote::CreateSnapshotResponse response;
-    auto *result = response.mutable_result();
-
-    // Check if this node is the owner of the requested shard
-    if (req_shard_id != shard_id || !cluster_manager_.IsOwnerOfShard(shard_id))
-    {
-        cluster_manager_.PrepareShardingError(req_shard_id, shard_id, result);
-        result->set_error_msg("Requested data not on local node.");
-        DLOG(ERROR) << "Requested data not on local node.";
-        on_finish(response);
-        return;
-    }
-
-    std::shared_lock<std::shared_mutex> lk(serv_mux_);
-    // Check if data store is open and available
-    if (!data_store_map_[shard_id])
-    {
-        result->set_error_code(::EloqDS::remote::DataStoreError::DB_NOT_OPEN);
-        result->set_error_msg("KV store not opened yet.");
-        DLOG(ERROR) << "KV store not opened yet.";
-        on_finish(response);
-        return;
-    }
-
-    const std::string &backup_name = request.backup_name();
-    data_store_map_[shard_id]->Backup(
-        req_shard_id,
-        backup_name,
-        [on_finish](const ::EloqDS::remote::CreateSnapshotResponse &resp)
-        { on_finish(resp); });
-}
-
-void DataStoreService::EmplaceScanIter(uint32_t shard_id,
-                                       std::string &session_id,
-                                       std::unique_ptr<TTLWrapper> iter)
-{
-    std::shared_lock<std::shared_mutex> lk(serv_mux_);
-    auto scan_iter_cache = scan_iter_cache_map_.find(shard_id);
-    if (scan_iter_cache != scan_iter_cache_map_.end())
-    {
-        scan_iter_cache->second->Emplace(session_id, std::move(iter));
-    }
-}
-
-TTLWrapper *DataStoreService::BorrowScanIter(uint32_t shard_id,
-                                             const std::string &session_id)
-{
-    std::shared_lock<std::shared_mutex> lk(serv_mux_);
-    auto scan_iter_cache = scan_iter_cache_map_.find(shard_id);
-    if (scan_iter_cache != scan_iter_cache_map_.end())
-    {
-        auto *scan_iter_wrapper = scan_iter_cache->second->Borrow(session_id);
-        return scan_iter_wrapper;
-    }
-    return nullptr;
-}
-
-void DataStoreService::ReturnScanIter(uint32_t shard_id, TTLWrapper *iter)
-{
-    std::shared_lock<std::shared_mutex> lk(serv_mux_);
-    auto scan_iter_cache = scan_iter_cache_map_.find(shard_id);
-    if (scan_iter_cache != scan_iter_cache_map_.end())
-    {
-        scan_iter_cache->second->Return(iter);
-    }
-}
-
-void DataStoreService::EraseScanIter(uint32_t shard_id,
-                                     const std::string &session_id)
-{
-    std::shared_lock<std::shared_mutex> lk(serv_mux_);
-    auto scan_iter_cache = scan_iter_cache_map_.find(shard_id);
-    if (scan_iter_cache != scan_iter_cache_map_.end())
-    {
-        scan_iter_cache->second->Erase(session_id);
-    }
-}
-
-void DataStoreService::BatchWriteRecords(
-    uint32_t req_shard_id,
-    std::vector<EloqDS::remote::BatchWriteRecordsRequest::record> &&batch,
-    const std::string &kv_table_name,
-    std::function<void(const ::EloqDS::remote::CommonResult &result)> on_finish)
-{
-    auto shard_id = cluster_manager_.GetShardIdByKey("");
-    ::EloqDS::remote::CommonResult result;
-    if (req_shard_id != shard_id)
-    {
-        DLOG(INFO) << "====req_shard_id:" << req_shard_id
-                   << ",shard_id:" << shard_id;
-        cluster_manager_.PrepareShardingError(req_shard_id, shard_id, &result);
-        on_finish(result);
-        return;
-    }
-
-    auto shard_status = cluster_manager_.FetchDSShardStatus(shard_id);
-    DLOG(INFO) << "===shard_id:" << shard_id
-               << ",shard_status:" << (int) shard_status;
+    auto shard_status = FetchDSShardStatus(shard_id);
     if (shard_status != DSShardStatus::ReadWrite)
     {
-        if (cluster_manager_.FetchDSShardStatus(shard_id) ==
-            DSShardStatus::Closed)
-        {
-            DLOG(INFO) << "====shard:" << shard_id << ",closed";
-            cluster_manager_.PrepareShardingError(
-                req_shard_id, shard_id, &result);
-        }
-        else
-        {
-            assert(shard_status == DSShardStatus::ReadOnly);
-            result.set_error_code(
-                ::EloqDS::remote::DataStoreError::WRITE_TO_READ_ONLY_DB);
-            result.set_error_msg("Write to read-only DB.");
-        }
-        on_finish(result);
-        return;
-    }
-
-    std::shared_lock<std::shared_mutex> lk(serv_mux_);
-    if (!data_store_map_[shard_id])
-    {
-        ::EloqDS::remote::CommonResult result;
-        result.set_error_code(::EloqDS::remote::DataStoreError::DB_NOT_OPEN);
-        result.set_error_msg("KV store not opened yet.");
-        on_finish(result);
-        return;
-    }
-    data_store_map_[shard_id]->BatchWriteRecords(
-        req_shard_id, std::move(batch), kv_table_name, on_finish);
-}
-
-void DataStoreService::CkptEnd(
-    uint32_t req_shard_id,
-    const std::string &table_name,
-    std::function<void(const ::EloqDS::remote::CommonResult &result)> on_finish)
-{
-    auto shard_id = cluster_manager_.GetShardIdByKey("");
-    ::EloqDS::remote::CommonResult result;
-    if (req_shard_id != shard_id)
-    {
-        cluster_manager_.PrepareShardingError(req_shard_id, shard_id, &result);
-        on_finish(result);
-        return;
-    }
-
-    auto shard_status = cluster_manager_.FetchDSShardStatus(shard_id);
-    if (shard_status != DSShardStatus::ReadWrite)
-    {
+        brpc::ClosureGuard done_guard(done);
         if (shard_status == DSShardStatus::Closed)
         {
-            cluster_manager_.PrepareShardingError(
-                req_shard_id, shard_id, &result);
+            PrepareShardingError(partition_id, result);
         }
         else
         {
             assert(shard_status == DSShardStatus::ReadOnly);
-            result.set_error_code(
+            result->set_error_code(
                 ::EloqDS::remote::DataStoreError::WRITE_TO_READ_ONLY_DB);
-            result.set_error_msg("Write to read-only DB.");
+            result->set_error_msg("Write to read-only DB.");
         }
-        on_finish(result);
         return;
     }
 
     std::shared_lock<std::shared_mutex> lk(serv_mux_);
-    if (!data_store_map_[shard_id])
-    {
-        result.set_error_code(::EloqDS::remote::DataStoreError::DB_NOT_OPEN);
-        result.set_error_msg("KV store not opened yet.");
-        on_finish(result);
-        return;
-    }
-
-    data_store_map_[shard_id]->CkptEnd(req_shard_id, table_name, on_finish);
-}
-
-void DataStoreService::UpsertTable(
-    uint32_t req_shard_id,
-    const std::string table_name,
-    const std::string old_schema_img,
-    const std::string new_schema_img,
-    ::EloqDS::remote::UpsertTableOperationType op_type,
-    uint64_t commit_ts,
-    std::function<void(const ::EloqDS::remote::CommonResult &result)> on_finish)
-{
-    auto shard_id = cluster_manager_.GetShardIdByKey("");
-    ::EloqDS::remote::CommonResult result;
-    if (req_shard_id != shard_id)
-    {
-        cluster_manager_.PrepareShardingError(req_shard_id, shard_id, &result);
-        on_finish(result);
-        return;
-    }
-
-    auto shard_status = cluster_manager_.FetchDSShardStatus(shard_id);
-    if (shard_status != DSShardStatus::ReadWrite)
-    {
-        if (shard_status == DSShardStatus::Closed)
-        {
-            cluster_manager_.PrepareShardingError(
-                req_shard_id, shard_id, &result);
-        }
-        else
-        {
-            assert(shard_status == DSShardStatus::ReadOnly);
-            result.set_error_code(
-                ::EloqDS::remote::DataStoreError::WRITE_TO_READ_ONLY_DB);
-            result.set_error_msg("Write to read-only DB.");
-        }
-        on_finish(result);
-        return;
-    }
-
-    std::shared_lock<std::shared_mutex> lk(serv_mux_);
-    if (!data_store_map_[shard_id])
-    {
-        ::EloqDS::remote::CommonResult result;
-        result.set_error_code(::EloqDS::remote::DataStoreError::DB_NOT_OPEN);
-        result.set_error_msg("KV store not opened yet.");
-        on_finish(result);
-        return;
-    }
-
-    data_store_map_[shard_id]->UpsertTable(req_shard_id,
-                                           table_name,
-                                           old_schema_img,
-                                           new_schema_img,
-                                           op_type,
-                                           commit_ts,
-                                           on_finish);
-}
-
-void DataStoreService::ScanOpen(::google::protobuf::RpcController *controller,
-                                const ::EloqDS::remote::ScanRequest *request,
-                                ::EloqDS::remote::ScanResponse *response,
-                                ::google::protobuf::Closure *done)
-{
-    uint32_t req_shard_id = request->req_shard_id();
-    uint32_t shard_id = cluster_manager_.GetShardIdByKey("");
-    auto *result = response->mutable_result();
-    if (req_shard_id != shard_id || !cluster_manager_.IsOwnerOfShard(shard_id))
-    {
-        brpc::ClosureGuard done_guard(done);
-        cluster_manager_.PrepareShardingError(req_shard_id, shard_id, result);
-        DLOG(ERROR) << "Requested data not on local node.";
-        return;
-    }
-
-    std::shared_lock<std::shared_mutex> lk(serv_mux_);
-    auto shard_status = cluster_manager_.FetchDSShardStatus(shard_id);
-    // if shard is closed
-    if (shard_status != DSShardStatus::ReadWrite &&
-        shard_status != DSShardStatus::ReadOnly)
-    {
-        brpc::ClosureGuard done_guard(done);
-        cluster_manager_.PrepareShardingError(req_shard_id, shard_id, result);
-        return;
-    }
-
     if (!data_store_map_[shard_id])
     {
         brpc::ClosureGuard done_guard(done);
@@ -1017,21 +853,23 @@ void DataStoreService::ScanOpen(::google::protobuf::RpcController *controller,
         return;
     }
 
-    data_store_map_[shard_id]->ScanOpen(
-        *request,
-        [response, done](const ::EloqDS::remote::ScanResponse &resp)
-        {
-            brpc::ClosureGuard done_guard(done);
-            auto *resp_result = response->mutable_result();
-            *resp_result = resp.result();
-            response->set_session_id(resp.session_id());
-            for (const auto &it : resp.items())
-            {
-                auto *new_item = response->add_items();
-                new_item->set_key(std::move(it.key()));
-                new_item->set_value(std::move(it.value()));
-            }
-        });
+    ScanLocalRequest *req = local_scan_request_pool_.NextObject();
+    req->Reset(this,
+               table_name,
+               partition_id,
+               start_key,
+               end_key,
+               inclusive_start,
+               inclusive_end,
+               scan_forward,
+               batch_size,
+               search_conditions,
+               items,
+               session_id,
+               result,
+               done);
+
+    data_store_map_[shard_id]->ScanNext(req);
 }
 
 void DataStoreService::ScanNext(::google::protobuf::RpcController *controller,
@@ -1039,51 +877,42 @@ void DataStoreService::ScanNext(::google::protobuf::RpcController *controller,
                                 ::EloqDS::remote::ScanResponse *response,
                                 ::google::protobuf::Closure *done)
 {
-    uint32_t req_shard_id = request->req_shard_id();
-    uint32_t shard_id = cluster_manager_.GetShardIdByKey("");
-    auto *result = response->mutable_result();
-    if (req_shard_id != shard_id || !cluster_manager_.IsOwnerOfShard(shard_id))
+    uint32_t partition_id = request->partition_id();
+    uint32_t shard_id = GetShardIdByPartitionId(partition_id);
+
+    auto shard_status = FetchDSShardStatus(shard_id);
+    if (shard_status != DSShardStatus::ReadWrite)
     {
         brpc::ClosureGuard done_guard(done);
-        cluster_manager_.PrepareShardingError(req_shard_id, shard_id, result);
-        DLOG(ERROR) << "Requested data not on local node.";
+        if (shard_status == DSShardStatus::Closed)
+        {
+            PrepareShardingError(partition_id, response->mutable_result());
+        }
+        else
+        {
+            assert(shard_status == DSShardStatus::ReadOnly);
+            auto *result = response->mutable_result();
+            result->set_error_code(
+                ::EloqDS::remote::DataStoreError::WRITE_TO_READ_ONLY_DB);
+            result->set_error_msg("Write to read-only DB.");
+        }
         return;
     }
 
     std::shared_lock<std::shared_mutex> lk(serv_mux_);
-    auto shard_status = cluster_manager_.FetchDSShardStatus(shard_id);
-    // if shard is closed
-    if (shard_status != DSShardStatus::ReadWrite &&
-        shard_status != DSShardStatus::ReadOnly)
-    {
-        brpc::ClosureGuard done_guard(done);
-        cluster_manager_.PrepareShardingError(req_shard_id, shard_id, result);
-        return;
-    }
-
     if (!data_store_map_[shard_id])
     {
         brpc::ClosureGuard done_guard(done);
+        auto *result = response->mutable_result();
         result->set_error_code(::EloqDS::remote::DataStoreError::DB_NOT_OPEN);
         result->set_error_msg("KV store not opened yet.");
         return;
     }
 
-    data_store_map_[shard_id]->ScanNext(
-        *request,
-        [response, done](const ::EloqDS::remote::ScanResponse &resp)
-        {
-            brpc::ClosureGuard done_guard(done);
-            auto *resp_result = response->mutable_result();
-            *resp_result = resp.result();
-            response->set_session_id(resp.session_id());
-            for (const auto &it : resp.items())
-            {
-                auto *new_item = response->add_items();
-                new_item->set_key(std::move(it.key()));
-                new_item->set_value(std::move(it.value()));
-            }
-        });
+    ScanRpcRequest *req = rpc_scan_request_pool_.NextObject();
+    req->Reset(this, request, response, done);
+
+    data_store_map_[shard_id]->ScanNext(req);
 }
 
 void DataStoreService::ScanClose(::google::protobuf::RpcController *controller,
@@ -1091,74 +920,71 @@ void DataStoreService::ScanClose(::google::protobuf::RpcController *controller,
                                  ::EloqDS::remote::ScanResponse *response,
                                  ::google::protobuf::Closure *done)
 {
-    uint32_t req_shard_id = request->req_shard_id();
-    uint32_t shard_id = cluster_manager_.GetShardIdByKey("");
-    auto *result = response->mutable_result();
-    if (req_shard_id != shard_id || !cluster_manager_.IsOwnerOfShard(shard_id))
-    {
-        brpc::ClosureGuard done_guard(done);
-        cluster_manager_.PrepareShardingError(req_shard_id, shard_id, result);
-        DLOG(ERROR) << "Requested data not on local node.";
-        return;
-    }
+    uint32_t partition_id = request->partition_id();
+    uint32_t shard_id = GetShardIdByPartitionId(partition_id);
 
-    std::shared_lock<std::shared_mutex> lk(serv_mux_);
-    auto shard_status = cluster_manager_.FetchDSShardStatus(shard_id);
-    // if shard is closed
-    if (shard_status != DSShardStatus::ReadWrite &&
-        shard_status != DSShardStatus::ReadOnly)
-    {
-        brpc::ClosureGuard done_guard(done);
-        cluster_manager_.PrepareShardingError(req_shard_id, shard_id, result);
-        return;
-    }
-
-    if (!data_store_map_[shard_id])
-    {
-        brpc::ClosureGuard done_guard(done);
-        result->set_error_code(::EloqDS::remote::DataStoreError::DB_NOT_OPEN);
-        result->set_error_msg("KV store not opened yet.");
-        return;
-    }
-
-    data_store_map_[shard_id]->ScanClose(
-        *request,
-        [response, done](const ::EloqDS::remote::ScanResponse &resp)
-        {
-            brpc::ClosureGuard done_guard(done);
-            auto *resp_result = response->mutable_result();
-            *resp_result = resp.result();
-        });
-}
-
-void DataStoreService::CreateSnapshotForBackup(
-    ::google::protobuf::RpcController *controller,
-    const ::EloqDS::remote::CreateSnapshotRequest *request,
-    ::EloqDS::remote::CreateSnapshotResponse *response,
-    ::google::protobuf::Closure *done)
-{
-    uint32_t req_shard_id = request->req_shard_id();
-    uint32_t shard_id = cluster_manager_.GetShardIdByKey("");
-    auto *result = response->mutable_result();
-    if (req_shard_id != shard_id || !cluster_manager_.IsOwnerOfShard(shard_id))
-    {
-        brpc::ClosureGuard done_guard(done);
-        cluster_manager_.PrepareShardingError(req_shard_id, shard_id, result);
-        DLOG(ERROR) << "Requested data not on local node.";
-        return;
-    }
-
-    std::shared_lock<std::shared_mutex> lk(serv_mux_);
-    auto shard_status = cluster_manager_.FetchDSShardStatus(shard_id);
-    // snapshot is not allowed for closed shard or read-only shard(during
-    // migration)
+    auto shard_status = FetchDSShardStatus(shard_id);
     if (shard_status != DSShardStatus::ReadWrite)
     {
         brpc::ClosureGuard done_guard(done);
-        cluster_manager_.PrepareShardingError(req_shard_id, shard_id, result);
+        if (shard_status == DSShardStatus::Closed)
+        {
+            PrepareShardingError(partition_id, response->mutable_result());
+        }
+        else
+        {
+            assert(shard_status == DSShardStatus::ReadOnly);
+            auto *result = response->mutable_result();
+            result->set_error_code(
+                ::EloqDS::remote::DataStoreError::WRITE_TO_READ_ONLY_DB);
+            result->set_error_msg("Write to read-only DB.");
+        }
         return;
     }
 
+    std::shared_lock<std::shared_mutex> lk(serv_mux_);
+    if (!data_store_map_[shard_id])
+    {
+        brpc::ClosureGuard done_guard(done);
+        response->mutable_result()->set_error_code(
+            ::EloqDS::remote::DataStoreError::DB_NOT_OPEN);
+        response->mutable_result()->set_error_msg("KV store not opened yet.");
+        return;
+    }
+
+    ScanRpcRequest *req = rpc_scan_request_pool_.NextObject();
+    req->Reset(this, request, response, done);
+
+    data_store_map_[shard_id]->ScanClose(req);
+}
+
+void DataStoreService::ScanClose(const std::string_view table_name,
+                                 uint32_t partition_id,
+                                 std::string *session_id,
+                                 remote::CommonResult *result,
+                                 ::google::protobuf::Closure *done)
+{
+    uint32_t shard_id = GetShardIdByPartitionId(partition_id);
+
+    auto shard_status = FetchDSShardStatus(shard_id);
+    if (shard_status != DSShardStatus::ReadWrite)
+    {
+        brpc::ClosureGuard done_guard(done);
+        if (shard_status == DSShardStatus::Closed)
+        {
+            PrepareShardingError(partition_id, result);
+        }
+        else
+        {
+            assert(shard_status == DSShardStatus::ReadOnly);
+            result->set_error_code(
+                ::EloqDS::remote::DataStoreError::WRITE_TO_READ_ONLY_DB);
+            result->set_error_msg("Write to read-only DB.");
+        }
+        return;
+    }
+
+    std::shared_lock<std::shared_mutex> lk(serv_mux_);
     if (!data_store_map_[shard_id])
     {
         brpc::ClosureGuard done_guard(done);
@@ -1167,52 +993,12 @@ void DataStoreService::CreateSnapshotForBackup(
         return;
     }
 
-    // Check if the shard is in a valid state for backup, i.e., read-write mode.
-    // We don't want to backup during dss service migration, backup before
-    // migration. If the shard is in read-write mode, switch to read-only mode.
-    bool res = SwitchToReadOnly(shard_id, DSShardStatus::ReadWrite);
-    if (!res)
-    {
-        brpc::ClosureGuard done_guard(done);
-        auto status = cluster_manager_.FetchDSShardStatus(shard_id);
-        result->set_error_code(
-            ::EloqDS::remote::DataStoreError::STATUS_SWITCH_FAILED);
-        result->set_error_msg("Failed to switch to read-only mode. status: " +
-                              std::to_string(static_cast<int>(status)));
-        LOG(ERROR) << "Failed to switch to read-only mode. status: "
-                   << static_cast<int>(status);
-        return;
-    }
+    ScanLocalRequest *req = local_scan_request_pool_.NextObject();
+    req->Reset(this, table_name, partition_id, session_id, result, done);
 
-    const std::string &backup_name = request->backup_name();
-    data_store_map_[shard_id]->Backup(
-        req_shard_id,
-        backup_name,
-        [this, response, shard_id, done](
-            const ::EloqDS::remote::CreateSnapshotResponse &resp)
-        {
-            brpc::ClosureGuard done_guard(done);
-            bool res = SwitchToReadWrite(shard_id, DSShardStatus::ReadOnly);
-            if (!res)
-            {
-                LOG(WARNING) << "Failed to switch back to read-write mode "
-                                "after backup.";
-            }
-            auto *resp_result = response->mutable_result();
-            *resp_result = resp.result();
-            auto *snapshot_files = response->mutable_snapshot_files();
-            *snapshot_files = resp.snapshot_files();
-        });
+    data_store_map_[shard_id]->ScanClose(req);
 }
 
-DSShardStatus DataStoreService::FetchDSShardStatus(uint32_t shard_id)
-{
-    return cluster_manager_.FetchDSShardStatus(shard_id);
-}
-
-// =======================================================================
-// Group: External data store service for data scan
-// =======================================================================
 void DataStoreService::AppendThisNodeKey(std::stringstream &ss)
 {
     cluster_manager_.AppendThisNodeKey(ss);
@@ -1232,9 +1018,126 @@ std::string DataStoreService::GenerateSessionId()
     return ss.str();
 }
 
-// =======================================================================
-// Group: External data store service node management RPC interface
-// =======================================================================
+void DataStoreService::EmplaceScanIter(uint32_t shard_id,
+                                       std::string &session_id,
+                                       std::unique_ptr<TTLWrapper> iter)
+{
+    std::shared_lock<std::shared_mutex> lk(scan_iter_cache_map_mux_);
+    auto scan_iter_cache = scan_iter_cache_map_.find(shard_id);
+    if (scan_iter_cache != scan_iter_cache_map_.end())
+    {
+        scan_iter_cache->second->Emplace(session_id, std::move(iter));
+    }
+}
+
+TTLWrapper *DataStoreService::BorrowScanIter(uint32_t shard_id,
+                                             const std::string &session_id)
+{
+    std::shared_lock<std::shared_mutex> lk(scan_iter_cache_map_mux_);
+    auto scan_iter_cache = scan_iter_cache_map_.find(shard_id);
+    if (scan_iter_cache != scan_iter_cache_map_.end())
+    {
+        auto *scan_iter_wrapper = scan_iter_cache->second->Borrow(session_id);
+        return scan_iter_wrapper;
+    }
+    return nullptr;
+}
+
+void DataStoreService::ReturnScanIter(uint32_t shard_id, TTLWrapper *iter)
+{
+    std::shared_lock<std::shared_mutex> lk(scan_iter_cache_map_mux_);
+    auto scan_iter_cache = scan_iter_cache_map_.find(shard_id);
+    if (scan_iter_cache != scan_iter_cache_map_.end())
+    {
+        scan_iter_cache->second->Return(iter);
+    }
+}
+
+void DataStoreService::EraseScanIter(uint32_t shard_id,
+                                     const std::string &session_id)
+{
+    std::shared_lock<std::shared_mutex> lk(scan_iter_cache_map_mux_);
+    auto scan_iter_cache = scan_iter_cache_map_.find(shard_id);
+    if (scan_iter_cache != scan_iter_cache_map_.end())
+    {
+        scan_iter_cache->second->Erase(session_id);
+    }
+}
+
+void DataStoreService::ForceEraseScanIters(uint32_t shard_id)
+{
+    std::shared_lock<std::shared_mutex> lk(scan_iter_cache_map_mux_);
+    auto scan_iter_cache = scan_iter_cache_map_.find(shard_id);
+    if (scan_iter_cache != scan_iter_cache_map_.end())
+    {
+        scan_iter_cache->second->ForceEraseIters();
+    }
+}
+
+void DataStoreService::BatchWriteRecords(
+    std::string_view table_name,
+    int32_t partition_id,
+    const std::vector<std::string_view> &key_parts,
+    const std::vector<std::string_view> &record_parts,
+    const std::vector<uint64_t> &ts,
+    const std::vector<uint64_t> &ttl,
+    const std::vector<WriteOpType> &op_types,
+    bool skip_wal,
+    remote::CommonResult &result,
+    google::protobuf::Closure *done,
+    const uint16_t parts_cnt_per_key,
+    const uint16_t parts_cnt_per_record)
+{
+    uint32_t shard_id = GetShardIdByPartitionId(partition_id);
+
+    auto shard_status = cluster_manager_.FetchDSShardStatus(shard_id);
+    if (shard_status != DSShardStatus::ReadWrite)
+    {
+        brpc::ClosureGuard done_guard(done);
+        if (shard_status == DSShardStatus::Closed)
+        {
+            result.set_error_code(
+                ::EloqDS::remote::DataStoreError::REQUESTED_NODE_NOT_OWNER);
+            result.set_error_msg("Requested data not on local node.");
+        }
+        else
+        {
+            assert(shard_status == DSShardStatus::ReadOnly);
+            result.set_error_code(
+                ::EloqDS::remote::DataStoreError::WRITE_TO_READ_ONLY_DB);
+            result.set_error_msg("Write to read-only DB.");
+        }
+        return;
+    }
+
+    std::shared_lock<std::shared_mutex> lk(serv_mux_);
+    if (!data_store_map_[shard_id])
+    {
+        brpc::ClosureGuard done_guard(done);
+        result.set_error_code(::EloqDS::remote::DataStoreError::DB_NOT_OPEN);
+        result.set_error_msg("KV store not opened yet.");
+        return;
+    }
+
+    // TODO(lzx): fetch req from pool.
+    WriteRecordsLocalRequest *batch_write_req =
+        local_write_records_request_pool_.NextObject();
+    batch_write_req->Reset(table_name,
+                           partition_id,
+                           key_parts,
+                           record_parts,
+                           ts,
+                           ttl,
+                           op_types,
+                           skip_wal,
+                           result,
+                           done,
+                           parts_cnt_per_key,
+                           parts_cnt_per_record);
+
+    data_store_map_[shard_id]->BatchWriteRecords(batch_write_req);
+}
+
 void DataStoreService::FetchDSSClusterConfig(
     ::google::protobuf::RpcController *controller,
     const ::google::protobuf::Empty *request,
@@ -1886,8 +1789,8 @@ bool DataStoreService::DoMigrate(const std::string &event_id,
     {
         if (log_ptr->status > 3)
         {
-            // At step-3, this node has been removed from ds shard members and
-            // the change is also saved to ds config file.
+            // At step-3, this node has been removed from ds shard members
+            // and the change is also saved to ds config file.
             LOG(INFO) << "Migrate step#" << log_ptr->status
                       << ", skip checking data store connection for shard "
                       << log_ptr->shard_id;
@@ -1957,15 +1860,15 @@ bool DataStoreService::DoMigrate(const std::string &event_id,
                                                remote::DSShardStatus::READ_ONLY,
                                                new_ds_shard);
         // Only when there are more than one leader in different network
-        // partitions and this migration task sent to the older leader (version
-        // is less than target node), "NotifyTargetNodeOpenDSShard" will be
-        // failed for version mismatch.
-        // Now, we only peform migration between two nodes, that will not ocurr.
+        // partitions and this migration task sent to the older leader
+        // (version is less than target node), "NotifyTargetNodeOpenDSShard"
+        // will be failed for version mismatch. Now, we only peform
+        // migration between two nodes, that will not ocurr.
         assert(res);
         if (!res)
         {
-            LOG(ERROR)
-                << "Failed to notify target node to open DB in read-only mode";
+            LOG(ERROR) << "Failed to notify target node to open DB in "
+                          "read-only mode";
             return false;
         }
         log.status = 3;
@@ -2013,10 +1916,10 @@ bool DataStoreService::DoMigrate(const std::string &event_id,
         bool res = NotifyNodesUpdateDSShardConfig(
             nodes, cluster_manager_.GetShard(log.shard_id));
         // Only when there are more than one leader in different network
-        // partitions and this migration task sent to the older leader (version
-        // is less than target node), "NotifyTargetNodeOpenDSShard" will be
-        // failed for version mismatch.
-        // Now, we only peform migration between two nodes, that will not ocurr.
+        // partitions and this migration task sent to the older leader
+        // (version is less than target node), "NotifyTargetNodeOpenDSShard"
+        // will be failed for version mismatch. Now, we only peform
+        // migration between two nodes, that will not ocurr.
         assert(res);
         if (!res)
         {
@@ -2048,14 +1951,14 @@ bool DataStoreService::DoMigrate(const std::string &event_id,
             log.shard_id,
             log.shard_next_version,
             remote::DSShardStatus::READ_WRITE);
-        // Only when the mode of target node is not ReadOnly, SwitchDsShardMode
-        // will be failed. At step-2, the target node was opened with ReadOnly
-        // mode, this step should not fail.
+        // Only when the mode of target node is not ReadOnly,
+        // SwitchDsShardMode will be failed. At step-2, the target node was
+        // opened with ReadOnly mode, this step should not fail.
         assert(res);
         if (!res)
         {
-            LOG(ERROR)
-                << "Failed to notify target node to switch to read-write mode";
+            LOG(ERROR) << "Failed to notify target node to switch to "
+                          "read-write mode";
             return false;
         }
         LOG(INFO) << "Target node switched to read-write mode successfully";
@@ -2126,6 +2029,10 @@ bool DataStoreService::NotifyTargetNodeOpenDSShard(
         {
             std::this_thread::sleep_for(
                 std::chrono::milliseconds(std::min(2000U, 200U * retry_cnt)));
+        }
+        else if (cntl.ErrorCode() == EHOSTDOWN)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(500U));
         }
         else
         {
@@ -2244,14 +2151,18 @@ bool DataStoreService::NotifyTargetNodeSwitchDSShardMode(
     while (cntl.Failed())
     {
         LOG(ERROR) << "Error " << cntl.ErrorCode() << ", " << cntl.ErrorText();
-        LOG(INFO)
-            << "Failed to notify target node to switch mode to RW , retry...";
+        LOG(INFO) << "Failed to notify target node to switch mode to RW , "
+                     "retry...";
 
         if (cntl.ErrorCode() == brpc::EOVERCROWDED ||
             cntl.ErrorCode() == EAGAIN ||
             cntl.ErrorCode() == brpc::ERPCTIMEDOUT)
         {
             std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+        }
+        else if (cntl.ErrorCode() == EHOSTDOWN)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(500U));
         }
         else
         {
@@ -2350,15 +2261,21 @@ bool DataStoreService::NotifyNodesUpdateDSShardConfig(
         {
             if (cntl_it->Failed())
             {
-                LOG(INFO)
-                    << "Failed to notify node update config for shard , error "
-                    << cntl_it->ErrorCode() << ", " << cntl_it->ErrorText();
+                LOG(INFO) << "Failed to notify node update config for shard , "
+                             "error "
+                          << cntl_it->ErrorCode() << ", "
+                          << cntl_it->ErrorText();
                 // retry
                 if (cntl_it->ErrorCode() == brpc::EOVERCROWDED ||
                     cntl_it->ErrorCode() == EAGAIN ||
                     cntl_it->ErrorCode() == brpc::ERPCTIMEDOUT)
                 {
                     std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                }
+                else if (cntl_it->ErrorCode() == EHOSTDOWN)
+                {
+                    std::this_thread::sleep_for(
+                        std::chrono::milliseconds(500U));
                 }
                 else
                 {
@@ -2370,8 +2287,8 @@ bool DataStoreService::NotifyNodesUpdateDSShardConfig(
                         // retry to UpdateDataStoreServiceChannel()
                         std::this_thread::sleep_for(
                             std::chrono::milliseconds(100));
-                        LOG(INFO)
-                            << "UpdateDataStoreServiceChannel failed, retry.";
+                        LOG(INFO) << "UpdateDataStoreServiceChannel "
+                                     "failed, retry.";
                         *channel_it =
                             cluster_manager_.UpdateDataStoreServiceChannel(
                                 *(*node_it));
@@ -2424,5 +2341,5 @@ void DataStoreService::CleanupOldMigrateLogs()
         }
     }
 }
-#endif
+
 }  // namespace EloqDS

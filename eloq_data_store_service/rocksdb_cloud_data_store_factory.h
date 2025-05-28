@@ -26,11 +26,8 @@
 
 #include "data_store.h"
 #include "data_store_factory.h"
-#include "rocksdb_cloud_config.h"
 #include "rocksdb_cloud_data_store.h"
 #include "rocksdb_config.h"
-
-#ifdef KV_DATA_STORE_TYPE_ROCKSDB
 
 namespace EloqDS
 {
@@ -39,15 +36,11 @@ class RocksDBCloudDataStoreFactory : public DataStoreFactory
 {
 public:
     RocksDBCloudDataStoreFactory(
-        const ::EloqShare::RocksDBConfig &config,
-#if ROCKSDB_CLOUD_FS()
-        const ::EloqShare::RocksDBCloudConfig &cloud_config,
-#endif
-        const std::vector<TableName> &pre_built_tables,
+        const ::EloqDS::RocksDBConfig &config,
+        const ::EloqDS::RocksDBCloudConfig &cloud_config,
         bool tx_enable_cache_replacement)
         : config_(config),
           cloud_config_(cloud_config),
-          pre_built_tables_(pre_built_tables),
           tx_enable_cache_replacement_(tx_enable_cache_replacement)
     {
     }
@@ -65,11 +58,9 @@ public:
             tx_enable_cache_replacement_,
             shard_id,
             data_store_service);
-        for (const auto &table_name : pre_built_tables_)
-        {
-            ds->AppendPreBuiltTable(table_name);
-        }
-        ds->Connect();
+
+        ds->Initialize();
+
         if (start_db)
         {
             bool ret = ds->StartDB();
@@ -84,14 +75,9 @@ public:
     }
 
 private:
-    ::EloqShare::RocksDBConfig config_;
-#if ROCKSDB_CLOUD_FS()
-    ::EloqShare::RocksDBCloudConfig cloud_config_;
-#endif
-    std::vector<TableName> pre_built_tables_;
+    ::EloqDS::RocksDBConfig config_;
+    ::EloqDS::RocksDBCloudConfig cloud_config_;
     bool tx_enable_cache_replacement_;
 };
 
 }  // namespace EloqDS
-
-#endif

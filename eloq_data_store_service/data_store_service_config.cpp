@@ -222,6 +222,17 @@ const DSSNode &Topology::GetPrimaryNode(uint32_t shardIndex) const
     return shards_.at(shardIndex).nodes_.front();
 }
 
+bool Topology::IsMemberOfShard(const DSSNode &node, uint32_t shardIndex) const
+{
+    auto it = shards_.find(shardIndex);
+    if (it != shards_.end())
+    {
+        const auto &nodes = it->second.nodes_;
+        return std::find(nodes.begin(), nodes.end(), node) != nodes.end();
+    }
+    return false;
+}
+
 std::vector<uint32_t> Topology::GetShardsForNode(const DSSNode &node) const
 {
     std::vector<uint32_t> result;
@@ -535,10 +546,24 @@ void DataStoreServiceClusterManager::UpdatePrimaryNode(uint32_t shard_id,
 }
 
 std::shared_ptr<brpc::Channel>
-DataStoreServiceClusterManager::GetDataStoreServiceChannelByShardId(
-    uint32_t shard_id)
+DataStoreServiceClusterManager::GetDataStoreServiceChannelByPartitionId(
+    uint32_t partition_id)
 {
     std::shared_lock<std::shared_mutex> lk(mutex_);
+    uint32_t shard_id = sharding_algorithm_->PartitionToShardId(partition_id);
+    return GetDataStoreServiceChannelByShardId(shard_id, &lk);
+}
+
+std::shared_ptr<brpc::Channel>
+DataStoreServiceClusterManager::GetDataStoreServiceChannelByShardId(
+    uint32_t shard_id, std::shared_lock<std::shared_mutex> *existing_lock)
+{
+    std::shared_lock<std::shared_mutex> local_lock;
+    if (!existing_lock)
+    {
+        local_lock = std::shared_lock<std::shared_mutex>(mutex_);
+    }
+
     const DSSNode &node = topology_.GetPrimaryNode(shard_id);
 
     auto it = node_channel_map_.find(node);
@@ -547,7 +572,14 @@ DataStoreServiceClusterManager::GetDataStoreServiceChannelByShardId(
         return it->second;
     }
 
-    lk.unlock();
+    if (existing_lock)
+    {
+        existing_lock->unlock();
+    }
+    else
+    {
+        local_lock.unlock();
+    }
     std::unique_lock<std::shared_mutex> guard(mutex_);
     // double check to avoid double initialization
     it = node_channel_map_.find(node);
@@ -602,10 +634,24 @@ DataStoreServiceClusterManager::GetDataStoreServiceChannel(const DSSNode &node)
 }
 
 std::shared_ptr<brpc::Channel>
-DataStoreServiceClusterManager::UpdateDataStoreServiceChannelByShardId(
-    uint32_t shard_id)
+DataStoreServiceClusterManager::UpdateDataStoreServiceChannelByPartitionId(
+    uint32_t partition_id)
 {
-    std::unique_lock<std::shared_mutex> guard(mutex_);
+    std::unique_lock<std::shared_mutex> lk(mutex_);
+    uint32_t shard_id = sharding_algorithm_->PartitionToShardId(partition_id);
+    return UpdateDataStoreServiceChannelByShardId(shard_id, &lk);
+}
+
+std::shared_ptr<brpc::Channel>
+DataStoreServiceClusterManager::UpdateDataStoreServiceChannelByShardId(
+    uint32_t shard_id, std::unique_lock<std::shared_mutex> *existing_lock)
+{
+    std::unique_lock<std::shared_mutex> local_lock;
+    if (!existing_lock)
+    {
+        local_lock = std::unique_lock<std::shared_mutex>(mutex_);
+    }
+
     const DSSNode &node = topology_.GetPrimaryNode(shard_id);
     auto channel = std::make_shared<brpc::Channel>();
     if (channel->Init(node.host_name_.c_str(), node.port_, nullptr) != 0)
@@ -637,17 +683,24 @@ DataStoreServiceClusterManager::UpdateDataStoreServiceChannel(
     return channel;
 }
 
-bool DataStoreServiceClusterManager::IsOwnerOfShard(int shard_id,
+bool DataStoreServiceClusterManager::IsOwnerOfShard(uint32_t shard_id,
                                                     uint64_t *shard_version)
 {
     std::shared_lock<std::shared_mutex> lk(mutex_);
     // bool is_owner = topology_.IsOwnerOfShard(shard_id);
     bool is_owner = topology_.GetPrimaryNode(shard_id) == this_node_;
-    if (is_owner && shard_version)
+    if (is_owner && shard_version != nullptr)
     {
         *shard_version = topology_.FetchDSShardVersion(shard_id);
     }
     return is_owner;
+}
+
+bool DataStoreServiceClusterManager::IsMemberOfShard(const DSSNode &node,
+                                                     uint32_t shard_id)
+{
+    std::shared_lock<std::shared_mutex> lk(mutex_);
+    return topology_.IsMemberOfShard(node, shard_id);
 }
 
 uint64_t DataStoreServiceClusterManager::GetTopologyVersion() const
@@ -742,20 +795,24 @@ void DataStoreServiceClusterManager::AppendThisNodeKey(
     ss << this_node_.host_name_ << ":" << this_node_.port_;
 }
 
-DSSNode DataStoreServiceClusterManager::GetDSSNodeByKey(
-    const std::string &key) const
+uint32_t DataStoreServiceClusterManager::GetShardIdByPartitionId(
+    const uint32_t partition_id)
 {
     std::shared_lock<std::shared_mutex> lk(mutex_);
-    uint32_t dss_shard_id =
-        sharding_algorithm_->KeyToShardId(key, topology_.GetAllShards());
-    return topology_.GetPrimaryNode(dss_shard_id);
+    return sharding_algorithm_->PartitionToShardId(partition_id);
 }
 
-const uint32_t DataStoreServiceClusterManager::GetShardIdByKey(
-    const std::string &key)
+bool DataStoreServiceClusterManager::IsOwnerOfPartition(int32_t partition_id,
+                                                        uint64_t *shard_version)
 {
     std::shared_lock<std::shared_mutex> lk(mutex_);
-    return sharding_algorithm_->KeyToShardId(key, topology_.GetAllShards());
+    uint32_t shard_id = sharding_algorithm_->PartitionToShardId(partition_id);
+    bool is_owner = topology_.GetPrimaryNode(shard_id) == this_node_;
+    if (is_owner && shard_version != nullptr)
+    {
+        *shard_version = topology_.FetchDSShardVersion(shard_id);
+    }
+    return is_owner;
 }
 
 bool DataStoreServiceClusterManager::SwitchShardToClosed(uint32_t shard_id,
@@ -841,9 +898,7 @@ bool DataStoreServiceClusterManager::SwitchShardToReadOnly(
 }
 
 void DataStoreServiceClusterManager::PrepareShardingError(
-    uint32_t req_shard_id,
-    uint32_t shard_id,
-    ::EloqDS::remote::CommonResult *result)
+    uint32_t shard_id, ::EloqDS::remote::CommonResult *result)
 {
     std::shared_lock<std::shared_mutex> lk(mutex_);
 
@@ -852,7 +907,7 @@ void DataStoreServiceClusterManager::PrepareShardingError(
     DLOG(INFO) << "=====PrepareShardingError";
     result->set_error_msg("Requested data not on local node.");
     auto *key_sharding_changed_message = result->mutable_new_key_sharding();
-    if (req_shard_id != shard_id)
+    if (IsMemberOfShard(this_node_, shard_id))
     {
         // Node group changed - send full cluster config
         key_sharding_changed_message->set_type(

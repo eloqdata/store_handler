@@ -24,16 +24,17 @@
 #include <string>
 
 #include "INIReader.h"
-#include "store_handler/kv_store.h"
 
-#if ROCKSDB_CLOUD_FS()
+#if (defined(DATA_STORE_TYPE_ELOQDSS_ROCKSDB_CLOUD_S3) ||                      \
+     defined(DATA_STORE_TYPE_ELOQDSS_ROCKSDB_CLOUD_GCS))
 #include "rocksdb/cloud/db_cloud.h"
 #endif
 
-namespace EloqShare
+namespace EloqDS
 {
 struct RocksDBConfig
 {
+    RocksDBConfig() = default;
     explicit RocksDBConfig(const INIReader &config_reader,
                            const std::string &eloq_data_path);
     RocksDBConfig(const RocksDBConfig &) = default;
@@ -65,13 +66,14 @@ struct RocksDBConfig
     size_t batch_write_size_;
     size_t periodic_compaction_seconds_;
     std::string dialy_offpeak_time_utc_;
-    size_t snapshot_sync_worker_num_;
 };
 
-#if ROCKSDB_CLOUD_FS()
+#if (defined(DATA_STORE_TYPE_ELOQDSS_ROCKSDB_CLOUD_S3) ||                      \
+     defined(DATA_STORE_TYPE_ELOQDSS_ROCKSDB_CLOUD_GCS))
 
 struct RocksDBCloudConfig
 {
+    RocksDBCloudConfig() = default;
     explicit RocksDBCloudConfig(const INIReader &config);
 
     RocksDBCloudConfig(const RocksDBCloudConfig &) = default;
@@ -94,11 +96,11 @@ inline rocksdb::Status NewCloudFileSystem(
 {
     rocksdb::Status status;
     // Create a cloud file system
-#if (ROCKSDB_CLOUD_FS_TYPE == ROCKSDB_CLOUD_FS_TYPE_S3)
+#if defined(DATA_STORE_TYPE_ELOQDSS_ROCKSDB_CLOUD_S3)
     // AWS s3 file system
     status = rocksdb::CloudFileSystemEnv::NewAwsFileSystem(
         rocksdb::FileSystem::Default(), cfs_options, nullptr, cfs);
-#elif (ROCKSDB_CLOUD_FS_TYPE == ROCKSDB_CLOUD_FS_TYPE_GCS)
+#elif defined(DATA_STORE_TYPE_ELOQDSS_ROCKSDB_CLOUD_GCS)
     // Google cloud storage file system
     status = rocksdb::CloudFileSystemEnv::NewGcpFileSystem(
         rocksdb::FileSystem::Default(), cfs_options, nullptr, cfs);
@@ -106,4 +108,4 @@ inline rocksdb::Status NewCloudFileSystem(
     return status;
 };
 #endif
-}  // namespace EloqShare
+}  // namespace EloqDS

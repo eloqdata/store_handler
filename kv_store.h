@@ -23,7 +23,10 @@
 
 #include <cassert>
 #include <cstdint>
+#include <iomanip>
+#include <iostream>
 #include <memory>
+#include <sstream>
 #include <string>
 
 #include "tx_key.h"
@@ -36,6 +39,10 @@
     (defined(ROCKSDB_CLOUD_FS_TYPE) &&                                         \
      (ROCKSDB_CLOUD_FS_TYPE == ROCKSDB_CLOUD_FS_TYPE_S3 ||                     \
       ROCKSDB_CLOUD_FS_TYPE == ROCKSDB_CLOUD_FS_TYPE_GCS))
+
+#define ELOQDS()                                                               \
+    (defined(DATA_STORE_TYPE_ELOQDSS_ROCKSDB_CLOUD_S3) ||                      \
+     defined(DATA_STORE_TYPE_ELOQDSS_ROCKSDB_CLOUD_GCS))
 
 namespace EloqDS
 {
@@ -144,5 +151,26 @@ static inline void DeserializeSchemaImage(const std::string &image,
     offset += len_val;
 
     assert(offset == image.length());
+}
+
+static inline std::string stringToHex(const std::string &input)
+{
+    std::ostringstream oss;
+    for (unsigned char c : input)
+    {
+        oss << std::hex << std::setw(2) << std::setfill('0')
+            << static_cast<int>(c);
+    }
+    return oss.str();
+}
+static inline std::string stringToHex(const std::string_view &input)
+{
+    std::ostringstream oss;
+    for (unsigned char c : input)
+    {
+        oss << std::hex << std::setw(2) << std::setfill('0')
+            << static_cast<int>(c);
+    }
+    return oss.str();
 }
 }  // namespace EloqDS

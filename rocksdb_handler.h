@@ -40,7 +40,7 @@
 #include "cc_shard.h"
 #include "error_messages.h"
 #include "kv_store.h"
-
+#include "rocksdb/compaction_filter.h"
 #if ROCKSDB_CLOUD_FS()
 #include "rocksdb/cloud/db_cloud.h"
 #else
@@ -55,7 +55,167 @@
 namespace EloqKV
 {
 
-class RocksDBHandlerImpl;
+class TTLCompactionFilter : public rocksdb::CompactionFilter
+{
+public:
+    bool Filter(int level,
+                const rocksdb::Slice &key,
+                const rocksdb::Slice &existing_value,
+                std::string *new_value,
+                bool *value_changed) const override
+    {
+        // Ensure the value contains enough bytes to decode object type and the
+        // ttl
+        assert(existing_value.size() >=
+               (1 /*delete*/ + sizeof(int64_t) /*commit_ts*/));
+
+        bool is_deleted = existing_value[0];
+
+        // Check if the 10th byte of the value matches
+        // RedisObjectType::TTL*
+        if (!existing_value.empty() && !is_deleted)
+        {
+            assert(existing_value.size() > 10);
+            EloqKV::RedisObjectType obj_type =
+                static_cast<EloqKV::RedisObjectType>(existing_value[9]);
+            if (obj_type == EloqKV::RedisObjectType::TTLString ||
+                obj_type == EloqKV::RedisObjectType::TTLList ||
+                obj_type == EloqKV::RedisObjectType::TTLHash ||
+                obj_type == EloqKV::RedisObjectType::TTLZset ||
+                obj_type == EloqKV::RedisObjectType::TTLSet)
+            {
+                assert(existing_value.size() >=
+                       (10 + sizeof(uint64_t) /*ttl*/));
+                uint64_t ttl;
+                std::memcpy(&ttl, existing_value.data() + 10, sizeof(uint64_t));
+
+                // Get the current timestamp in microseconds
+                auto current_timestamp =
+                    txservice::LocalCcShards::ClockTsInMillseconds();
+
+                // Check if the timestamp is smaller than the current timestamp
+                if (ttl < current_timestamp)
+                {
+                    return true;  // Mark the key for deletion
+                }
+            }
+        }
+
+        return false;  // Keep the key
+    }
+
+    const char *Name() const override
+    {
+        return "TTLCompactionFilter";
+    }
+};
+
+// RocksDBEventListener is used to listen the flush event of RocksDB for
+// recording unexpected write slow and stall when flushing
+class RocksDBEventListener : public rocksdb::EventListener
+{
+public:
+    void OnCompactionBegin(rocksdb::DB *db,
+                           const rocksdb::CompactionJobInfo &ci) override
+    {
+        DLOG(INFO) << "Compaction begin, job_id: " << ci.job_id
+                   << " ,thread: " << ci.thread_id
+                   << " ,output_level: " << ci.output_level
+                   << " ,input_files_size: " << ci.input_files.size()
+                   << " ,compaction_reason: "
+                   << static_cast<int>(ci.compaction_reason);
+    }
+
+    void OnCompactionCompleted(rocksdb::DB *db,
+                               const rocksdb::CompactionJobInfo &ci) override
+    {
+        DLOG(INFO) << "Compaction end, job_id: " << ci.job_id
+                   << " ,thread: " << ci.thread_id
+                   << " ,output_level: " << ci.output_level
+                   << " ,input_files_size: " << ci.input_files.size()
+                   << " ,compaction_reason: "
+                   << static_cast<int>(ci.compaction_reason);
+    }
+
+    void OnFlushBegin(rocksdb::DB *db,
+                      const rocksdb::FlushJobInfo &flush_job_info) override
+    {
+        if (flush_job_info.triggered_writes_slowdown ||
+            flush_job_info.triggered_writes_stop)
+        {
+            LOG(INFO) << "Flush begin, file: " << flush_job_info.file_path
+                      << " ,job_id: " << flush_job_info.job_id
+                      << " ,thread: " << flush_job_info.thread_id
+                      << " ,file_number: " << flush_job_info.file_number
+                      << " ,triggered_writes_slowdown: "
+                      << flush_job_info.triggered_writes_slowdown
+                      << " ,triggered_writes_stop: "
+                      << flush_job_info.triggered_writes_stop
+                      << " ,smallest_seqno: " << flush_job_info.smallest_seqno
+                      << " ,largest_seqno: " << flush_job_info.largest_seqno
+                      << " ,flush_reason: "
+                      << GetFlushReason(flush_job_info.flush_reason);
+        }
+    }
+
+    void OnFlushCompleted(rocksdb::DB *db,
+                          const rocksdb::FlushJobInfo &flush_job_info) override
+    {
+        if (flush_job_info.triggered_writes_slowdown ||
+            flush_job_info.triggered_writes_stop)
+        {
+            LOG(INFO) << "Flush end, file: " << flush_job_info.file_path
+                      << " ,job_id: " << flush_job_info.job_id
+                      << " ,thread: " << flush_job_info.thread_id
+                      << " ,file_number: " << flush_job_info.file_number
+                      << " ,triggered_writes_slowdown: "
+                      << flush_job_info.triggered_writes_slowdown
+                      << " ,triggered_writes_stop: "
+                      << flush_job_info.triggered_writes_stop
+                      << " ,smallest_seqno: " << flush_job_info.smallest_seqno
+                      << " ,largest_seqno: " << flush_job_info.largest_seqno
+                      << " ,flush_reason: "
+                      << GetFlushReason(flush_job_info.flush_reason);
+        }
+    }
+
+    std::string GetFlushReason(rocksdb::FlushReason flush_reason)
+    {
+        switch (flush_reason)
+        {
+        case rocksdb::FlushReason::kOthers:
+            return "kOthers";
+        case rocksdb::FlushReason::kGetLiveFiles:
+            return "kGetLiveFiles";
+        case rocksdb::FlushReason::kShutDown:
+            return "kShutDown";
+        case rocksdb::FlushReason::kExternalFileIngestion:
+            return "kExternalFileIngestion";
+        case rocksdb::FlushReason::kManualCompaction:
+            return "kManualCompaction";
+        case rocksdb::FlushReason::kWriteBufferManager:
+            return "kWriteBufferManager";
+        case rocksdb::FlushReason::kWriteBufferFull:
+            return "kWriteBufferFull";
+        case rocksdb::FlushReason::kTest:
+            return "kTest";
+        case rocksdb::FlushReason::kDeleteFiles:
+            return "kDeleteFiles";
+        case rocksdb::FlushReason::kAutoCompaction:
+            return "kAutoCompaction";
+        case rocksdb::FlushReason::kManualFlush:
+            return "kManualFlush";
+        case rocksdb::FlushReason::kErrorRecovery:
+            return "kErrorRecovery";
+        case rocksdb::FlushReason::kErrorRecoveryRetryFlush:
+            return "kErrorRecoveryRetryFlush";
+        case rocksdb::FlushReason::kWalFull:
+            return "kWalFull";
+        default:
+            return "unknown";
+        }
+    }
+};
 
 struct RocksDBCatalogInfo : public txservice::KVCatalogInfo
 {
@@ -121,6 +281,11 @@ public:
                  uint32_t node_group,
                  uint64_t version) override;
 
+    bool NeedCkptEnd() override
+    {
+        return true;
+    }
+
     void UpsertTable(
         const txservice::TableSchema *old_table_schema,
         const txservice::TableSchema *new_table_schema,
@@ -168,6 +333,7 @@ public:
         const txservice::TableSchema *table_schema) override;
 
     bool GetNextRangePartitionId(const txservice::TableName &tablename,
+                                 const txservice::TableSchema *table_schema,
                                  uint32_t range_cnt,
                                  int32_t &out_next_partition_id,
                                  int retry_count) override;
@@ -233,31 +399,31 @@ public:
     bool FetchTable(const txservice::TableName &table_name,
                     std::string &schema_image,
                     bool &found,
-                    uint64_t &version_ts) const override;
+                    uint64_t &version_ts) override;
 
     bool DiscoverAllTableNames(
         std::vector<std::string> &norm_name_vec,
         const std::function<void()> *yield_fptr = nullptr,
-        const std::function<void()> *resume_fptr = nullptr) const override;
+        const std::function<void()> *resume_fptr = nullptr) override;
 
     //-- database
     bool UpsertDatabase(std::string_view db,
-                        std::string_view definition) const override;
-    bool DropDatabase(std::string_view db) const override;
+                        std::string_view definition) override;
+    bool DropDatabase(std::string_view db) override;
     bool FetchDatabase(
         std::string_view db,
         std::string &definition,
         bool &found,
         const std::function<void()> *yield_fptr = nullptr,
-        const std::function<void()> *resume_fptr = nullptr) const override;
+        const std::function<void()> *resume_fptr = nullptr) override;
     bool FetchAllDatabase(
         std::vector<std::string> &dbnames,
         const std::function<void()> *yield_fptr = nullptr,
-        const std::function<void()> *resume_fptr = nullptr) const override;
+        const std::function<void()> *resume_fptr = nullptr) override;
 
-    bool DropKvTable(const std::string &kv_table_name) const override;
+    bool DropKvTable(const std::string &kv_table_name) override;
 
-    void DropKvTableAsync(const std::string &kv_table_name) const override;
+    void DropKvTableAsync(const std::string &kv_table_name) override;
 
     void SetTxService(txservice::TxService *tx_service);
 
@@ -355,6 +521,9 @@ protected:
 #else
     virtual rocksdb::DB *GetDBPtr() const = 0;
 #endif
+
+    rocksdb::InfoLogLevel StringToInfoLogLevel(
+        const std::string &log_level_str);
 
     rocksdb::InfoLogLevel info_log_level_;
     const bool enable_stats_;
@@ -494,8 +663,7 @@ private:
     std::shared_ptr<rocksdb::FileSystem> cloud_fs_;
     std::unique_ptr<rocksdb::Env> cloud_env_;
     rocksdb::DBCloud *db_;
-    std::unique_ptr<EloqShare::TTLCompactionFilter> ttl_compaction_filter_{
-        nullptr};
+    std::unique_ptr<TTLCompactionFilter> ttl_compaction_filter_{nullptr};
 };
 
 #else
@@ -545,13 +713,13 @@ private:
 
     bool OverrideDB(const std::string &new_snapshot_path);
     rocksdb::DB *db_{nullptr};
-    std::unique_ptr<EloqShare::TTLCompactionFilter> ttl_compaction_filter_{
+    std::unique_ptr<EloqKV::TTLCompactionFilter> ttl_compaction_filter_{
         nullptr};
     std::unique_ptr<txservice::TxWorkerPool> rsync_task_pool_{nullptr};
 
     friend class RocksdbSnapshotCopier;
 };
 
-#endif
+#endif  // ROCKSDB_CLOUD_FS()
 
 }  // namespace EloqKV

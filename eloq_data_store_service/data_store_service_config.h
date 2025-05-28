@@ -104,8 +104,7 @@ public:
     ShardingAlgorithm() = default;
     virtual ~ShardingAlgorithm() = default;
 
-    virtual uint32_t KeyToShardId(
-        const std::string &key, const std::map<uint32_t, DSShard> &shards) const
+    virtual uint32_t PartitionToShardId(uint32_t partition_id) const
     {
         return 0;
     }
@@ -216,7 +215,16 @@ public:
      * @param groupIndex The group index.
      * @return The primary node of the group.
      */
-    const DSSNode &GetPrimaryNode(uint32_t groupIndex) const;
+    const DSSNode &GetPrimaryNode(uint32_t shardIndex) const;
+
+    /**
+     * @brief Check if the specified node is a member of the specified node
+     * group.
+     * @param node The node to check.
+     * @param shard_id The node group ID.
+     * @return True if the node is a member of the group, false otherwise.
+     */
+    bool IsMemberOfShard(const DSSNode &node, uint32_t shardIndex) const;
 
     /**
      * @brief Returns the shard for a specific shard index.
@@ -408,11 +416,14 @@ public:
     /**
      * @brief Returns if this node is the owner of a specific node group.
      */
-    bool IsOwnerOfShard(int shard_id, uint64_t *shard_version = nullptr);
+    bool IsOwnerOfShard(uint32_t shard_id, uint64_t *shard_version = nullptr);
 
     /**
-     * @brief Returns the shard members for the specified shard.
+     * @brief Returns if the specified node is a member of the specified node
+     * group.
      */
+    bool IsMemberOfShard(const DSSNode &node, uint32_t shard_id);
+
     uint64_t GetTopologyVersion() const;
 
     bool UpdateShardMembers(uint32_t shard_id,
@@ -443,24 +454,34 @@ public:
      */
     void AppendThisNodeKey(std::stringstream &ss) const;
 
-    DSSNode GetDSSNodeByKey(const std::string &key) const;
+    uint32_t GetShardIdByPartitionId(const uint32_t partition_id);
 
-    const uint32_t GetShardIdByKey(const std::string &key);
+    /**
+     * @brief Returns if this node is the owner of a specific node group
+     *  that the partition belongs to.
+     */
+    bool IsOwnerOfPartition(int32_t partition_id,
+                            uint64_t *shard_version = nullptr);
 
     bool SwitchShardToReadOnly(uint32_t shard_id, DSShardStatus expected);
     bool SwitchShardToReadWrite(uint32_t shard_id, DSShardStatus expected);
     bool SwitchShardToClosed(uint32_t shard_id, DSShardStatus expected);
 
-    void PrepareShardingError(uint32_t req_shard_id,
-                              uint32_t shard_id,
+    void PrepareShardingError(uint32_t shard_id,
                               ::EloqDS::remote::CommonResult *result);
 
     void HandleShardingError(const ::EloqDS::remote::CommonResult &result);
 
+    std::shared_ptr<brpc::Channel> GetDataStoreServiceChannelByPartitionId(
+        uint32_t partition_id);
     std::shared_ptr<brpc::Channel> GetDataStoreServiceChannelByShardId(
-        uint32_t shard_id);
+        uint32_t shard_id,
+        std::shared_lock<std::shared_mutex> *existing_lock = nullptr);
+    std::shared_ptr<brpc::Channel> UpdateDataStoreServiceChannelByPartitionId(
+        uint32_t partition_id);
     std::shared_ptr<brpc::Channel> UpdateDataStoreServiceChannelByShardId(
-        uint32_t shard_id);
+        uint32_t shard_id,
+        std::unique_lock<std::shared_mutex> *existing_lock = nullptr);
     std::shared_ptr<brpc::Channel> GetDataStoreServiceChannel(
         const DSSNode &node);
     std::shared_ptr<brpc::Channel> UpdateDataStoreServiceChannel(

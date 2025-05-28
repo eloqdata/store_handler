@@ -21,6 +21,7 @@
  */
 #include "rocksdb_config.h"
 
+#include <cassert>
 #include <ctime>
 #include <iomanip>
 #include <regex>
@@ -29,11 +30,6 @@
 #include <string_view>
 
 #include "glog/logging.h"
-#include "store_handler/kv_store.h"
-
-#if ROCKSDB_CLOUD_FS()
-#include "rocksdb/cloud/db_cloud.h"
-#endif
 
 DEFINE_string(rocksdb_info_log_level, "INFO", "RocksDB store info log level");
 DEFINE_bool(rocksdb_enable_stats, false, "RocksDB store enable stats");
@@ -103,7 +99,6 @@ DEFINE_string(
     rocksdb_batch_write_size,
     "1MB", /*Adjust for balancing the memory footprint and throughput*/
     "RocksDB batch write size when doing checkpoint");
-DECLARE_uint32(snapshot_sync_worker_num);
 
 DEFINE_uint32(
     rocksdb_periodic_compaction_seconds,
@@ -250,7 +245,8 @@ DEFINE_string(rocksdb_dialy_offpeak_time_utc,
               "RocksDB dialy offpeak time in UTC in HH:mm-HH:mm format. The "
               "default value is 00:00-05:00 of local time zone");
 
-#if ROCKSDB_CLOUD_FS()
+#if (defined(DATA_STORE_TYPE_ELOQDSS_ROCKSDB_CLOUD_S3) ||                      \
+     defined(DATA_STORE_TYPE_ELOQDSS_ROCKSDB_CLOUD_GCS))
 DEFINE_string(rocksdb_cloud_bucket_name,
               "rocksdb-cloud-test",
               "RocksDB cloud bucket name");
@@ -270,8 +266,10 @@ DEFINE_uint32(rocksdb_cloud_db_file_deletion_delay_sec,
 DEFINE_uint32(rocksdb_cloud_warm_up_thread_num,
               1,
               "Rocksdb cloud warm up thread number");
-DECLARE_string(aws_access_key_id);
-DECLARE_string(aws_secret_key);
+// DECLARE_string(aws_access_key_id);
+// DECLARE_string(aws_secret_key);
+DEFINE_string(aws_access_key_id, "", "AWS SDK access key id");
+DEFINE_string(aws_secret_key, "", "AWS SDK secret key");
 #endif
 
 DEFINE_bool(rocksdb_io_uring_enabled,
@@ -287,7 +285,7 @@ DEFINE_string(rocksdb_cloud_s3_endpoint_url,
               "S3 compatible object store (e.g. minio) endpoint URL only for "
               "development purpose");
 
-namespace EloqShare
+namespace EloqDS
 {
 bool CheckCommandLineFlagIsDefault(const char *name)
 {
@@ -468,13 +466,6 @@ RocksDBConfig::RocksDBConfig(const INIReader &config,
                                FLAGS_rocksdb_batch_write_size);
     batch_write_size_ = parse_size(batch_write_size);
 
-    snapshot_sync_worker_num_ =
-        !CheckCommandLineFlagIsDefault("snapshot_sync_worker_num")
-            ? FLAGS_snapshot_sync_worker_num
-            : config.GetInteger("store",
-                                "snapshot_sync_worker_num",
-                                FLAGS_snapshot_sync_worker_num);
-
     periodic_compaction_seconds_ =
         !CheckCommandLineFlagIsDefault("rocksdb_periodic_compaction_seconds")
             ? FLAGS_rocksdb_periodic_compaction_seconds
@@ -489,11 +480,12 @@ RocksDBConfig::RocksDBConfig(const INIReader &config,
                                FLAGS_rocksdb_dialy_offpeak_time_utc);
 };
 
-#if ROCKSDB_CLOUD_FS()
+#if (defined(DATA_STORE_TYPE_ELOQDSS_ROCKSDB_CLOUD_S3) ||                      \
+     defined(DATA_STORE_TYPE_ELOQDSS_ROCKSDB_CLOUD_GCS))
 
 RocksDBCloudConfig::RocksDBCloudConfig(const INIReader &config)
 {
-#if ROCKSDB_CLOUD_FS_TYPE == ROCKSDB_CLOUD_FS_TYPE_S3
+#if defined(DATA_STORE_TYPE_ELOQDSS_ROCKSDB_CLOUD_S3)
     aws_access_key_id_ =
         !CheckCommandLineFlagIsDefault("aws_access_key_id")
             ? FLAGS_aws_access_key_id
@@ -564,4 +556,4 @@ RocksDBCloudConfig::RocksDBCloudConfig(const INIReader &config)
 
 #endif
 
-}  // namespace EloqShare
+}  // namespace EloqDS
