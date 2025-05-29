@@ -29,9 +29,9 @@
 #include <vector>
 
 #include "data_store_service_client.h"
-#include "data_store_service_util.h"
+#include "eloq_data_store_service/data_store_service_util.h"
+#include "eloq_data_store_service/object_pool.h"
 #include "kv_store.h"
-#include "object_pool.h"
 #include "schema.h"
 #include "store/data_store_scanner.h"
 #include "tx_key.h"

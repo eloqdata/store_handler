@@ -36,11 +36,10 @@
 #include "data_store_service_client_closure.h"
 #include "data_store_service_scanner.h"
 #include "eloq_data_store_service/object_pool.h"  // ObjectPool
+#include "eloq_data_store_service/thread_worker_pool.h"
 #include "metrics.h"
 #include "partition.h"
 #include "store_util.h"  // host_to_big_endian
-#include "thread_worker_pool.h"
-#include "tx_service/include/cc/cc_map.h"
 #include "tx_service/include/cc/local_cc_shards.h"
 #include "tx_service/include/error_messages.h"
 #include "tx_service/include/sequences/sequences.h"
@@ -72,12 +71,6 @@ static const std::string_view kv_table_statistics_version_name(
 static const std::string_view kv_mvcc_archive_name("mvcc_archives");
 static const std::string_view KEY_SEPARATOR("\\");
 
-// DataStoreServiceClient::DataStoreServiceClient()
-//     : ds_serv_shutdown_indicator_(false), flying_remote_fetch_count_(0)
-// {
-//     remote_fetch_worker_ = std::make_unique<ThreadWorkerPool>(1);
-// }
-
 DataStoreServiceClient::~DataStoreServiceClient()
 {
     {
@@ -86,8 +79,6 @@ DataStoreServiceClient::~DataStoreServiceClient()
         ds_service_cv_.notify_all();
         LOG(INFO) << "Notify ds_serv_shutdown_indicator";
     }
-
-    remote_fetch_worker_->Shutdown();
 
     upsert_table_worker_.Shutdown();
 }
@@ -3502,16 +3493,15 @@ void DataStoreServiceClient::UpsertTable(UpsertTableData *table_data)
                  { return DeleteTableLastRangePartitionId(p.first); });
 
         auto *new_table_schema = table_data->new_table_schema_;
-        ok =
-            ok && std::all_of(
-                      alter_table_info->index_add_names_.begin(),
-                      alter_table_info->index_add_names_.end(),
-                      [this, new_table_schema](
-                          const std::pair<txservice::TableName, std::string> &p)
-                      {
-                          return InitTableRanges(p.first,
-                                                 new_table_schema->Version());
-                      });
+        ok = ok &&
+             std::all_of(
+                 alter_table_info->index_add_names_.begin(),
+                 alter_table_info->index_add_names_.end(),
+                 [this, new_table_schema](
+                     const std::pair<txservice::TableName, std::string> &p) {
+                     return InitTableRanges(p.first,
+                                            new_table_schema->Version());
+                 });
 
         ok = ok &&
              std::all_of(

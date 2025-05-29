@@ -33,7 +33,7 @@
 
 #include "data_store_service_client.h"
 #include "data_store_service_scanner.h"
-#include "object_pool.h"
+#include "eloq_data_store_service/object_pool.h"
 
 namespace EloqDS
 {

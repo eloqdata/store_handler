@@ -20,7 +20,7 @@
  *
  */
 
-#include "store_handler/data_store_service_client_closure.h"
+#include "data_store_service_client_closure.h"
 
 #include <memory>
 #include <string>

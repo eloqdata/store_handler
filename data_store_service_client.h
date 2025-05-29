@@ -29,9 +29,9 @@
 #include <utility>
 #include <vector>
 
-#include "data_store_service.h"
-#include "ds_request.pb.h"
-#include "thread_worker_pool.h"
+#include "eloq_data_store_service/data_store_service.h"
+#include "eloq_data_store_service/ds_request.pb.h"
+#include "eloq_data_store_service/thread_worker_pool.h"
 #include "tx_service/include/cc/cc_shard.h"
 #include "tx_service/include/sequences/sequences.h"
 #include "tx_service/include/sharder.h"
@@ -68,7 +68,6 @@ public:
           data_store_service_(data_store_service),
           flying_remote_fetch_count_(0)
     {
-        remote_fetch_worker_ = std::make_unique<ThreadWorkerPool>(1);
         if (data_store_service_ != nullptr)
         {
             data_store_service_->AddListenerForUpdateConfig(
@@ -610,7 +609,6 @@ private:
     std::atomic<uint64_t> flying_remote_fetch_count_{0};
     // Work queue for fetch records from primary node
     std::deque<txservice::FetchRecordCc *> remote_fetch_cc_queue_;
-    std::unique_ptr<ThreadWorkerPool> remote_fetch_worker_;
 
     // table names and their kv table names
     std::unordered_map<txservice::TableName, std::string>

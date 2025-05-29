@@ -30,8 +30,7 @@
 #include <vector>
 
 #include "data_store_service_client_closure.h"
-#include "object_pool.h"
-#include "store_util.h"
+#include "eloq_data_store_service/object_pool.h"
 #include "tx_service/include/tx_key.h"
 
 namespace EloqDS
