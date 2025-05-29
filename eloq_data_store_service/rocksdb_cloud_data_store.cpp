@@ -525,8 +525,17 @@ bool RocksDBCloudDataStore::StartDB(std::string cookie, std::string prev_cookie)
     // delay cloud file deletion for 1 hour
     cfs_options_.cloud_file_deletion_delay =
         std::chrono::seconds(cloud_config_.db_file_deletion_delay_);
+
+    // keep invisible files in cloud storage since they can be referenced
+    // by other nodes with old valid cloud manifest files during leader transfer
+    cfs_options_.delete_cloud_invisible_files_on_open = false;
+
     // sync cloudmanifest and manifest files when open db
     cfs_options_.resync_on_open = true;
+
+    // use aws transfer manager to upload/download files
+    // the transfer manager can leverage multipart upload and download
+    cfs_options_.use_aws_transfer_manager = true;
 
     if (!cloud_config_.s3_endpoint_url_.empty())
     {
