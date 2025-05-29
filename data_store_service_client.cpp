@@ -290,6 +290,16 @@ bool DataStoreServiceClient::PutAll(std::vector<txservice::FlushRecord> &batch,
                 sync_putall.cv_.wait(lk);
             }
         }
+
+        if (sync_putall.result_.error_code() !=
+            remote::DataStoreError::NO_ERROR)
+        {
+            LOG(WARNING)
+                << "DataStoreHandler: Failed to write batch for table: "
+                << kv_table_name << ", with error code: "
+                << static_cast<uint32_t>(sync_putall.result_.error_code());
+            return false;
+        }
     }
     else
     {
