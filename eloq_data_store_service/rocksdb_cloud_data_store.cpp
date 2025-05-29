@@ -527,7 +527,7 @@ bool RocksDBCloudDataStore::StartDB(std::string cookie, std::string prev_cookie)
         std::chrono::seconds(cloud_config_.db_file_deletion_delay_);
 
     // keep invisible files in cloud storage since they can be referenced
-    // by other nodes with old valid cloud manifest files
+    // by other nodes with old valid cloud manifest files during leader transfer
     cfs_options_.delete_cloud_invisible_files_on_open = false;
 
     // sync cloudmanifest and manifest files when open db
