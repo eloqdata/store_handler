@@ -42,7 +42,8 @@
 
 #define ELOQDS()                                                               \
     (defined(DATA_STORE_TYPE_ELOQDSS_ROCKSDB_CLOUD_S3) ||                      \
-     defined(DATA_STORE_TYPE_ELOQDSS_ROCKSDB_CLOUD_GCS))
+     defined(DATA_STORE_TYPE_ELOQDSS_ROCKSDB_CLOUD_GCS) ||                     \
+     defined(DATA_STORE_TYPE_ELOQDSS_ELOQSTORE))
 
 namespace EloqDS
 {

@@ -54,7 +54,7 @@ message(NOTICE "WITH ASAN: ${WITH_ASAN}")
 
 # KV data store backend for redis server, Cassandra, DynamoDB, RocksDB Cloud
 set(WITH_DATA_STORE "ELOQDSS_ROCKSDB_CLOUD_S3" CACHE STRING "The KV data store to compile with")
-set_property(CACHE WITH_DATA_STORE PROPERTY STRINGS "ELOQDSS_ROCKSDB_CLOUD_S3" "ELOQDSS_ROCKSDB_CLOUD_GCS")
+set_property(CACHE WITH_DATA_STORE PROPERTY STRINGS "ELOQDSS_ROCKSDB_CLOUD_S3" "ELOQDSS_ROCKSDB_CLOUD_GCS" "ELOQDSS_ELOQSTORE")
 message(NOTICE "With DATA_STORE: ${WITH_DATA_STORE}")
 
 option(USE_ONE_ELOQDSS_PARTITION_ENABLED "Whether use one partition for kv store" ON)
@@ -70,6 +70,8 @@ if (WITH_DATA_STORE STREQUAL "ELOQDSS_ROCKSDB_CLOUD_S3")
 elseif (WITH_DATA_STORE STREQUAL "ELOQDSS_ROCKSDB_CLOUD_GCS")
    add_compile_definitions(DATA_STORE_TYPE_ELOQDSS_ROCKSDB_CLOUD_GCS)
    add_compile_definitions(ROCKSDB_CLOUD_FS_TYPE=2)
+elseif (WITH_DATA_STORE STREQUAL "ELOQDSS_ELOQSTORE")
+   add_compile_definitions(DATA_STORE_TYPE_ELOQDSS_ELOQSTORE)
 endif ()
 
 
@@ -288,11 +290,16 @@ if ((WITH_DATA_STORE STREQUAL "ELOQDSS_ROCKSDB_CLOUD_S3") OR (WITH_DATA_STORE ST
     endif ()
     message(STATUS "ROCKSDB_CLOUD_LIB: ${ROCKSDB_CLOUD_LIB}")
     set(ROCKSDB_LIBRARIES ${ROCKSDB_LIBRARIES} ${ROCKSDB_CLOUD_LIB})
+elseif (WITH_DATA_STORE STREQUAL "ELOQDSS_ELOQSTORE")
+    set(ELOQSTORE_PARENT_DIR ${CMAKE_CURRENT_SOURCE_DIR} CACHE PATH "EloqStore parent directory")
+    include(${PROJECT_SOURCE_DIR}/build_eloq_store.cmake)
 endif()
 
 
 if  ((WITH_DATA_STORE STREQUAL "ELOQDSS_ROCKSDB_CLOUD_S3") OR (WITH_DATA_STORE STREQUAL "ELOQDSS_ROCKSDB_CLOUD_GCS"))
     SET(RESMONOGRAPH_LIBRARY ${RESMONOGRAPH_LIBRARY} ${ROCKSDB_LIBRARIES})
+elseif (WITH_DATA_STORE STREQUAL "ELOQDSS_ELOQSTORE")
+    SET(RESMONOGRAPH_LIBRARY ${RESMONOGRAPH_LIBRARY} eloqstore)
 endif ()
 
 
@@ -348,6 +355,10 @@ if (CMAKE_SYSTEM_NAME STREQUAL "Darwin")
             "-Wl,-U,_ProfilerStop")
 endif ()
 
+if(WITH_DATA_STORE STREQUAL "ELOQDSS_ELOQSTORE")
+    set(DYNAMIC_LIB ${DYNAMIC_LIB} ${URING_LIB})
+    set(DYNAMIC_LIB ${DYNAMIC_LIB} Boost::context)
+endif ()
 
 # crcspeed
 # SET(CRCSPEED_SOURCES crcspeed/crcspeed.c crcspeed/crc16speed.c crcspeed/crc64speed.c)
@@ -369,12 +380,19 @@ if ((WITH_DATA_STORE STREQUAL "ELOQDSS_ROCKSDB_CLOUD_S3") OR
           rocksdb_cloud_data_store.cpp
           rocksdb_config.cpp
     )
+elseif (WITH_DATA_STORE STREQUAL "ELOQDSS_ELOQSTORE")
+    SET(RESMONOGRAPH_SOURCES ${RESMONOGRAPH_SOURCES}
+        eloq_store_data_store.cpp
+    )
 endif ()
 
 
 
 include_directories(
         ${PROJECT_SOURCE_DIR}/
+if(WITH_DATA_STORE STREQUAL "ELOQDSS_ELOQSTORE")
+        ${PROJECT_SOURCE_DIR}/eloq_store/
+endif ()
 )
 
 # set(ABSEIL
@@ -388,7 +406,7 @@ include_directories(
 
 # add_executable(redis_press redis_press.cpp)
 add_executable(dss_server main.cpp ${RESMONOGRAPH_SOURCES})
-target_link_libraries(dss_server ${DYNAMIC_LIB} ${RESMONOGRAPH_LIBRARY})
+target_link_libraries(dss_server ${RESMONOGRAPH_LIBRARY} ${DYNAMIC_LIB} )
 # target_link_libraries(dss_server  ${ABSEIL} lua fpconv)
 
 # Add rocksdb_cloud_dump utility
@@ -403,7 +421,6 @@ if ((WITH_DATA_STORE STREQUAL "ELOQDSS_ROCKSDB_CLOUD_S3") OR
     install(TARGETS rocksdb_cloud_dump
             RUNTIME DESTINATION bin)
 endif()
-
 
 set_target_properties(dss_server PROPERTIES
 	BUILD_RPATH "$ORIGIN/../lib"

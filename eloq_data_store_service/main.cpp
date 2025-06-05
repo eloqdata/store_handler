@@ -48,6 +48,8 @@ namespace GFLAGS_NAMESPACE = google;
     defined(DATA_STORE_TYPE_ELOQDSS_ROCKSDB_CLOUD_GCS)
 #include "rocksdb_cloud_data_store.h"
 #include "rocksdb_cloud_data_store_factory.h"
+#elif defined(DATA_STORE_TYPE_ELOQDSS_ELOQSTORE)
+#include "eloq_store_data_store_factory.h"
 #endif
 
 #include "data_store_service.h"
@@ -79,6 +81,17 @@ DEFINE_bool(bootstrap,
             false,
             "Init data store config file and exit. (Only support bootstrap one "
             "node now.)");
+
+#if defined(DATA_STORE_TYPE_ELOQDSS_ELOQSTORE)
+DEFINE_uint32(eloq_store_worker_num, 0, "EloqStore server worker num.");
+
+DEFINE_string(eloq_store_data_path,
+              "",
+              "The data path of the EloqStore (use memory store if empty).");
+DEFINE_uint32(eloq_store_open_files_limit,
+              1024,
+              "EloqStore maximum open files.");
+#endif
 
 static bool CheckCommandLineFlagIsDefault(const char *name)
 {
@@ -170,8 +183,6 @@ int main(int argc, char *argv[])
         return 0;
     }
 
-    bool enable_cache_replacement_ = FLAGS_enable_cache_replacement;
-
     std::string ds_config_file_path =
         !CheckCommandLineFlagIsDefault("data_store_config_file")
             ? FLAGS_data_store_config_file
@@ -198,8 +209,6 @@ int main(int argc, char *argv[])
         !CheckCommandLineFlagIsDefault("data_path")
             ? FLAGS_data_path
             : config_reader.GetString("local", "data_path", FLAGS_data_path);
-
-    bool is_single_node = ds_peer_node.empty();
 
     EloqDS::DataStoreServiceClusterManager ds_config;
     if (!ds_config.Load(ds_config_file_path))
@@ -265,11 +274,36 @@ int main(int argc, char *argv[])
 
 #if defined(DATA_STORE_TYPE_ELOQDSS_ROCKSDB_CLOUD_S3) ||                       \
     defined(DATA_STORE_TYPE_ELOQDSS_ROCKSDB_CLOUD_GCS)
+    bool enable_cache_replacement_ = FLAGS_enable_cache_replacement;
+    bool is_single_node = ds_peer_node.empty();
+
     // INIReader config_reader(nullptr, 0);
     EloqDS::RocksDBConfig rocksdb_config(config_reader, data_path);
     EloqDS::RocksDBCloudConfig rocksdb_cloud_config(config_reader);
     auto ds_factory = std::make_unique<EloqDS::RocksDBCloudDataStoreFactory>(
         rocksdb_config, rocksdb_cloud_config, enable_cache_replacement_);
+
+#elif defined(DATA_STORE_TYPE_ELOQDSS_ELOQSTORE)
+    EloqDS::EloqStoreConfig eloq_store_config;
+    eloq_store_config.worker_count_ =
+        !CheckCommandLineFlagIsDefault("eloq_store_worker_num")
+            ? FLAGS_eloq_store_worker_num
+            : config_reader.GetInteger("store",
+                                       "eloq_store_worker_num",
+                                       FLAGS_eloq_store_worker_num);
+    eloq_store_config.storage_path_ =
+        !CheckCommandLineFlagIsDefault("eloq_store_data_path")
+            ? FLAGS_eloq_store_data_path
+            : config_reader.GetString(
+                  "store", "eloq_store_data_path", FLAGS_eloq_store_data_path);
+    eloq_store_config.open_files_limit_ =
+        !CheckCommandLineFlagIsDefault("eloq_store_open_files_limit")
+            ? FLAGS_eloq_store_open_files_limit
+            : config_reader.GetInteger("store",
+                                       "eloq_store_open_files_limit",
+                                       FLAGS_eloq_store_open_files_limit);
+    auto ds_factory =
+        std::make_unique<EloqDS::EloqStoreDataStoreFactory>(eloq_store_config);
 #else
     assert(false);
     std::unique_ptr<DataStoreFactory> ds_factory = nullptr;
@@ -296,6 +330,23 @@ int main(int argc, char *argv[])
             enable_cache_replacement_,
             shard_id,
             data_store_service_.get());
+
+#elif defined(DATA_STORE_TYPE_ELOQDSS_ELOQSTORE)
+        ::kvstore::KvOptions store_config;
+        store_config.num_threads = eloq_store_config.worker_count_;
+        store_config.store_path.emplace_back()
+            .append(eloq_store_config.storage_path_)
+            .append("/ds_")
+            .append(std::to_string(shard_id));
+        store_config.fd_limit = eloq_store_config.open_files_limit_ /
+                                eloq_store_config.worker_count_;
+
+        DLOG(INFO) << "Create EloqStore storage with workers: "
+                   << store_config.num_threads
+                   << ", store path: " << store_config.store_path.front()
+                   << ", open files limit: " << store_config.fd_limit;
+        auto ds = std::make_unique<EloqDS::EloqStoreDataStore>(
+            shard_id, data_store_service_.get(), store_config);
 #else
         assert(false);
         std::unique_ptr<DataStore> ds = nullptr;
