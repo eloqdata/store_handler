@@ -1743,6 +1743,14 @@ void RocksDBCloudDataStore::ScanNext(ScanRequest *scan_req)
                 }
                 if (!matched)
                 {
+                    if (scan_forward)
+                    {
+                        iter->Next();
+                    }
+                    else
+                    {
+                        iter->Prev();
+                    }
                     continue;
                 }
 
