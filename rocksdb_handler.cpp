@@ -974,17 +974,17 @@ RocksDBHandler::FetchRecord(txservice::FetchRecordCc *fetch_cc)
 {
     const EloqKey *redis_key_ptr = fetch_cc->tx_key_.GetKey<EloqKV::EloqKey>();
     EloqKey redis_key_copy(*redis_key_ptr);
-    txservice::TableName tbl_name_copy(*fetch_cc->table_name_);
     if (metrics::enable_kv_metrics)
     {
         fetch_cc->start_ = metrics::Clock::now();
     }
+    const std::string &kv_cf_name =
+                fetch_cc->table_schema_->GetKVCatalogInfo()->kv_table_name_;
+    rocksdb::ColumnFamilyHandle *cfh =
+                GetColumnFamilyHandler(kv_cf_name);
 
     query_worker_pool_->SubmitWork(
-        [this,
-         fetch_cc,
-         redis_key = std::move(redis_key_copy),
-         table_name = std::move(tbl_name_copy)]()
+        [this, fetch_cc, redis_key = std::move(redis_key_copy), cfh]()
         {
             std::shared_lock<std::shared_mutex> db_lk(db_mux_);
             auto db = GetDBPtr();
@@ -995,10 +995,6 @@ RocksDBHandler::FetchRecord(txservice::FetchRecordCc *fetch_cc)
                 return;
             }
             std::string value;
-            const std::string &kv_cf_name =
-                fetch_cc->table_schema_->GetKVCatalogInfo()->kv_table_name_;
-            rocksdb::ColumnFamilyHandle *cfh =
-                GetColumnFamilyHandler(kv_cf_name);
             assert(cfh != nullptr);
             rocksdb::Status status =
                 db->Get(rocksdb::ReadOptions(),

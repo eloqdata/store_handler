@@ -625,12 +625,16 @@ private:
     struct FetchRecordData
     {
         FetchRecordData(txservice::FetchRecordCc *fetch_cc,
-                        CassHandler *handler)
-            : fetch_cc_(fetch_cc), handler_(handler)
+                        CassHandler *handler,
+                        bool is_sequence_table)
+            : fetch_cc_(fetch_cc),
+              handler_(handler),
+              is_sequence_table_(is_sequence_table)
         {
         }
         txservice::FetchRecordCc *fetch_cc_;
         CassHandler *handler_{nullptr};
+        bool is_sequence_table_{};
     };
 
     struct FetchSlicesSpecData

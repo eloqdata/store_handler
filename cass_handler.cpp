@@ -3222,7 +3222,10 @@ EloqDS::CassHandler::FetchRecord(txservice::FetchRecordCc *fetch_cc)
         {
             fetch_cc->tx_key_ = fetch_cc->tx_key_.Clone();
         }
-        FetchRecordData *fetch_data = new FetchRecordData(fetch_cc, this);
+        FetchRecordData *fetch_data = new FetchRecordData(
+            fetch_cc,
+            this,
+            fetch_cc->table_name_ == txservice::Sequences::table_name_);
         cass_future_set_callback(
             prepare_future,
             [](CassFuture *future, void *data)
@@ -3276,7 +3279,7 @@ EloqDS::CassHandler::FetchRecord(txservice::FetchRecordCc *fetch_cc)
     cass_statement_bind_string(statement,
                                0,
                                fetch_cc->table_schema_->GetKVCatalogInfo()
-                                   ->GetKvTableName(*fetch_cc->table_name_)
+                                   ->GetKvTableName(fetch_cc->table_name_)
                                    .data());
 
     int32_t pk1 = fetch_cc->range_id_;
@@ -3296,7 +3299,12 @@ EloqDS::CassHandler::FetchRecord(txservice::FetchRecordCc *fetch_cc)
 
     CassFuture *future = cass_session_execute(session_, statement);
     cass_future_set_callback(
-        future, OnFetchRecord, new FetchRecordData(fetch_cc, this));
+        future,
+        OnFetchRecord,
+        new FetchRecordData(
+            fetch_cc,
+            this,
+            fetch_cc->table_name_ == txservice::Sequences::table_name_));
     cass_future_free(future);
     cass_statement_free(statement);
 
@@ -3305,6 +3313,8 @@ EloqDS::CassHandler::FetchRecord(txservice::FetchRecordCc *fetch_cc)
 
 void EloqDS::CassHandler::OnFetchRecord(CassFuture *future, void *data)
 {
+    // Note that the fetch_cc->table_schema_ and fetch_cc->table_name_ pointers
+    // cannot be accessed in this callback.
     FetchRecordData *fetch_data = static_cast<FetchRecordData *>(data);
     txservice::FetchRecordCc *fetch_cc = fetch_data->fetch_cc_;
     const CassResult *result = nullptr;
@@ -3338,13 +3348,16 @@ void EloqDS::CassHandler::OnFetchRecord(CassFuture *future, void *data)
         else
         {
             LOG(ERROR) << "Failed to fetch record from kv for table "
-                       << fetch_cc->table_name_->Trace()
+                       << ", table type: "
+                       << static_cast<int>(fetch_cc->table_name_.Type())
                        << ", err: " << ErrorMessage(future);
             fetch_cc->SetFinish(
                 static_cast<int>(txservice::CcErrorCode::DATA_STORE_ERR));
         }
         return;
     }
+
+    bool need_free_result = true;
 
     const CassRow *row = cass_result_first_row(result);
     if (row == NULL)
@@ -3355,7 +3368,6 @@ void EloqDS::CassHandler::OnFetchRecord(CassFuture *future, void *data)
     }
     else
     {
-        const txservice::TableName &table_name = *fetch_cc->table_name_;
         uint16_t record_col_cnt = 1;
 
         int64_t version_ts;
@@ -3371,8 +3383,7 @@ void EloqDS::CassHandler::OnFetchRecord(CassFuture *future, void *data)
 
         if (!deleted)
         {
-#ifndef ON_KEY_OBJECT
-            if (table_name == txservice::Sequences::table_name_)
+            if (fetch_data->is_sequence_table_)
             {
                 // TODO(lzx): Improve it after txservice support differnt type
                 // of table schema.
@@ -3401,20 +3412,30 @@ void EloqDS::CassHandler::OnFetchRecord(CassFuture *future, void *data)
             }
             else
             {
-                fetch_cc->table_schema_->RecordSchema()
-                    ->EncodeToSerializeFormat(
-                        table_name, row, fetch_cc->rec_str_);
+                fetch_cc->handle_kv_res_ = [result, fetch_cc]()
+                {
+                    LOG(INFO) << "executing handle_kv_res func";
+                    const CassRow *row = cass_result_first_row(result);
+                    assert(row != nullptr);
+                    fetch_cc->table_schema_->RecordSchema()
+                        ->EncodeToSerializeFormat(fetch_cc->table_name_.Type(),
+                                                  row,
+                                                  fetch_cc->rec_str_);
+
+                    LOG(INFO) << "free result";
+                    cass_result_free(result);
+                };
+                need_free_result = false;
             }
-#else
-            fetch_cc->table_schema_->RecordSchema()->EncodeToSerializeFormat(
-                table_name, row, fetch_cc->rec_str_);
-#endif
         }
     }
 
     fetch_cc->SetFinish(0);
 
-    cass_result_free(result);
+    if (need_free_result)
+    {
+        cass_result_free(result);
+    }
     delete fetch_data;
 }
 

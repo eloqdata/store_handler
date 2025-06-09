@@ -143,8 +143,7 @@ void FetchRecordCallback(void *data,
         uint64_t rec_ttl = read_closure->Ttl();
         std::string_view val = read_closure->Value();
 
-        const txservice::TableName &table_name = *fetch_cc->table_name_;
-        if (table_name.Engine() == txservice::TableEngine::EloqKv)
+        if (fetch_cc->table_name_.Engine() == txservice::TableEngine::EloqKv)
         {
             // Hash partition
             if (rec_ttl > 0 && rec_ttl < now)

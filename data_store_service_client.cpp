@@ -2365,13 +2365,10 @@ DataStoreServiceClient::FetchRecord(txservice::FetchRecordCc *fetch_cc)
         fetch_cc->start_ = metrics::Clock::now();
     }
 
-    const txservice::TableName &table_name = *fetch_cc->table_name_;
-    const std::string &kv_table_name =
-        fetch_cc->table_schema_->GetKVCatalogInfo()->GetKvTableName(table_name);
+    const std::string &kv_table_name = fetch_cc->kv_table_name_;
 
     int32_t partition_id;
-
-    if (table_name.Engine() != txservice::TableEngine::EloqKv)
+    if (fetch_cc->table_name_.Engine() != txservice::TableEngine::EloqKv)
     {
         partition_id = fetch_cc->range_id_;
     }
