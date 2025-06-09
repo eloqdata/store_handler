@@ -3414,7 +3414,6 @@ void EloqDS::CassHandler::OnFetchRecord(CassFuture *future, void *data)
             {
                 fetch_cc->handle_kv_res_ = [result, fetch_cc]()
                 {
-                    LOG(INFO) << "executing handle_kv_res func";
                     const CassRow *row = cass_result_first_row(result);
                     assert(row != nullptr);
                     fetch_cc->table_schema_->RecordSchema()
@@ -3422,7 +3421,6 @@ void EloqDS::CassHandler::OnFetchRecord(CassFuture *future, void *data)
                                                   row,
                                                   fetch_cc->rec_str_);
 
-                    LOG(INFO) << "free result";
                     cass_result_free(result);
                 };
                 need_free_result = false;
