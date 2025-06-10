@@ -106,7 +106,7 @@ public:
         return kv_scan_req_;
     }
 
-    ::kvstore::WriteRequest &EloqStoreWriteRequest()
+    ::kvstore::BatchWriteRequest &EloqStoreWriteRequest()
     {
         return kv_write_req_;
     }
@@ -148,7 +148,7 @@ public:
 
 private:
     ::kvstore::ScanRequest kv_scan_req_;
-    ::kvstore::WriteRequest kv_write_req_;
+    ::kvstore::BatchWriteRequest kv_write_req_;
     Poolable *data_store_request_ptr_{nullptr};
     uint64_t op_ts_{0};
     std::vector<::kvstore::WriteDataEntry> entries_;

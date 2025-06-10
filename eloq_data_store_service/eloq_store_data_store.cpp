@@ -27,8 +27,8 @@ namespace EloqDS
 {
 thread_local ObjectPool<EloqStoreOperationData<::kvstore::ReadRequest>>
     eloq_store_read_op_pool_;
-thread_local ObjectPool<EloqStoreOperationData<::kvstore::WriteRequest>>
-    eloq_store_write_op_pool_;
+thread_local ObjectPool<EloqStoreOperationData<::kvstore::BatchWriteRequest>>
+    eloq_store_batch_write_op_pool_;
 thread_local ObjectPool<EloqStoreOperationData<::kvstore::ScanRequest>>
     eloq_store_scan_req_op_pool_;
 thread_local ObjectPool<EloqStoreOperationData<::kvstore::TruncateRequest>>
@@ -143,13 +143,13 @@ void EloqStoreDataStore::BatchWriteRecords(WriteRecordsRequest *write_req)
     eloq_store_table_id.partition_id_ = write_req->GetPartitionId();
 
     // Write to eloqstore async
-    EloqStoreOperationData<::kvstore::WriteRequest> *write_op =
-        eloq_store_write_op_pool_.NextObject();
+    EloqStoreOperationData<::kvstore::BatchWriteRequest> *write_op =
+        eloq_store_batch_write_op_pool_.NextObject();
     write_op->Reset(write_req);
 
     PoolableGuard op_guard(write_op);
 
-    ::kvstore::WriteRequest &kv_write_req = write_op->EloqStoreRequest();
+    ::kvstore::BatchWriteRequest &kv_write_req = write_op->EloqStoreRequest();
 
     std::vector<::kvstore::WriteDataEntry> entries;
     size_t rec_cnt = write_req->RecordsCount();
@@ -207,13 +207,13 @@ void EloqStoreDataStore::BatchWriteRecords(WriteRecordsRequest *write_req)
 
 void EloqStoreDataStore::OnBatchWrite(::kvstore::KvRequest *req)
 {
-    EloqStoreOperationData<::kvstore::WriteRequest> *write_op =
-        static_cast<EloqStoreOperationData<::kvstore::WriteRequest> *>(
+    EloqStoreOperationData<::kvstore::BatchWriteRequest> *write_op =
+        static_cast<EloqStoreOperationData<::kvstore::BatchWriteRequest> *>(
             reinterpret_cast<void *>(req->UserData()));
 
     assert(req == &write_op->EloqStoreRequest());
-    ::kvstore::WriteRequest *write_req =
-        static_cast<::kvstore::WriteRequest *>(req);
+    ::kvstore::BatchWriteRequest *write_req =
+        static_cast<::kvstore::BatchWriteRequest *>(req);
 
     PoolableGuard op_guard(write_op);
 
@@ -559,7 +559,7 @@ void EloqStoreDataStore::OnScanDelete(::kvstore::KvRequest *req)
             // delete this batch keys
             scan_del_op->UpdateOperationStage(
                 ScanDeleteOperationData::Stage::DELETE);
-            ::kvstore::WriteRequest &kv_write_req =
+            ::kvstore::BatchWriteRequest &kv_write_req =
                 scan_del_op->EloqStoreWriteRequest();
 
             uint64_t delete_ts = scan_del_op->OpTs();
@@ -607,8 +607,8 @@ void EloqStoreDataStore::OnScanDelete(::kvstore::KvRequest *req)
         assert(scan_del_op->OperationStage() ==
                ScanDeleteOperationData::Stage::DELETE);
 
-        ::kvstore::WriteRequest *write_req =
-            static_cast<::kvstore::WriteRequest *>(req);
+        ::kvstore::BatchWriteRequest *write_req =
+            static_cast<::kvstore::BatchWriteRequest *>(req);
 
         if (write_req->Error() != ::kvstore::KvError::NoError)
         {

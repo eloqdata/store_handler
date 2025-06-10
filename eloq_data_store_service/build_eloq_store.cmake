@@ -43,11 +43,11 @@ if(NOT EXISTS "${ELOQ_STORE_SOURCE_DIR}/concurrentqueue/CMakeLists.txt")
 endif()
 add_subdirectory(${ELOQ_STORE_SOURCE_DIR}/concurrentqueue)
 
-add_executable(io_uring_test ${ELOQ_STORE_SOURCE_DIR}/io_uring_test.cpp)
-target_link_libraries(io_uring_test ${URING_LIB})
+if (NOT WITH_TXSERVICE)
+    add_subdirectory(${ELOQ_STORE_SOURCE_DIR}/abseil)
+endif()
 
-add_executable(uring_register_test ${ELOQ_STORE_SOURCE_DIR}/uring_register_test.cpp)
-target_link_libraries(uring_register_test ${URING_LIB})
+set(INI_SOURCES ${ELOQ_STORE_SOURCE_DIR}/inih/ini.c ${ELOQ_STORE_SOURCE_DIR}/inih/cpp/INIReader.cpp)
 
 option(WITH_ASAN "build with ASAN" OFF)
 if(WITH_ASAN)
@@ -75,9 +75,9 @@ set(ELOQ_STORE_SOURCES
     ${ELOQ_STORE_SOURCE_DIR}/truncate_task.cpp
     ${ELOQ_STORE_SOURCE_DIR}/compact_task.cpp
     ${ELOQ_STORE_SOURCE_DIR}/archive_task.cpp
-    ${ELOQ_STORE_SOURCE_DIR}/write_tree_stack.cpp
     ${ELOQ_STORE_SOURCE_DIR}/async_io_manager.cpp
     ${ELOQ_STORE_SOURCE_DIR}/data_page.cpp
+    ${ELOQ_STORE_SOURCE_DIR}/page.cpp
     ${ELOQ_STORE_SOURCE_DIR}/page_mapper.cpp
     ${ELOQ_STORE_SOURCE_DIR}/task_manager.cpp
     ${ELOQ_STORE_SOURCE_DIR}/eloq_store.cpp
@@ -87,26 +87,11 @@ set(ELOQ_STORE_SOURCES
     ${ELOQ_STORE_SOURCE_DIR}/xxhash.c
     ${ELOQ_STORE_SOURCE_DIR}/kill_point.cpp
     ${ELOQ_STORE_SOURCE_DIR}/file_gc.cpp
-    ${ELOQ_STORE_SOURCE_DIR}/archive_crond.cpp)
+    ${ELOQ_STORE_SOURCE_DIR}/archive_crond.cpp
+    ${ELOQ_STORE_SOURCE_DIR}/object_store.cpp
+    ${ELOQ_STORE_SOURCE_DIR}/kv_options.cpp)
 
-add_library(eloqstore STATIC ${ELOQ_STORE_SOURCES})
+add_library(eloqstore STATIC ${ELOQ_STORE_SOURCES} ${INI_SOURCES})
 
 target_include_directories(eloqstore PUBLIC ${ELOQ_STORE_INCLUDE})
-target_link_libraries(eloqstore PRIVATE ${URING_LIB} Boost::context glog::glog)
-
-add_executable(io_test ${ELOQ_STORE_SOURCE_DIR}/io_test.cpp)
-target_link_libraries(io_test ${URING_LIB})
-
-add_executable(queue_sync_test ${ELOQ_STORE_SOURCE_DIR}/queue_sync_test.cpp)
-
-add_executable(cache_q_test ${ELOQ_STORE_SOURCE_DIR}/cache_q_test.cpp)
-# target_compile_options(cache_q_test PRIVATE -fsanitize=address)
-# target_link_options(cache_q_test PRIVATE -fsanitize=address)
-target_link_libraries (cache_q_test glog::glog)
-
-# add_executable(proxy proxy.cc helpers.cc)
-# target_link_libraries(proxy ${URING_LIB})
-
-#if (WITH_UNIT_TESTS)
-#  add_subdirectory(${ELOQ_STORE_SOURCE_DIR}/tests)
-#endif()
+target_link_libraries(eloqstore PRIVATE ${URING_LIB} Boost::context glog::glog absl::flat_hash_map)

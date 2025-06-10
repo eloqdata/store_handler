@@ -1715,7 +1715,7 @@ public:
                     rcond->set_op(cond.op());
                     rcond->set_value(cond.value());
                 }
-                assert(request_.search_conditions_size() ==
+                assert(static_cast<size_t>(request_.search_conditions_size()) ==
                        search_conditions_->size());
             }
             rpc_request_prepare_ = true;

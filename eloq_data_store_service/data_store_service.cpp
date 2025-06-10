@@ -251,7 +251,7 @@ bool DataStoreService::StartService()
     server_ = std::make_unique<brpc::Server>();
     if (server_->AddService(this, brpc::SERVER_DOESNT_OWN_SERVICE) != 0)
     {
-        LOG(ERROR) << "Failed to add EloqKVDataStoreService to server";
+        LOG(ERROR) << "Failed to add DataStoreService to server";
         return false;
     }
 
@@ -260,10 +260,10 @@ bool DataStoreService::StartService()
     options.has_builtin_services = true;
     if (server_->Start(cluster_manager_.GetThisNode().port_, &options) != 0)
     {
-        LOG(ERROR) << "Failed to start EloqKVDataStoreService";
+        LOG(ERROR) << "Failed to start DataStoreService";
         return false;
     }
-    LOG(INFO) << "RocksDBCloudDataStoreService started on port "
+    LOG(INFO) << "DataStoreService started on port "
               << cluster_manager_.GetThisNode().port_;
 
     CheckAndRecoverMigrateTask();

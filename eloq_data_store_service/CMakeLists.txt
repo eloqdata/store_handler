@@ -370,9 +370,14 @@ SET(RESMONOGRAPH_SOURCES ${RESMONOGRAPH_SOURCES}
         data_store_fault_inject.cpp
         data_store_service_config.cpp
         ds_request.pb.cc
+    )
+
+if (NOT (WITH_DATA_STORE STREQUAL "ELOQDSS_ELOQSTORE"))
+    SET(RESMONOGRAPH_SOURCES ${RESMONOGRAPH_SOURCES}
         INIReader.cpp
         ini.c
     )
+endif()
 
 if ((WITH_DATA_STORE STREQUAL "ELOQDSS_ROCKSDB_CLOUD_S3") OR
         (WITH_DATA_STORE STREQUAL "ELOQDSS_ROCKSDB_CLOUD_GCS"))
