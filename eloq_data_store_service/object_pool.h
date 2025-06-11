@@ -21,7 +21,10 @@
  */
 #pragma once
 
+#include <bthread/bthread.h>
+
 #include <atomic>
+#include <chrono>
 #include <memory>
 #include <vector>
 
@@ -35,7 +38,9 @@ namespace EloqDS
 class Poolable
 {
 public:
-    virtual ~Poolable() = default;
+    virtual ~Poolable()
+    {
+    }
 
     bool InUse() const
     {
@@ -96,6 +101,18 @@ public:
         for (size_t idx = 0; idx < 8; ++idx)
         {
             pool_.emplace_back(std::make_unique<T>());
+        }
+    }
+
+    ~ObjectPool()
+    {
+        for (size_t i = 0; i < pool_.size(); i++)
+        {
+            T *req_ptr = pool_[i].get();
+            while (req_ptr->InUse())
+            {
+                bthread_usleep(100);
+            }
         }
     }
 
