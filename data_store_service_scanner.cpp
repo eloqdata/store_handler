@@ -372,6 +372,15 @@ bool DataStoreServiceHashPartitionScanner<ScanForward>::MoveNext()
             // Wait the result of this partition.
             WaitUntilInFlightFetchesComplete();
 
+            if (part_scanner->IsCacheEmpty())
+            {
+                // No more data in this partition.
+                assert(part_scanner->IsRunOutOfData());
+                // Free the partition scanner if it's run out of data
+                PoolableGuard guard(part_scanner);
+                partition_scanners_[part_id] = nullptr;
+                return false;
+            }
             // Get the key
             AddScanTuple(part_scanner, part_id);
         }
