@@ -43,6 +43,7 @@ struct RocksDBConfig
     bool enable_stats_;
     size_t stats_dump_period_sec_;
     std::string storage_path_;
+    std::string wal_dir_;
     size_t max_write_buffer_number_;
     size_t max_background_jobs_;
     size_t max_background_flush_;

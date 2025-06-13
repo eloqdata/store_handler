@@ -390,6 +390,7 @@ private:
     const bool enable_stats_;
     const uint32_t stats_dump_period_sec_;
     const std::string storage_path_;
+    const std::string wal_dir_;
     const size_t max_write_buffer_number_;
     const size_t max_background_jobs_;
     const size_t max_background_flushes_;
