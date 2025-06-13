@@ -27,6 +27,7 @@
 
 #include <cassert>
 #include <cstdint>
+#include <filesystem>
 
 #if BRPC_WITH_GLOG
 #include "glog_error_logging.h"
@@ -57,11 +58,8 @@ namespace GFLAGS_NAMESPACE = google;
 using namespace EloqDS;
 
 DEFINE_string(config, "", "Configuration (*.ini)");
-DEFINE_string(data_store_config_file,
-              "./data_store_config.ini",
-              "Data store configuration file path.");
 
-DEFINE_string(ds_peer_node,
+DEFINE_string(eloq_dss_peer_node,
               "",
               "Data store peer node address. Used to get cluster topology if "
               "data_store_config_file is not provided.");
@@ -87,7 +85,8 @@ DEFINE_uint32(eloq_store_worker_num, 0, "EloqStore server worker num.");
 
 DEFINE_string(eloq_store_data_path,
               "",
-              "The data path of the EloqStore (use memory store if empty).");
+              "The data path of the EloqStore (default is "
+              "'{eloq_data_path}/eloq_dss/eloqstore_data').");
 DEFINE_uint32(eloq_store_open_files_limit,
               1024,
               "EloqStore maximum open files.");
@@ -183,17 +182,11 @@ int main(int argc, char *argv[])
         return 0;
     }
 
-    std::string ds_config_file_path =
-        !CheckCommandLineFlagIsDefault("data_store_config_file")
-            ? FLAGS_data_store_config_file
-            : config_reader.GetString("store",
-                                      "data_store_config_file",
-                                      FLAGS_data_store_config_file);
-    std::string ds_peer_node =
-        !CheckCommandLineFlagIsDefault("ds_peer_node")
-            ? FLAGS_ds_peer_node
+    std::string eloq_dss_peer_node =
+        !CheckCommandLineFlagIsDefault("eloq_dss_peer_node")
+            ? FLAGS_eloq_dss_peer_node
             : config_reader.GetString(
-                  "store", "ds_peer_node", FLAGS_ds_peer_node);
+                  "store", "eloq_dss_peer_node", FLAGS_eloq_dss_peer_node);
 
     std::string local_ip =
         !CheckCommandLineFlagIsDefault("ip")
@@ -210,8 +203,25 @@ int main(int argc, char *argv[])
             ? FLAGS_data_path
             : config_reader.GetString("local", "data_path", FLAGS_data_path);
 
+    if (!std::filesystem::exists(data_path))
+    {
+        std::filesystem::create_directories(data_path);
+    }
+
+    std::string ds_config_file_path = data_path + "/dss_config.ini";
+
     EloqDS::DataStoreServiceClusterManager ds_config;
-    if (!ds_config.Load(ds_config_file_path))
+    if (std::filesystem::exists(ds_config_file_path))
+    {
+        bool load_res = ds_config.Load(ds_config_file_path);
+        if (!load_res)
+        {
+            LOG(ERROR) << "Failed to load config file: " << ds_config_file_path;
+            ShutDown();
+            return 0;
+        }
+    }
+    else
     {
         if (FLAGS_bootstrap)
         {
@@ -229,15 +239,15 @@ int main(int argc, char *argv[])
             return 0;
         }
 
-        if (!ds_peer_node.empty())
+        if (!eloq_dss_peer_node.empty())
         {
             ds_config.SetThisNode(local_ip, local_port);
             // Fetch ds topology from peer node
-            if (!EloqDS::DataStoreService::FetchConfigFromPeer(ds_peer_node,
-                                                               ds_config))
+            if (!EloqDS::DataStoreService::FetchConfigFromPeer(
+                    eloq_dss_peer_node, ds_config))
             {
                 LOG(ERROR) << "Failed to fetch config from peer node: "
-                           << ds_peer_node;
+                           << eloq_dss_peer_node;
                 ShutDown();
                 return 0;
             }
@@ -275,7 +285,7 @@ int main(int argc, char *argv[])
 #if defined(DATA_STORE_TYPE_ELOQDSS_ROCKSDB_CLOUD_S3) ||                       \
     defined(DATA_STORE_TYPE_ELOQDSS_ROCKSDB_CLOUD_GCS)
     bool enable_cache_replacement_ = FLAGS_enable_cache_replacement;
-    bool is_single_node = ds_peer_node.empty();
+    bool is_single_node = eloq_dss_peer_node.empty();
 
     // INIReader config_reader(nullptr, 0);
     EloqDS::RocksDBConfig rocksdb_config(config_reader, data_path);
@@ -296,6 +306,16 @@ int main(int argc, char *argv[])
             ? FLAGS_eloq_store_data_path
             : config_reader.GetString(
                   "store", "eloq_store_data_path", FLAGS_eloq_store_data_path);
+    if (eloq_store_config.storage_path_.empty())
+    {
+        eloq_store_config.storage_path_ = data_path + "/eloqstore_data";
+        if (!std::filesystem::exists(eloq_store_config.storage_path_))
+        {
+            std::filesystem::create_directories(
+                eloq_store_config.storage_path_);
+        }
+    }
+
     eloq_store_config.open_files_limit_ =
         !CheckCommandLineFlagIsDefault("eloq_store_open_files_limit")
             ? FLAGS_eloq_store_open_files_limit
