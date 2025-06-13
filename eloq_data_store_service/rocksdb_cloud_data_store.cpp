@@ -331,7 +331,8 @@ RocksDBCloudDataStore::RocksDBCloudDataStore(
       enable_stats_(config.enable_stats_),
       stats_dump_period_sec_(config.stats_dump_period_sec_),
       storage_path_(config.storage_path_ + "/ds_" + std::to_string(shard_id)),
-      wal_dir_(config.wal_dir_),
+      wal_dir_(config.wal_dir_.empty() ? "" : config.wal_dir_ + "/ds_" +
+               std::to_string(shard_id)),
       max_write_buffer_number_(config.max_write_buffer_number_),
       max_background_jobs_(config.max_background_jobs_),
       max_background_flushes_(config.max_background_flush_),
