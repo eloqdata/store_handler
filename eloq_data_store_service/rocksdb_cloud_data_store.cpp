@@ -588,31 +588,15 @@ bool RocksDBCloudDataStore::StartDB(std::string cookie, std::string prev_cookie)
     // new CLOUDMANIFEST suffixed by cookie and epochID suffixed
     // MANIFEST files are generated, which won't overwrite the old ones
     // opened by previous leader
+    auto &cfs_options_ref = cfs->GetMutableCloudFileSystemOptions();
     cfs_options_.cookie_on_open = cookie_on_open;
+    cfs_options_ref.cookie_on_open = cookie_on_open;
     cfs_options_.new_cookie_on_open = new_cookie_on_open;
+    cfs_options_ref.new_cookie_on_open = new_cookie_on_open;
 
     DLOG(INFO) << "StartDB cookie_on_open: " << cfs_options_.cookie_on_open
                << " new_cookie_on_open: " << cfs_options_.new_cookie_on_open;
 
-    // destroy the cfs after checking the cookie on open
-    delete cfs;
-
-    // Reopen the cloud file system
-    status = EloqDS::NewCloudFileSystem(cfs_options_, &cfs);
-    if (!status.ok())
-    {
-        LOG(ERROR) << "Unable to create cloud storage filesystem, cloud type: "
-#if defined(DATA_STORE_TYPE_ELOQDSS_ROCKSDB_CLOUD_S3)
-                   << "Aws"
-#elif defined(DATA_STORE_TYPE_ELOQDSS_ROCKSDB_CLOUD_GCS)
-                   << "Gcp"
-#endif
-                   << ", at path rocksdb_cloud with bucket "
-                   << cfs_options_.src_bucket.GetBucketName()
-                   << ", with error: " << status.ToString();
-
-        std::abort();
-    }
     cloud_fs_.reset(cfs);
     // Create options and use the AWS file system that we created
     // earlier
