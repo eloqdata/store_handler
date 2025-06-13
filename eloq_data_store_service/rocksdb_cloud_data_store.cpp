@@ -376,7 +376,6 @@ RocksDBCloudDataStore::RocksDBCloudDataStore(
 
 RocksDBCloudDataStore::~RocksDBCloudDataStore()
 {
-    assert(db_ == nullptr);
     if (query_worker_pool_ != nullptr || data_store_service_ != nullptr ||
         db_ != nullptr)
     {
