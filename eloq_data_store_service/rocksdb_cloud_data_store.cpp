@@ -331,6 +331,7 @@ RocksDBCloudDataStore::RocksDBCloudDataStore(
       enable_stats_(config.enable_stats_),
       stats_dump_period_sec_(config.stats_dump_period_sec_),
       storage_path_(config.storage_path_ + "/ds_" + std::to_string(shard_id)),
+      wal_dir_(config.wal_dir_),
       max_write_buffer_number_(config.max_write_buffer_number_),
       max_background_jobs_(config.max_background_jobs_),
       max_background_flushes_(config.max_background_flush_),
@@ -703,75 +704,77 @@ bool RocksDBCloudDataStore::OpenCloudDB(
     // will be deleted due to LRU policy, which causes DB::Open failed
     options.max_open_files = 0;
 
-    std::vector<rocksdb::ColumnFamilyDescriptor> cfds;
-    rocksdb::ColumnFamilyOptions cf_options;
-
     if (target_file_size_base_ > 0)
     {
-        cf_options.target_file_size_base = target_file_size_base_;
+        options.target_file_size_base = target_file_size_base_;
     }
 
     if (target_file_size_multiplier_ > 0)
     {
-        cf_options.target_file_size_multiplier = target_file_size_multiplier_;
+        options.target_file_size_multiplier = target_file_size_multiplier_;
     }
 
     // mem table size
     if (write_buff_size_ > 0)
     {
-        cf_options.write_buffer_size = write_buff_size_;
+        options.write_buffer_size = write_buff_size_;
     }
     // Max write buffer number
     if (max_write_buffer_number_ > 0)
     {
-        cf_options.max_write_buffer_number = max_write_buffer_number_;
+        options.max_write_buffer_number = max_write_buffer_number_;
     }
 
     if (level0_slowdown_writes_trigger_ > 0)
     {
-        cf_options.level0_slowdown_writes_trigger =
+        options.level0_slowdown_writes_trigger =
             level0_slowdown_writes_trigger_;
     }
 
     if (level0_stop_writes_trigger_ > 0)
     {
-        cf_options.level0_stop_writes_trigger = level0_stop_writes_trigger_;
+        options.level0_stop_writes_trigger = level0_stop_writes_trigger_;
     }
 
     if (level0_file_num_compaction_trigger_ > 0)
     {
-        cf_options.level0_file_num_compaction_trigger =
+        options.level0_file_num_compaction_trigger =
             level0_file_num_compaction_trigger_;
     }
 
     if (soft_pending_compaction_bytes_limit_ > 0)
     {
-        cf_options.soft_pending_compaction_bytes_limit =
+        options.soft_pending_compaction_bytes_limit =
             soft_pending_compaction_bytes_limit_;
     }
 
     if (hard_pending_compaction_bytes_limit_ > 0)
     {
-        cf_options.hard_pending_compaction_bytes_limit =
+        options.hard_pending_compaction_bytes_limit =
             hard_pending_compaction_bytes_limit_;
     }
 
     if (max_bytes_for_level_base_ > 0)
     {
-        cf_options.max_bytes_for_level_base = max_bytes_for_level_base_;
+        options.max_bytes_for_level_base = max_bytes_for_level_base_;
     }
 
     if (max_bytes_for_level_multiplier_ > 0)
     {
-        cf_options.max_bytes_for_level_multiplier =
+        options.max_bytes_for_level_multiplier =
             max_bytes_for_level_multiplier_;
+    }
+
+    if (!wal_dir_.empty())
+    {
+        options.wal_dir = wal_dir_;
     }
 
     // set ttl compaction filter
     assert(ttl_compaction_filter_ == nullptr);
     ttl_compaction_filter_ = std::make_unique<EloqDS::TTLCompactionFilter>();
 
-    cf_options.compaction_filter =
+    options.compaction_filter =
         static_cast<rocksdb::CompactionFilter *>(ttl_compaction_filter_.get());
 
     auto start = std::chrono::system_clock::now();
