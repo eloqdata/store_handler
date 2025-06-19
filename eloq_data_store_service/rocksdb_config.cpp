@@ -37,7 +37,6 @@ DEFINE_uint32(rocksdb_stats_dump_period_sec,
               600,
               "RocksDB stats dump period sec");
 DEFINE_string(rocksdb_storage_path, "", "RocksDB store storage path");
-DEFINE_string(rocksdb_wal_dir, "", "RocksDB store write ahead log dir");
 DEFINE_uint32(rocksdb_max_write_buffer_number,
               8,
               "RocksDB store max write buffer number");
@@ -331,11 +330,6 @@ RocksDBConfig::RocksDBConfig(const INIReader &config,
         storage_path_.append(eloq_data_path);
         storage_path_.append("/rocksdb_data");
     }
-
-    wal_dir_ =
-        !CheckCommandLineFlagIsDefault("rocksdb_wal_dir")
-            ? FLAGS_rocksdb_wal_dir
-            : config.GetString("store", "rocksdb_wal_dir", FLAGS_rocksdb_wal_dir);
 
     max_write_buffer_number_ =
         !CheckCommandLineFlagIsDefault("rocksdb_max_write_buffer_number")

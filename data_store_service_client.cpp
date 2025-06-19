@@ -740,7 +740,7 @@ bool DataStoreServiceClient::UpsertTableStatistics(
                       std::move(records_ts),
                       std::move(records_ttl),
                       std::move(op_types),
-                      false,
+                      true,
                       &callback_data,
                       &SyncCallback);
     callback_data.Wait();
@@ -1249,7 +1249,7 @@ bool DataStoreServiceClient::UpdateRangeSlices(
                           std::move(records_ts),
                           std::move(records_ttl),
                           std::move(op_types),
-                          false,
+                          true,
                           &callback_data,
                           &SyncCallback);
         callback_data.Wait();
@@ -1287,7 +1287,7 @@ bool DataStoreServiceClient::UpdateRangeSlices(
                       std::move(records_ts),
                       std::move(records_ttl),
                       std::move(op_types),
-                      false,
+                      true,
                       &callback_data,
                       &SyncCallback);
     callback_data.Wait();
@@ -1319,6 +1319,17 @@ bool DataStoreServiceClient::UpsertRanges(
         {
             return false;
         }
+    }
+
+    SyncCallbackData callback_data;
+    FlushData(kv_range_table_name, &callback_data, &SyncCallback);
+    callback_data.Wait();
+    if (callback_data.Result().error_code() !=
+        EloqDS::remote::DataStoreError::NO_ERROR)
+    {
+        LOG(WARNING) << "UpsertRanges: Failed to flush ranges. Error: "
+                     << callback_data.Result().error_msg();
+        return false;
     }
 
     return true;

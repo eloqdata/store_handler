@@ -19,8 +19,6 @@
  *    <http://www.gnu.org/licenses/>.
  *
  */
-#include "rocksdb_cloud_data_store.h"
-
 #include <aws/s3/S3Client.h>
 #include <bthread/condition_variable.h>
 #include <rocksdb/db.h>
@@ -42,6 +40,7 @@
 #include "ds_request.pb.h"
 #include "internal_request.h"
 #include "rocksdb/cloud/cloud_storage_provider.h"
+#include "rocksdb_cloud_data_store.h"
 
 #define LONG_STR_SIZE 21
 
@@ -331,8 +330,6 @@ RocksDBCloudDataStore::RocksDBCloudDataStore(
       enable_stats_(config.enable_stats_),
       stats_dump_period_sec_(config.stats_dump_period_sec_),
       storage_path_(config.storage_path_ + "/ds_" + std::to_string(shard_id)),
-      wal_dir_(config.wal_dir_.empty() ? "" : config.wal_dir_ + "/ds_" +
-               std::to_string(shard_id)),
       max_write_buffer_number_(config.max_write_buffer_number_),
       max_background_jobs_(config.max_background_jobs_),
       max_background_flushes_(config.max_background_flush_),
@@ -764,11 +761,6 @@ bool RocksDBCloudDataStore::OpenCloudDB(
     {
         options.max_bytes_for_level_multiplier =
             max_bytes_for_level_multiplier_;
-    }
-
-    if (!wal_dir_.empty())
-    {
-        options.wal_dir = wal_dir_;
     }
 
     // set ttl compaction filter
@@ -1344,7 +1336,7 @@ void RocksDBCloudDataStore::BatchWriteRecords(
             const uint16_t record_parts_cnt =
                 2 + parts_cnt_per_record;  // 2 for timestamp and ttl
             rocksdb::WriteOptions write_options;
-            write_options.disableWAL = batch_write_req->SkipWal();
+            write_options.disableWAL = true;
             rocksdb::WriteBatch write_batch;
 
             std::unique_ptr<rocksdb::Slice[]> key_slices =
@@ -1400,11 +1392,9 @@ void RocksDBCloudDataStore::BatchWriteRecords(
 
             auto write_status = db->Write(write_options, &write_batch);
 
-            DecreaseWriteCounter();
-
             if (!write_status.ok())
             {
-                LOG(ERROR) << "PutAll end failed, table:"
+                LOG(ERROR) << "BatchWriteRecords failed, table:"
                            << batch_write_req->GetTableName()
                            << ", result:" << static_cast<int>(write_status.ok())
                            << ", error: " << write_status.ToString()
@@ -1412,10 +1402,24 @@ void RocksDBCloudDataStore::BatchWriteRecords(
                 result.set_error_code(
                     ::EloqDS::remote::DataStoreError::WRITE_FAILED);
                 result.set_error_msg(write_status.ToString());
-                batch_write_req->SetFinish(result);
-                return;
+            }
+            else if (!batch_write_req->SkipWal())
+            {
+                rocksdb::FlushOptions flush_options;
+                flush_options.wait = true;
+                auto flush_status = db->Flush(flush_options);
+                if (!flush_status.ok())
+                {
+                    LOG(ERROR)
+                        << "Flush failed after BatchWriteRecords, error: "
+                        << flush_status.ToString();
+                    result.set_error_code(
+                        ::EloqDS::remote::DataStoreError::FLUSH_FAILED);
+                    result.set_error_msg(flush_status.ToString());
+                }
             }
 
+            DecreaseWriteCounter();
             result.set_error_code(::EloqDS::remote::DataStoreError::NO_ERROR);
             batch_write_req->SetFinish(result);
         });
