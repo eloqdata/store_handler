@@ -49,8 +49,7 @@ public:
             .append(eloq_store_configs_.storage_path_)
             .append("/ds_")
             .append(std::to_string(shard_id));
-        store_config.fd_limit = eloq_store_configs_.open_files_limit_ /
-                                eloq_store_configs_.worker_count_;
+        store_config.fd_limit = eloq_store_configs_.open_files_limit_;
 
         DLOG(INFO) << "Create EloqStore storage with workers: "
                    << store_config.num_threads

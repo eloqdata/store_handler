@@ -161,9 +161,9 @@ private:
 
 struct EloqStoreConfig
 {
-    uint16_t worker_count_{0};
+    uint16_t worker_count_{1};
     std::string storage_path_{""};
-    uint32_t open_files_limit_{0};
+    uint32_t open_files_limit_{1024};
 };
 
 class EloqStoreDataStore : public DataStore

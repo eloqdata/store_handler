@@ -81,7 +81,7 @@ DEFINE_bool(bootstrap,
             "node now.)");
 
 #if defined(DATA_STORE_TYPE_ELOQDSS_ELOQSTORE)
-DEFINE_uint32(eloq_store_worker_num, 0, "EloqStore server worker num.");
+DEFINE_uint32(eloq_store_worker_num, 1, "EloqStore server worker num.");
 
 DEFINE_string(eloq_store_data_path,
               "",
@@ -358,8 +358,7 @@ int main(int argc, char *argv[])
             .append(eloq_store_config.storage_path_)
             .append("/ds_")
             .append(std::to_string(shard_id));
-        store_config.fd_limit = eloq_store_config.open_files_limit_ /
-                                eloq_store_config.worker_count_;
+        store_config.fd_limit = eloq_store_config.open_files_limit_;
 
         DLOG(INFO) << "Create EloqStore storage with workers: "
                    << store_config.num_threads
