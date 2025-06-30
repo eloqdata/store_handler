@@ -131,9 +131,6 @@ void FetchRecordCallback(void *data,
     {
         fetch_cc->rec_status_ = txservice::RecordStatus::Deleted;
         fetch_cc->rec_ts_ = 1U;
-        DLOG(INFO) << "====fetch record===notfound=="
-                   << " key: " << read_closure->Key()
-                   << " status: " << (int) fetch_cc->rec_status_;
 
         fetch_cc->SetFinish(0);
     }
@@ -151,9 +148,6 @@ void FetchRecordCallback(void *data,
                 // expired record
                 fetch_cc->rec_status_ = txservice::RecordStatus::Deleted;
                 fetch_cc->rec_ts_ = 1U;
-                DLOG(INFO) << "====fetch record===expired=="
-                           << " key: " << read_closure->Key()
-                           << " status: " << (int) fetch_cc->rec_status_;
                 fetch_cc->SetFinish(0);
                 return;
             }
@@ -181,9 +175,6 @@ void FetchRecordCallback(void *data,
             {
                 fetch_cc->rec_status_ = txservice::RecordStatus::Deleted;
                 fetch_cc->rec_ts_ = 1U;
-                DLOG(INFO) << "====fetch record===deleted=="
-                           << " key: " << read_closure->Key()
-                           << " status: " << (int) fetch_cc->rec_status_;
                 fetch_cc->SetFinish(0);
                 return;
             }
@@ -200,9 +191,6 @@ void FetchRecordCallback(void *data,
     {
         fetch_cc->SetFinish(
             static_cast<int>(txservice::CcErrorCode::DATA_STORE_ERR));
-
-        DLOG(INFO) << "====fetch record===error=="
-                   << " key: " << read_closure->Key();
     }
 }
 
@@ -284,9 +272,6 @@ void FetchTableCallback(void *data,
         // TODO(lzx): Unify table schema (de)serialization method for EloqSql
         // and EloqKV. And all data_store_handler share one KvCatalogInfo.
         catalog_image.append(read_closure->ValueString());
-
-        DLOG(INFO) << "FetchTableCallback, key:" << read_closure->Key()
-                   << ", catalog_image: " << catalog_image;
     }
     else
     {
@@ -329,9 +314,6 @@ void FetchDatabaseCallback(void *data,
         fetch_data->found_ = true;
 
         fetch_data->db_definition_.append(read_closure->ValueString());
-
-        DLOG(INFO) << "FetchDatabaseCallback, key:" << read_closure->Key()
-                   << ", db_definition: " << fetch_data->db_definition_;
     }
     else
     {
@@ -368,7 +350,6 @@ void FetchAllDatabaseCallback(void *data,
     else
     {
         uint32_t items_size = scan_next_closure->ItemsSize();
-        DLOG(INFO) << "FetchAllDatabaseCallback, items_size:" << items_size;
         std::string key;
         std::string value;
         uint64_t ts;
@@ -376,8 +357,6 @@ void FetchAllDatabaseCallback(void *data,
         for (uint32_t i = 0; i < items_size; i++)
         {
             scan_next_closure->GetItem(i, key, value, ts, ttl);
-            DLOG(INFO) << "FetchAllDatabaseCallback, db_name:" << key
-                       << ", db_definition: " << value;
             fetch_data->dbnames_.emplace_back(std::move(key));
         }
 
@@ -392,8 +371,6 @@ void FetchAllDatabaseCallback(void *data,
         }
         else
         {
-            DLOG(INFO)
-                << "FetchAllDatabaseCallback, has more data, continue to scan.";
             // has more data, continue to scan.
             fetch_data->session_id_ = scan_next_closure->SessionId();
             // fetch_data->start_key_ = fetch_data->dbnames_.back();
@@ -437,8 +414,6 @@ void DiscoverAllTableNamesCallback(void *data,
     else
     {
         uint32_t items_size = scan_next_closure->ItemsSize();
-        DLOG(INFO) << "DiscoverAllTableNamesCallback, items_size:"
-                   << items_size;
         std::string key;
         std::string value;
         uint64_t ts;
@@ -448,7 +423,6 @@ void DiscoverAllTableNamesCallback(void *data,
             scan_next_closure->GetItem(i, key, value, ts, ttl);
             if (key == txservice::Sequences::table_name_sv_)
             {
-                DLOG(INFO) << "====skip read sequence table name";
                 continue;
             }
             fetch_data->table_names_.emplace_back(std::move(key));
@@ -465,8 +439,6 @@ void DiscoverAllTableNamesCallback(void *data,
         }
         else
         {
-            DLOG(INFO) << "DiscoverAllTableNamesCallback, has more data, "
-                          "continue to scan.";
             // has more data, continue to scan.
             fetch_data->session_id_ = scan_next_closure->SessionId();
             // fetch_data->start_key_ = fetch_data->table_names_.back();
@@ -521,7 +493,6 @@ void FetchTableRangesCallback(void *data,
             mi_heap_set_default(shards->GetTableRangesHeap());
 
         uint32_t items_size = scan_next_closure->ItemsSize();
-        DLOG(INFO) << "FetchTableRangesCallback, items_size:" << items_size;
         std::string key;
         std::string value;
         uint64_t ts;
@@ -547,9 +518,6 @@ void FetchTableRangesCallback(void *data,
 
             std::string_view start_key_sv(key.data() + table_name_sv.size(),
                                           key.size() - table_name_sv.size());
-            DLOG(INFO) << "FetchTableRangesCallback, table_name:"
-                       << table_name_sv << ", start_key:" << start_key_sv
-                       << ", partition_id: " << partition_id;
 
             // If the key is 0x00, it means that the key is NegativeInfinity.
             // (see EloqKey::PackedNegativeInfinity)
@@ -602,8 +570,6 @@ void FetchTableRangesCallback(void *data,
         }
         else
         {
-            DLOG(INFO) << "FetchTableRangesCallback, has more data, "
-                          "continue to scan.";
             // has more data, continue to scan.
             fetch_data->session_id_ = scan_next_closure->SessionId();
             fetch_data->start_key_.clear();
@@ -876,14 +842,11 @@ void FetchTableStatsCallback(void *data,
         uint64_t ts;
         uint64_t ttl;
         uint32_t items_size = scan_next_closure->ItemsSize();
-        DLOG(INFO) << "FetchTableStatsCallback, items_size:" << items_size;
         fetch_data->session_id_ = scan_next_closure->SessionId();
         assert(items_size <= 1);
         if (items_size == 1)
         {
             scan_next_closure->GetItem(0, key, value, ts, ttl);
-            DLOG(INFO) << "FetchTableStatsCallback, key:" << key
-                       << ", value: " << value << ", ts: " << ts;
 
             auto &base_table_name = fetch_cc->CatalogName();
             std::string_view base_table_sv = base_table_name.StringView();
@@ -957,8 +920,6 @@ void LoadRangeSliceCallback(void *data,
                             DataStoreServiceClient &client,
                             const remote::CommonResult &result)
 {
-    DLOG(INFO) << "====LoadRangeSliceCallback, closure:" << closure
-               << ",err:" << result.error_code();
     assert(data != nullptr);
     LoadRangeSliceCallbackData *callback_data =
         static_cast<LoadRangeSliceCallbackData *>(data);
@@ -1074,7 +1035,6 @@ void FetchArchivesCallback(void *data,
     }
 
     uint32_t items_size = scan_next_closure->ItemsSize();
-    DLOG(INFO) << "FetchArchivesCallback, items_size:" << items_size;
     std::string archive_key;
     std::string archive_value;
     std::string record_str;

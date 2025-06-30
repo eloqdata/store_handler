@@ -1248,7 +1248,6 @@ void RocksDBCloudDataStore::Read(ReadRequest *req)
                 uint64_t rec_ttl;
                 DeserializeValueToRecord(
                     value.data(), value.size(), rec, rec_ts, rec_ttl);
-                DLOG(INFO) << "read key:" << key_str;
                 req->SetRecord(std::move(rec));
                 req->SetRecordTs(rec_ts);
                 req->SetRecordTtl(rec_ttl);
@@ -1256,7 +1255,6 @@ void RocksDBCloudDataStore::Read(ReadRequest *req)
             }
             else if (status.IsNotFound())
             {
-                DLOG(INFO) << "read key not found:" << key_str;
                 req->SetRecord("");
                 req->SetRecordTs(0);
                 req->SetRecordTtl(0);
@@ -1265,7 +1263,8 @@ void RocksDBCloudDataStore::Read(ReadRequest *req)
             else
             {
                 req->SetFinish(::EloqDS::remote::DataStoreError::READ_FAILED);
-                DLOG(ERROR) << "read key:" << key_str << " failed";
+                LOG(ERROR) << "RocksdbCloud read key:" << key_str
+                           << " failed, status:" << status.ToString();
             }
         });
 }
@@ -1357,8 +1356,6 @@ void RocksDBCloudDataStore::BatchWriteRecords(
                 // TODO(lzx):enable rocksdb user-defined-timestamp?
                 if (batch_write_req->KeyOpType(i) == WriteOpType::DELETE)
                 {
-                    DLOG(INFO) << "delete key:"
-                               << BuildKeyForDebug(key_slices, key_parts_cnt);
                     write_batch.Delete(key_parts);
                 }
                 else
@@ -1475,8 +1472,6 @@ void RocksDBCloudDataStore::DropTable(DropTableRequest *drop_table_req)
 
             rocksdb::WriteOptions write_opts;
             write_opts.disableWAL = true;
-            DLOG(INFO) << "=====rockscloud delete range:" << start_key_str
-                       << "-" << end_key_str;
             auto status = db->DeleteRange(write_opts, start_key, end_key);
             if (!status.ok())
             {
@@ -1752,7 +1747,6 @@ void RocksDBCloudDataStore::ScanNext(ScanRequest *scan_req)
                 DeserializeValueToRecord(
                     value.data(), value.size(), rec, rec_ts, rec_ttl);
 
-                DLOG(INFO) << "====scannext, key:" << key;
                 scan_req->AddItem(
                     std::string(key), std::move(rec), rec_ts, rec_ttl);
                 if (scan_forward)

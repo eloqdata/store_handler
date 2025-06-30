@@ -177,9 +177,6 @@ bool DataStoreServiceClient::PutAll(std::vector<txservice::FlushRecord> &batch,
                 // Start a new batch if done with current partition.
                 if (write_batch_size >= MAX_WRITE_BATCH_SIZE)
                 {
-                    DLOG(INFO)
-                        << "=====PutAll=====of partition#" << part_it->first
-                        << " with batch key count: " << key_parts.size();
                     BatchWriteRecords(kv_table_name,
                                       part_it->first,
                                       std::move(key_parts),
@@ -225,15 +222,6 @@ bool DataStoreServiceClient::PutAll(std::vector<txservice::FlushRecord> &batch,
 
                     op_types.push_back(WriteOpType::PUT);
                     write_batch_size += sizeof(WriteOpType);
-
-                    DLOG(INFO) << "=====PutAll==PUT==="
-                               << " key: "
-                               << std::string_view(tx_key.Data(), tx_key.Size())
-                               << " value: "
-                               << std::string_view(rec->EncodedBlobData(),
-                                                   rec->EncodedBlobSize())
-                               << " ts: " << ckpt_rec.commit_ts_
-                               << " partition_id: " << ckpt_rec.partition_id_;
                 }
                 else
                 {
@@ -251,20 +239,11 @@ bool DataStoreServiceClient::PutAll(std::vector<txservice::FlushRecord> &batch,
 
                     op_types.push_back(WriteOpType::DELETE);
                     write_batch_size += sizeof(WriteOpType);
-
-                    DLOG(INFO) << "=====PutAll==DELETE==="
-                               << " key: "
-                               << std::string_view(tx_key.Data(), tx_key.Size())
-                               << " ts: " << ckpt_rec.commit_ts_
-                               << " partition_id: " << ckpt_rec.partition_id_;
                 }
             }
             // Send out the last batch of this partition
             if (key_parts.size() > 0)
             {
-                DLOG(INFO) << "=====PutAll=====of partition#" << part_it->first
-                           << " with last batch key count: "
-                           << key_parts.size();
                 BatchWriteRecords(kv_table_name,
                                   part_it->first,
                                   std::move(key_parts),
@@ -1350,8 +1329,8 @@ bool DataStoreServiceClient::FetchTable(const txservice::TableName &table_name,
 
     if (callback_data.HasError())
     {
-        DLOG(INFO) << "FetchTable error: "
-                   << callback_data.Result().error_msg();
+        LOG(WARNING) << "FetchTable error: "
+                     << callback_data.Result().error_msg();
     }
 
     return !callback_data.HasError();
@@ -1902,8 +1881,6 @@ bool DataStoreServiceClient::PutArchivesAll(
             if (write_batch_size >= MAX_WRITE_BATCH_SIZE)
             {
                 int32_t part_id = part_it->first;
-                DLOG(INFO) << "=====PutArchiveAll=====of partition#" << part_id
-                           << " with batch key count: " << keys.size();
                 BatchWriteRecords(kv_mvcc_archive_name,
                                   part_id,
                                   std::move(keys),
@@ -1972,23 +1949,12 @@ bool DataStoreServiceClient::PutArchivesAll(
                                    records,
                                    write_batch_size);
             }
-
-            DLOG(INFO) << "=====PutArchiveAll==PUT==="
-                       << " key: "
-                       << std::string_view(tx_key.Data(), tx_key.Size())
-                       << " is_deleted: "
-                       << (int) (ckpt_rec.payload_status_ ==
-                                 txservice::RecordStatus::Deleted)
-                       << " ts: " << ckpt_rec.commit_ts_
-                       << " partition_id: " << ckpt_rec.partition_id_;
         }
 
         // Send out the last batch of this partition
         if (keys.size() > 0)
         {
             uint32_t part_id = part_it->first;
-            DLOG(INFO) << "=====PutArchiveAll=====of partition#" << part_id
-                       << " with last batch key count: " << keys.size();
             BatchWriteRecords(kv_mvcc_archive_name,
                               part_id,
                               std::move(keys),
@@ -2071,8 +2037,6 @@ bool DataStoreServiceClient::CopyBaseToArchive(
         {
             txservice::TxKey &tx_key = batch[flush_idx].first;
             assert(tx_key.Data() != nullptr && tx_key.Size() > 0);
-            DLOG(INFO) << "====CopyBaseToArchive, i:" << i
-                       << ", key:" << tx_key.ToString();
             uint32_t partition_id = batch[flush_idx].second;
             auto *callback_data = &callback_datas[i];
             callback_data->ResetResult();
@@ -2388,10 +2352,6 @@ DataStoreServiceClient::FetchRecord(txservice::FetchRecordCc *fetch_cc)
         partition_id = MapKeyHashToPartitionId(fetch_cc->tx_key_);
     }
 
-    DLOG(INFO) << "====fetch record===="
-               << " key: " << fetch_cc->tx_key_.ToString()
-               << " partition_id: " << partition_id;
-
     if (!fetch_cc->tx_key_.IsOwner())
     {
         fetch_cc->tx_key_ = fetch_cc->tx_key_.Clone();
@@ -2529,7 +2489,6 @@ void DataStoreServiceClient::FlushData(const std::string_view table_name,
     shard_ids.reserve(shards.size());
     for (auto &[s_id, _] : shards)
     {
-        DLOG(INFO) << "=====to flushdata data_shard_id: " << s_id;
         shard_ids.push_back(s_id);
     }
 
@@ -2544,11 +2503,8 @@ void DataStoreServiceClient::FlushDataInternal(
 {
     assert(!flush_data_closure->UnfinishedShards().empty());
     uint32_t shard_id = flush_data_closure->UnfinishedShards().back();
-    DLOG(INFO) << "FlushDataInternal of shard#" << shard_id
-               << " for table:" << flush_data_closure->TableName();
     if (IsLocalShard(shard_id))
     {
-        DLOG(INFO) << "======FlushData on local";
         flush_data_closure->PrepareRequest(true);
         data_store_service_->FlushData(flush_data_closure->TableName(),
                                        shard_id,
@@ -2557,8 +2513,6 @@ void DataStoreServiceClient::FlushDataInternal(
     }
     else
     {
-        DLOG(INFO) << "======FlushData on remote";
-
         flush_data_closure->PrepareRequest(false);
         auto channel = GetDataStoreServiceChannelByShardId(shard_id);
         if (!channel)
@@ -2594,7 +2548,6 @@ void DataStoreServiceClient::DropTable(std::string_view table_name,
     shard_ids.reserve(shards.size());
     for (auto &[s_id, _] : shards)
     {
-        DLOG(INFO) << "===shardid: " << s_id;
         shard_ids.push_back(s_id);
     }
 
@@ -2609,8 +2562,6 @@ void DataStoreServiceClient::DropTableInternal(
 {
     // TODO(lzx): drop table data on all data shards in parallel.
     uint32_t shard_id = drop_table_closure->UnfinishedShards().back();
-    DLOG(INFO) << "DropTableInternal of shard#" << shard_id
-               << " for table:" << drop_table_closure->TableName();
     if (IsLocalShard(shard_id))
     {
         drop_table_closure->PrepareRequest(true);
@@ -2938,9 +2889,6 @@ bool DataStoreServiceClient::InitTableLastRangePartitionId(
                           &callback_data,
                           &SyncCallback);
         callback_data.Wait();
-        DLOG(INFO) << "====write, key:"
-                   << std::string_view(seq_pair.first.Data(),
-                                       seq_pair.first.Size());
         if (callback_data.Result().error_code() ==
             EloqDS::remote::DataStoreError::NO_ERROR)
         {
@@ -3128,8 +3076,6 @@ void DataStoreServiceClient::BatchWriteRecordsInternal(
     }
     else
     {
-        DLOG(INFO) << "======batchwrite on remote";
-
         closure->is_local_request_ = false;
 
         auto channel =
