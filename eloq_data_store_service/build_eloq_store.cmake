@@ -7,6 +7,12 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 SET(ELOQ_STORE_SOURCE_DIR ${ELOQSTORE_PARENT_DIR}/eloq_store)
 
+option(ELOQ_MODULE_ENABLED "Enable EloqModule" OFF)
+message("ELOQ_MODULE_ENABLED: " ${ELOQ_MODULE_ENABLED})
+if (ELOQ_MODULE_ENABLED)
+    add_compile_definitions(ELOQ_MODULE_ENABLED)
+endif()
+
 find_package(Threads REQUIRED)
 find_package(glog REQUIRED)
 
@@ -72,7 +78,6 @@ set(ELOQ_STORE_SOURCES
     ${ELOQ_STORE_SOURCE_DIR}/read_task.cpp
     ${ELOQ_STORE_SOURCE_DIR}/scan_task.cpp
     ${ELOQ_STORE_SOURCE_DIR}/batch_write_task.cpp
-    ${ELOQ_STORE_SOURCE_DIR}/truncate_task.cpp
     ${ELOQ_STORE_SOURCE_DIR}/compact_task.cpp
     ${ELOQ_STORE_SOURCE_DIR}/archive_task.cpp
     ${ELOQ_STORE_SOURCE_DIR}/async_io_manager.cpp
@@ -89,7 +94,10 @@ set(ELOQ_STORE_SOURCES
     ${ELOQ_STORE_SOURCE_DIR}/file_gc.cpp
     ${ELOQ_STORE_SOURCE_DIR}/archive_crond.cpp
     ${ELOQ_STORE_SOURCE_DIR}/object_store.cpp
-    ${ELOQ_STORE_SOURCE_DIR}/kv_options.cpp)
+    ${ELOQ_STORE_SOURCE_DIR}/types.cpp
+    ${ELOQ_STORE_SOURCE_DIR}/kv_options.cpp
+    ${ELOQ_STORE_SOURCE_DIR}/eloqstore_module.cpp
+    ${ELOQ_STORE_SOURCE_DIR}/async_io_listener.cpp)
 
 add_library(eloqstore STATIC ${ELOQ_STORE_SOURCES} ${INI_SOURCES})
 

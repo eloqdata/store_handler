@@ -419,7 +419,7 @@ void EloqStoreDataStore::OnScanNext(::kvstore::KvRequest *req)
     int search_cond_size = ds_scan_req->GetSearchConditionsSize();
     const remote::SearchCondition *cond = nullptr;
 
-    for (auto &entry : scan_req->entries_)
+    for (auto &entry : scan_req->Entries())
     {
         bool matched = true;
         for (int cond_idx = 0; cond_idx < search_cond_size; ++cond_idx)
@@ -427,7 +427,7 @@ void EloqStoreDataStore::OnScanNext(::kvstore::KvRequest *req)
             cond = ds_scan_req->GetSearchConditions(cond_idx);
             assert(cond);
             if (cond->field_name() == "type" &&
-                cond->value().compare(0, 1, std::get<1>(entry), 0, 1))
+                cond->value().compare(0, 1, entry.value_, 0, 1))
             {
                 // type mismatch
                 matched = false;
@@ -439,10 +439,10 @@ void EloqStoreDataStore::OnScanNext(::kvstore::KvRequest *req)
             continue;
         }
 
-        ds_scan_req->AddItem(std::move(std::get<0>(entry)),
-                             std::move(std::get<1>(entry)),
-                             std::get<2>(entry),
-                             0);
+        ds_scan_req->AddItem(std::move(entry.key_),
+                             std::move(entry.value_),
+                             entry.timestamp_,
+                             entry.expire_ts_);
     }
 
     ds_scan_req->SetFinish(::EloqDS::remote::DataStoreError::NO_ERROR);
@@ -535,7 +535,7 @@ void EloqStoreDataStore::OnScanDelete(::kvstore::KvRequest *req)
 
             if (scan_req->Error() == ::kvstore::KvError::NotFound)
             {
-                assert(!scan_req->has_remaining_ &&
+                assert(!scan_req->HasRemaining() &&
                        scan_del_op->entries_.size() == 0);
                 result.set_error_code(remote::DataStoreError::NO_ERROR);
             }
@@ -548,13 +548,12 @@ void EloqStoreDataStore::OnScanDelete(::kvstore::KvRequest *req)
             return;
         }
 
-        const size_t scan_key_cnt = scan_req->entries_.size();
+        const size_t scan_key_cnt = scan_req->Entries().size();
         if (scan_key_cnt > 0)
         {
-            const std::string &last_key =
-                std::get<0>(scan_req->entries_.back());
+            const std::string &last_key = scan_req->Entries().back().key_;
             scan_del_op->UpdateLastScanEndKey(last_key,
-                                              !scan_req->has_remaining_);
+                                              !scan_req->HasRemaining());
 
             // delete this batch keys
             scan_del_op->UpdateOperationStage(
@@ -566,10 +565,10 @@ void EloqStoreDataStore::OnScanDelete(::kvstore::KvRequest *req)
 
             std::vector<::kvstore::WriteDataEntry> delete_entries;
             delete_entries.reserve(scan_key_cnt);
-            for (auto &entry : scan_req->entries_)
+            for (auto &entry : scan_req->Entries())
             {
-                delete_entries.emplace_back(std::move(std::get<0>(entry)),
-                                            std::move(std::get<1>(entry)),
+                delete_entries.emplace_back(std::move(entry.key_),
+                                            std::move(entry.value_),
                                             delete_ts,
                                             ::kvstore::WriteOp::Delete);
             }
@@ -636,7 +635,7 @@ void EloqStoreDataStore::OnScanDelete(::kvstore::KvRequest *req)
                 scan_del_op->EloqStoreScanRequest();
             kv_scan_req.SetArgs(write_req->TableId(),
                                 last_scan_end_key,
-                                kv_scan_req.end_key_,
+                                ds_req->GetEndKey(),
                                 false);
 
             uint64_t user_data = reinterpret_cast<uint64_t>(scan_del_op);

@@ -324,6 +324,13 @@ int main(int argc, char *argv[])
                                        FLAGS_eloq_store_open_files_limit);
     auto ds_factory =
         std::make_unique<EloqDS::EloqStoreDataStoreFactory>(eloq_store_config);
+
+#ifdef ELOQ_MODULE_ENABLED
+    GFLAGS_NAMESPACE::SetCommandLineOption(
+        "bthread_concurrency",
+        std::to_string(eloq_store_config.worker_count_).c_str());
+#endif
+
 #else
     assert(false);
     std::unique_ptr<DataStoreFactory> ds_factory = nullptr;
