@@ -89,7 +89,7 @@ set(ELOQ_STORE_SOURCES
     ${ELOQ_STORE_SOURCE_DIR}/shard.cpp
     ${ELOQ_STORE_SOURCE_DIR}/root_meta.cpp
     ${ELOQ_STORE_SOURCE_DIR}/replayer.cpp
-    ${ELOQ_STORE_SOURCE_DIR}/xxhash.c
+    ${ELOQ_STORE_SOURCE_DIR}/external/xxhash.c
     ${ELOQ_STORE_SOURCE_DIR}/kill_point.cpp
     ${ELOQ_STORE_SOURCE_DIR}/file_gc.cpp
     ${ELOQ_STORE_SOURCE_DIR}/archive_crond.cpp
