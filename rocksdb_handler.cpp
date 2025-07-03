@@ -1069,7 +1069,7 @@ void RocksDBHandler::ResetColumnFamilyHandler(const std::string &old_cf,
     GetDBPtr()->DestroyColumnFamilyHandle(old_cfh);
     column_families_.erase(cfh_entry);
     assert(new_cf == cfh->GetName());
-    auto pair = column_families_.emplace(new_cf, cfh);
+    [[maybe_unused]] auto pair = column_families_.emplace(new_cf, cfh);
     assert(pair.second);
 }
 #endif
