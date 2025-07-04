@@ -395,12 +395,18 @@ void RocksDBCloudDataStore::Shutdown()
 
     if (db_ != nullptr)
     {
+        DLOG(INFO) << "RocksDBCloudDataStore Shutdown, db->Close()";
         db_->Close();
-        db_->PauseBackgroundWork();
+        DLOG(INFO)
+            << "RocksDBCloudDataStore Shutdown, delete db_";
         delete db_;
+        DLOG(INFO) << "RocksDBCloudDataStore Shutdown, db_ = nullptr";
         db_ = nullptr;
+        DLOG(INFO) << "RocksDBCloudDataStore Shutdown, ttl_compaction_filter_ = nullptr";
         ttl_compaction_filter_ = nullptr;
+        DLOG(INFO) << "RocksDBCloudDataStore Shutdown, cloud_env_ = nullptr";
         cloud_env_ = nullptr;
+        DLOG(INFO) << "RocksDBCloudDataStore Shutdown, cloud_fs_ = nullptr";
         cloud_fs_ = nullptr;
     }
 }
