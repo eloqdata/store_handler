@@ -1286,7 +1286,7 @@ void DataStoreService::OpenDSShard(
 
     assert(request->mode() != remote::DSShardStatus::CLOSED);
 
-    DSShardStatus mode;
+    DSShardStatus mode = DSShardStatus::ReadOnly;
     switch (request->mode())
     {
     case ::EloqDS::remote::DSShardStatus::READ_ONLY:
@@ -1355,7 +1355,7 @@ void DataStoreService::SwitchDSShardMode(
 
     assert(request->mode() != remote::DSShardStatus::CLOSED);
 
-    DSShardStatus mode;
+    DSShardStatus mode = DSShardStatus::ReadOnly;
     switch (request->mode())
     {
     case ::EloqDS::remote::DSShardStatus::READ_ONLY:

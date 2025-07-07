@@ -399,12 +399,12 @@ void RocksDBCloudDataStore::Shutdown()
     {
         DLOG(INFO) << "RocksDBCloudDataStore Shutdown, db->Close()";
         db_->Close();
-        DLOG(INFO)
-            << "RocksDBCloudDataStore Shutdown, delete db_";
+        DLOG(INFO) << "RocksDBCloudDataStore Shutdown, delete db_";
         delete db_;
         DLOG(INFO) << "RocksDBCloudDataStore Shutdown, db_ = nullptr";
         db_ = nullptr;
-        DLOG(INFO) << "RocksDBCloudDataStore Shutdown, ttl_compaction_filter_ = nullptr";
+        DLOG(INFO) << "RocksDBCloudDataStore Shutdown, ttl_compaction_filter_ "
+                      "= nullptr";
         ttl_compaction_filter_ = nullptr;
         DLOG(INFO) << "RocksDBCloudDataStore Shutdown, cloud_env_ = nullptr";
         cloud_env_ = nullptr;
@@ -1714,11 +1714,12 @@ void RocksDBCloudDataStore::ScanNext(ScanRequest *scan_req)
                 assert(key_slice.size() > 0);
                 // Deserialize key_slice to key by removing prefix
                 std::string_view key;
-                bool ret = DeserializeKey(key_slice.data(),
-                                          key_slice.size(),
-                                          scan_req->GetTableName(),
-                                          scan_req->GetPartitionId(),
-                                          key);
+                [[maybe_unused]] bool ret =
+                    DeserializeKey(key_slice.data(),
+                                   key_slice.size(),
+                                   scan_req->GetTableName(),
+                                   scan_req->GetPartitionId(),
+                                   key);
                 assert(ret);
                 rocksdb::Slice value = iter->value();
                 const remote::SearchCondition *cond = nullptr;
