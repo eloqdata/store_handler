@@ -1840,8 +1840,14 @@ rocksdb::InfoLogLevel RocksDBHandler::StringToInfoLogLevel(
         return rocksdb::InfoLogLevel::INFO_LEVEL;
     }
 }
+#if
+(defined(ROCKSDB_CLOUD_FS_TYPE) &&
+ (ROCKSDB_CLOUD_FS_TYPE == ROCKSDB_CLOUD_FS_TYPE_S3 ||
+  ROCKSDB_CLOUD_FS_TYPE == ROCKSDB_CLOUD_FS_TYPE_GCS))
+#define ROCKSDB_CLOUD_FS 1
+#endif
 
-#if ROCKSDB_CLOUD_FS()
+#if ROCKSDB_CLOUD_FS
 RocksDBCloudHandlerImpl::RocksDBCloudHandlerImpl(
     const EloqShare::RocksDBCloudConfig &cloud_config,
     const EloqShare::RocksDBConfig &config,
@@ -3179,5 +3185,5 @@ bool RocksDBHandlerImpl::SendFileToRemoteNode(const std::string &snapshot_path,
     return res == 0;
 }
 
-#endif  // ROCKSDB_CLOUD_FS()
+#endif  // ROCKSDB_CLOUD_FS
 }  // namespace EloqKV

@@ -35,16 +35,6 @@
 #define ROCKSDB_CLOUD_FS_TYPE_S3 1
 #define ROCKSDB_CLOUD_FS_TYPE_GCS 2
 
-#define ROCKSDB_CLOUD_FS()                                                     \
-    (defined(ROCKSDB_CLOUD_FS_TYPE) &&                                         \
-     (ROCKSDB_CLOUD_FS_TYPE == ROCKSDB_CLOUD_FS_TYPE_S3 ||                     \
-      ROCKSDB_CLOUD_FS_TYPE == ROCKSDB_CLOUD_FS_TYPE_GCS))
-
-#define ELOQDS()                                                               \
-    (defined(DATA_STORE_TYPE_ELOQDSS_ROCKSDB_CLOUD_S3) ||                      \
-     defined(DATA_STORE_TYPE_ELOQDSS_ROCKSDB_CLOUD_GCS) ||                     \
-     defined(DATA_STORE_TYPE_ELOQDSS_ELOQSTORE))
-
 namespace EloqDS
 {
 template <typename KeyT, typename ValueT>

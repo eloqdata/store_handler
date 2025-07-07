@@ -25,8 +25,14 @@
 
 #include "INIReader.h"
 #include "store_handler/kv_store.h"
+#if
+(defined(ROCKSDB_CLOUD_FS_TYPE) &&
+ (ROCKSDB_CLOUD_FS_TYPE == ROCKSDB_CLOUD_FS_TYPE_S3 ||
+  ROCKSDB_CLOUD_FS_TYPE == ROCKSDB_CLOUD_FS_TYPE_GCS))
+#define ROCKSDB_CLOUD_FS 1
+#endif
 
-#if ROCKSDB_CLOUD_FS()
+#if ROCKSDB_CLOUD_FS
 #include "rocksdb/cloud/db_cloud.h"
 #endif
 
@@ -68,7 +74,7 @@ struct RocksDBConfig
     size_t snapshot_sync_worker_num_;
 };
 
-#if ROCKSDB_CLOUD_FS()
+#if ROCKSDB_CLOUD_FS
 
 struct RocksDBCloudConfig
 {
