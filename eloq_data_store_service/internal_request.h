@@ -337,7 +337,7 @@ public:
                remote::FlushDataResponse *resp,
                google::protobuf::Closure *done)
     {
-        for (size_t idx = 0; idx < req->kv_table_name_size(); ++idx)
+        for (int idx = 0; idx < req->kv_table_name_size(); ++idx)
         {
             kv_table_names_.push_back(req->kv_table_name(idx));
         }
