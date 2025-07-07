@@ -19,6 +19,9 @@
  *    <http://www.gnu.org/licenses/>.
  *
  */
+#include "rocksdb_cloud_data_store.h"
+
+#include <aws/core/client/ClientConfiguration.h>
 #include <aws/s3/S3Client.h>
 #include <bthread/condition_variable.h>
 #include <rocksdb/db.h>
@@ -40,7 +43,6 @@
 #include "ds_request.pb.h"
 #include "internal_request.h"
 #include "rocksdb/cloud/cloud_storage_provider.h"
-#include "rocksdb_cloud_data_store.h"
 
 #define LONG_STR_SIZE 21
 

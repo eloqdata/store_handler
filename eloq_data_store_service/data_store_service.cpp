@@ -461,7 +461,7 @@ void DataStoreService::FlushData(
     done_guard.release();
 }
 
-void DataStoreService::FlushData(const std::string_view table_name,
+void DataStoreService::FlushData(const std::vector<std::string> &kv_table_names,
                                  const uint32_t shard_id,
                                  remote::CommonResult &result,
                                  ::google::protobuf::Closure *done)
@@ -494,7 +494,7 @@ void DataStoreService::FlushData(const std::string_view table_name,
     }
 
     FlushDataLocalRequest *req = local_flush_data_req_pool_.NextObject();
-    req->Reset(table_name, result, done);
+    req->Reset(&kv_table_names, result, done);
 
     // Process request async.
     data_store_map_[shard_id]->FlushData(req);

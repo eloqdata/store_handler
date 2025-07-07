@@ -142,7 +142,7 @@ message BatchWriteRecordsResponse {
 }
 
 message FlushDataRequest {
-  string kv_table_name = 1;
+  repeated string kv_table_name = 1;
   uint32 shard_id = 2;
 }
 

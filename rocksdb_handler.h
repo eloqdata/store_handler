@@ -276,12 +276,9 @@ public:
      * @param node_group
      * @return whether all entries are written to data store successfully
      */
-    bool CkptEnd(const txservice::TableName &table_name,
-                 const txservice::TableSchema *schema,
-                 uint32_t node_group,
-                 uint64_t version) override;
+    bool PersistKV(const std::vector<std::string> &kv_table_names) override;
 
-    bool NeedCkptEnd() override
+    bool NeedPersistKV() override
     {
         return true;
     }

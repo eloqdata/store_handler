@@ -123,7 +123,7 @@ public:
                 const txservice::TableSchema *table_schema,
                 uint32_t node_group) override;
 
-    bool NeedCkptEnd() override
+    bool NeedPersistKV() override
     {
         return true;
     }
@@ -136,10 +136,7 @@ public:
      * @param node_group
      * @return whether all entries are written to data store successfully
      */
-    bool CkptEnd(const txservice::TableName &table_name,
-                 const txservice::TableSchema *schema,
-                 uint32_t node_group,
-                 uint64_t version) override;
+    bool PersistKV(const std::vector<std::string> &kv_table_names) override;
 
     void UpsertTable(
         const txservice::TableSchema *old_table_schema,
@@ -484,7 +481,7 @@ private:
     /**
      * Flush data operation guarantees all data in memory is persisted to disk.
      */
-    void FlushData(const std::string_view table_name,
+    void FlushData(const std::vector<std::string> &kv_table_names,
                    void *callback_data,
                    DataStoreCallback callback);
 

@@ -312,7 +312,7 @@ public:
     virtual ~FlushDataRequest() = default;
 
     // parameters in
-    virtual const std::string_view GetTableName() const = 0;
+    virtual const std::vector<std::string> &GetKvTableNames() const = 0;
 
     // finish
     virtual void SetFinish(const remote::CommonResult &result) = 0;
@@ -327,6 +327,7 @@ public:
 
     void Clear() override
     {
+        kv_table_names_.clear();
         req_ = nullptr;
         resp_ = nullptr;
         done_ = nullptr;
@@ -336,14 +337,19 @@ public:
                remote::FlushDataResponse *resp,
                google::protobuf::Closure *done)
     {
+        for (size_t idx = 0; idx < req->kv_table_name_size(); ++idx)
+        {
+            kv_table_names_.push_back(req->kv_table_name(idx));
+        }
+
         req_ = req;
         resp_ = resp;
         done_ = done;
     }
 
-    const std::string_view GetTableName() const override
+    const std::vector<std::string> &GetKvTableNames() const override
     {
-        return req_->kv_table_name();
+        return kv_table_names_;
     }
 
     void SetFinish(const remote::CommonResult &result) override
@@ -366,6 +372,7 @@ public:
     }
 
 private:
+    std::vector<std::string> kv_table_names_;
     const remote::FlushDataRequest *req_{nullptr};
     remote::FlushDataResponse *resp_{nullptr};
     google::protobuf::Closure *done_{nullptr};
@@ -381,23 +388,23 @@ public:
 
     void Clear() override
     {
-        table_name_ = "";
+        kv_table_names_ = nullptr;
         result_ = nullptr;
         done_ = nullptr;
     }
 
-    void Reset(const std::string_view table_name,
+    void Reset(const std::vector<std::string> *kv_table_names,
                remote::CommonResult &result,
                google::protobuf::Closure *done)
     {
-        table_name_ = table_name;
+        kv_table_names_ = kv_table_names;
         result_ = &result;
         done_ = done;
     }
 
-    const std::string_view GetTableName() const override
+    const std::vector<std::string> &GetKvTableNames() const override
     {
-        return table_name_;
+        return *kv_table_names_;
     }
 
     void SetFinish(const remote::CommonResult &result) override
@@ -408,7 +415,7 @@ public:
     }
 
 private:
-    std::string_view table_name_{""};
+    const std::vector<std::string> *kv_table_names_{nullptr};
     remote::CommonResult *result_{nullptr};
     google::protobuf::Closure *done_{nullptr};
 };

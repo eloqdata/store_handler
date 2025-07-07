@@ -656,7 +656,7 @@ public:
     }
 
     void Reset(DataStoreServiceClient &store_hd,
-               const std::string_view table_name,
+               const std::vector<std::string> *kv_table_names,
                std::vector<uint32_t> &&shard_ids,
                void *callback_data,
                DataStoreCallback callback)
@@ -665,7 +665,7 @@ public:
         rpc_request_prepare_ = false;
         retry_count_ = 0;
         ds_service_client_ = &store_hd;
-        table_name_ = table_name;
+        kv_table_names_ = kv_table_names;
         shard_ids_ = std::move(shard_ids);
         callback_data_ = callback_data;
         callback_ = callback;
@@ -688,7 +688,12 @@ public:
                 return;
             }
             request_.Clear();
-            request_.set_kv_table_name(table_name_.data(), table_name_.size());
+            for (const std::string &kv_table_name : *kv_table_names_)
+            {
+                request_.add_kv_table_name(kv_table_name.data(),
+                                           kv_table_name.size());
+            }
+
             request_.set_shard_id(shard_ids_.back());
             rpc_request_prepare_ = true;
         }
@@ -805,9 +810,9 @@ public:
         channel_ = channel;
     }
 
-    const std::string_view TableName()
+    const std::vector<std::string> &KvTableNames()
     {
-        return table_name_;
+        return *kv_table_names_;
     }
 
     ::EloqDS::remote::CommonResult &LocalResultRef()
@@ -843,7 +848,7 @@ private:
     // call parameters
     bool is_local_request_{false};
     bool rpc_request_prepare_{false};
-    std::string_view table_name_;
+    const std::vector<std::string> *kv_table_names_{nullptr};
     ::EloqDS::remote::CommonResult result_;
     std::vector<uint32_t> shard_ids_;
 

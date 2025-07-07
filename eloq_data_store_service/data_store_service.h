@@ -295,7 +295,7 @@ public:
      * @param result Result (output)
      * @param done Callback function
      */
-    void FlushData(const std::string_view table_name,
+    void FlushData(const std::vector<std::string> &kv_table_names,
                    const uint32_t shard_id,
                    remote::CommonResult &result,
                    ::google::protobuf::Closure *done);

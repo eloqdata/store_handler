@@ -26,6 +26,7 @@
 #include <atomic>
 #include <chrono>
 #include <memory>
+#include <thread>
 #include <vector>
 
 #include "glog/logging.h"

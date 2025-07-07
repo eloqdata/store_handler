@@ -412,26 +412,23 @@ bool DataStoreServiceClient::PutAll(std::vector<txservice::FlushRecord> &batch,
     return true;
 }
 
-// TODO(lzx): change DataStoreHander::CkptEnd(), only need KVCatalogInfo
+// TODO(lzx): change DataStoreHander::PersistKV(), only need KVCatalogInfo
 // instead of TableSchema. why "node_group" and "version" are not used now ?
-bool DataStoreServiceClient::CkptEnd(const txservice::TableName &table_name,
-                                     const txservice::TableSchema *schema,
-                                     uint32_t node_group,
-                                     uint64_t version)
+bool DataStoreServiceClient::PersistKV(
+    const std::vector<std::string> &kv_table_names)
 {
     SyncCallbackData callback_data;
-    std::string kv_table_name =
-        schema->GetKVCatalogInfo()->GetKvTableName(table_name);
-    FlushData(kv_table_name, &callback_data, &SyncCallback);
+
+    FlushData(kv_table_names, &callback_data, &SyncCallback);
     callback_data.Wait();
     if (callback_data.Result().error_code() !=
         EloqDS::remote::DataStoreError::NO_ERROR)
     {
-        LOG(WARNING) << "DataStoreHandler: Failed to do CkptEnd. Error: "
+        LOG(WARNING) << "DataStoreHandler: Failed to do PersistKV. Error: "
                      << callback_data.Result().error_msg();
         return false;
     }
-    DLOG(INFO) << "DataStoreHandler::CkptEnd success.";
+    DLOG(INFO) << "DataStoreHandler::PersistKV success.";
 
     return true;
 }
@@ -757,18 +754,6 @@ bool DataStoreServiceClient::UpsertTableStatistics(
         EloqDS::remote::DataStoreError::NO_ERROR)
     {
         LOG(WARNING) << "UpdatetableStatistics: Failed to write ckpt version.";
-        return false;
-    }
-
-    // 5- do flush
-    callback_data.Reset();
-    FlushData(kv_table_statistics_name, &callback_data, &SyncCallback);
-    callback_data.Wait();
-    if (callback_data.Result().error_code() !=
-        EloqDS::remote::DataStoreError::NO_ERROR)
-    {
-        LOG(WARNING) << "UpdatetableStatistics: Failed to flush. Error: "
-                     << callback_data.Result().error_msg();
         return false;
     }
 
@@ -1301,7 +1286,9 @@ bool DataStoreServiceClient::UpsertRanges(
     }
 
     SyncCallbackData callback_data;
-    FlushData(kv_range_table_name, &callback_data, &SyncCallback);
+    std::vector<std::string> kv_range_table_names;
+    kv_range_table_names.emplace_back(kv_range_table_name);
+    FlushData(kv_range_table_names, &callback_data, &SyncCallback);
     callback_data.Wait();
     if (callback_data.Result().error_code() !=
         EloqDS::remote::DataStoreError::NO_ERROR)
@@ -2477,12 +2464,11 @@ void DataStoreServiceClient::DeleteRangeInternal(
     }
 }
 
-void DataStoreServiceClient::FlushData(const std::string_view table_name,
-                                       void *callback_data,
-                                       DataStoreCallback callback)
+void DataStoreServiceClient::FlushData(
+    const std::vector<std::string> &kv_table_names,
+    void *callback_data,
+    DataStoreCallback callback)
 {
-    DLOG(INFO) << "FlushDataWithRetry for table: " << table_name;
-
     FlushDataClosure *closure = flush_data_closure_pool_.NextObject();
     auto shards = cluster_manager_.GetAllShards();
     std::vector<uint32_t> shard_ids;
@@ -2493,7 +2479,7 @@ void DataStoreServiceClient::FlushData(const std::string_view table_name,
     }
 
     closure->Reset(
-        *this, table_name, std::move(shard_ids), callback_data, callback);
+        *this, &kv_table_names, std::move(shard_ids), callback_data, callback);
 
     FlushDataInternal(closure);
 }
@@ -2506,7 +2492,7 @@ void DataStoreServiceClient::FlushDataInternal(
     if (IsLocalShard(shard_id))
     {
         flush_data_closure->PrepareRequest(true);
-        data_store_service_->FlushData(flush_data_closure->TableName(),
+        data_store_service_->FlushData(flush_data_closure->KvTableNames(),
                                        shard_id,
                                        flush_data_closure->Result(),
                                        flush_data_closure);

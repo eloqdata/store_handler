@@ -487,10 +487,7 @@ bool RocksDBHandler::PutAll(std::vector<txservice::FlushRecord> &batch,
     return true;
 }
 
-bool RocksDBHandler::CkptEnd(const txservice::TableName &table_name,
-                             const txservice::TableSchema *schema,
-                             uint32_t node_group,
-                             uint64_t version)
+bool RocksDBHandler::PersistKV(const std::vector<std::string> &kv_table_names)
 {
     std::shared_lock<std::shared_mutex> db_lk(db_mux_);
     auto db = GetDBPtr();
@@ -498,19 +495,23 @@ bool RocksDBHandler::CkptEnd(const txservice::TableName &table_name,
     {
         return false;
     }
-    assert(schema != nullptr);
-    const std::string kv_cf_name = schema->GetKVCatalogInfo()->kv_table_name_;
-    rocksdb::ColumnFamilyHandle *cfh = GetColumnFamilyHandler(kv_cf_name);
-    assert(cfh != nullptr);
-    rocksdb::FlushOptions flush_options;
-    flush_options.allow_write_stall = true;
-    flush_options.wait = true;
-    auto status = GetDBPtr()->Flush(flush_options, cfh);
-    if (!status.ok())
+
+    for (const std::string &kv_cf_name : kv_table_names)
     {
-        LOG(ERROR) << "Unable to flush db with error: " << status.ToString();
-        return false;
+        rocksdb::ColumnFamilyHandle *cfh = GetColumnFamilyHandler(kv_cf_name);
+        assert(cfh != nullptr);
+        rocksdb::FlushOptions flush_options;
+        flush_options.allow_write_stall = true;
+        flush_options.wait = true;
+        auto status = GetDBPtr()->Flush(flush_options, cfh);
+        if (!status.ok())
+        {
+            LOG(ERROR) << "Unable to flush db with error: "
+                       << status.ToString();
+            return false;
+        }
     }
+
     return true;
 };
 
@@ -979,9 +980,8 @@ RocksDBHandler::FetchRecord(txservice::FetchRecordCc *fetch_cc)
         fetch_cc->start_ = metrics::Clock::now();
     }
     const std::string &kv_cf_name =
-                fetch_cc->table_schema_->GetKVCatalogInfo()->kv_table_name_;
-    rocksdb::ColumnFamilyHandle *cfh =
-                GetColumnFamilyHandler(kv_cf_name);
+        fetch_cc->table_schema_->GetKVCatalogInfo()->kv_table_name_;
+    rocksdb::ColumnFamilyHandle *cfh = GetColumnFamilyHandler(kv_cf_name);
 
     query_worker_pool_->SubmitWork(
         [this, fetch_cc, redis_key = std::move(redis_key_copy), cfh]()
