@@ -41,7 +41,13 @@
 #include "error_messages.h"
 #include "kv_store.h"
 #include "rocksdb/compaction_filter.h"
-#if ROCKSDB_CLOUD_FS()
+#if
+(defined(ROCKSDB_CLOUD_FS_TYPE) &&
+ (ROCKSDB_CLOUD_FS_TYPE == ROCKSDB_CLOUD_FS_TYPE_S3 ||
+  ROCKSDB_CLOUD_FS_TYPE == ROCKSDB_CLOUD_FS_TYPE_GCS))
+#define ROCKSDB_CLOUD_FS 1
+#endif
+#if ROCKSDB_CLOUD_FS
 #include "rocksdb/cloud/db_cloud.h"
 #else
 #include "rocksdb/db.h"
@@ -513,7 +519,7 @@ protected:
     virtual bool StartDB(bool is_ng_leader,
                          uint32_t *next_leader = nullptr) = 0;
 
-#if ROCKSDB_CLOUD_FS()
+#if ROCKSDB_CLOUD_FS
     virtual rocksdb::DBCloud *GetDBPtr() = 0;
 #else
     virtual rocksdb::DB *GetDBPtr() const = 0;
@@ -606,7 +612,7 @@ protected:
     std::queue<UpsertTableReq> pending_ddl_req_;
 };
 
-#if ROCKSDB_CLOUD_FS()
+#if ROCKSDB_CLOUD_FS
 class RocksDBCloudHandlerImpl : public RocksDBHandler
 {
 public:
@@ -717,6 +723,6 @@ private:
     friend class RocksdbSnapshotCopier;
 };
 
-#endif  // ROCKSDB_CLOUD_FS()
+#endif  // ROCKSDB_CLOUD_FS
 
 }  // namespace EloqKV

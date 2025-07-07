@@ -31,7 +31,14 @@
 #include "glog/logging.h"
 #include "store_handler/kv_store.h"
 
-#if ROCKSDB_CLOUD_FS()
+#if
+(defined(ROCKSDB_CLOUD_FS_TYPE) &&
+ (ROCKSDB_CLOUD_FS_TYPE == ROCKSDB_CLOUD_FS_TYPE_S3 ||
+  ROCKSDB_CLOUD_FS_TYPE == ROCKSDB_CLOUD_FS_TYPE_GCS))
+#define ROCKSDB_CLOUD_FS 1
+#endif
+
+#if ROCKSDB_CLOUD_FS
 #include "rocksdb/cloud/db_cloud.h"
 #endif
 
@@ -250,7 +257,7 @@ DEFINE_string(rocksdb_dialy_offpeak_time_utc,
               "RocksDB dialy offpeak time in UTC in HH:mm-HH:mm format. The "
               "default value is 00:00-05:00 of local time zone");
 
-#if ROCKSDB_CLOUD_FS()
+#if ROCKSDB_CLOUD_FS
 DEFINE_string(rocksdb_cloud_bucket_name,
               "rocksdb-cloud-test",
               "RocksDB cloud bucket name");
@@ -489,7 +496,7 @@ RocksDBConfig::RocksDBConfig(const INIReader &config,
                                FLAGS_rocksdb_dialy_offpeak_time_utc);
 };
 
-#if ROCKSDB_CLOUD_FS()
+#if ROCKSDB_CLOUD_FS
 
 RocksDBCloudConfig::RocksDBCloudConfig(const INIReader &config)
 {
