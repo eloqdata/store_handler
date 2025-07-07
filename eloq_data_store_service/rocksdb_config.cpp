@@ -19,8 +19,6 @@
  *    <http://www.gnu.org/licenses/>.
  *
  */
-#include "rocksdb_config.h"
-
 #include <cassert>
 #include <ctime>
 #include <iomanip>
@@ -30,6 +28,7 @@
 #include <string_view>
 
 #include "glog/logging.h"
+#include "rocksdb_config.h"
 
 DEFINE_string(rocksdb_info_log_level, "INFO", "RocksDB store info log level");
 DEFINE_bool(rocksdb_enable_stats, false, "RocksDB store enable stats");
@@ -257,6 +256,10 @@ DEFINE_string(rocksdb_cloud_region, "ap-northeast-1", "RocksDB cloud region");
 DEFINE_string(rocksdb_cloud_sst_file_cache_size,
               "20GB",
               "RocksDB cloud sst file cache size");
+DEFINE_int32(rocksdb_cloud_sst_file_cache_num_shard_bits,
+             5,
+             "RocksDB cloud sst file cache num shard bits, default is 5, which "
+             "means 32 shards for the cache");
 DEFINE_uint32(rocksdb_cloud_db_ready_timeout_sec,
               10,
               "RocksDB cloud db ready timeout us");
@@ -521,6 +524,14 @@ RocksDBCloudConfig::RocksDBCloudConfig(const INIReader &config)
             : config.GetString("store",
                                "rocksdb_cloud_sst_file_cache_size",
                                FLAGS_rocksdb_cloud_sst_file_cache_size);
+    int rocksdb_cloud_sst_file_cache_num_shard_bits =
+        !CheckCommandLineFlagIsDefault(
+            "rocksdb_cloud_sst_file_cache_num_shard_bits")
+            ? FLAGS_rocksdb_cloud_sst_file_cache_num_shard_bits
+            : config.GetInteger(
+                  "store",
+                  "rocksdb_cloud_sst_file_cache_num_shard_bits",
+                  FLAGS_rocksdb_cloud_sst_file_cache_num_shard_bits);
     uint32_t rocksdb_cloud_db_ready_timeout_sec =
         !CheckCommandLineFlagIsDefault("rocksdb_cloud_db_ready_timeout_sec")
             ? FLAGS_rocksdb_cloud_db_ready_timeout_sec
@@ -537,6 +548,8 @@ RocksDBCloudConfig::RocksDBCloudConfig(const INIReader &config)
 
     sst_file_cache_size_ =
         parse_size(rocksdb_cloud_sst_file_cache_size.c_str());
+    sst_file_cache_num_shard_bits_ =
+        rocksdb_cloud_sst_file_cache_num_shard_bits;
     db_ready_timeout_us_ = rocksdb_cloud_db_ready_timeout_sec * 1000000;
     db_file_deletion_delay_ = rocksdb_cloud_db_file_deletion_delay_sec;
 
