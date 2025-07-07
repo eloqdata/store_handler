@@ -156,7 +156,7 @@ static const std::string BuildKey(const std::string_view table_name,
     return tmp_key;
 }
 
-static const std::string BuildKeyForDebug(
+[[maybe_unused]] static const std::string BuildKeyForDebug(
     const std::unique_ptr<rocksdb::Slice[]> &key_slices, size_t slice_size)
 {
     std::string tmp_key;
