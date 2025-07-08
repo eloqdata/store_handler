@@ -41,10 +41,9 @@
 #include "error_messages.h"
 #include "kv_store.h"
 #include "rocksdb/compaction_filter.h"
-#if
-(defined(ROCKSDB_CLOUD_FS_TYPE) &&
- (ROCKSDB_CLOUD_FS_TYPE == ROCKSDB_CLOUD_FS_TYPE_S3 ||
-  ROCKSDB_CLOUD_FS_TYPE == ROCKSDB_CLOUD_FS_TYPE_GCS))
+#if (defined(ROCKSDB_CLOUD_FS_TYPE) &&                                         \
+     (ROCKSDB_CLOUD_FS_TYPE == ROCKSDB_CLOUD_FS_TYPE_S3 ||                     \
+      ROCKSDB_CLOUD_FS_TYPE == ROCKSDB_CLOUD_FS_TYPE_GCS))
 #define ROCKSDB_CLOUD_FS 1
 #endif
 #if ROCKSDB_CLOUD_FS
@@ -231,7 +230,7 @@ public:
     {
     }
     RocksDBCatalogInfo(const std::string &kv_table_name,
-                       const std::string &kv_index_names){};
+                       const std::string &kv_index_names) {};
     ~RocksDBCatalogInfo()
     {
     }

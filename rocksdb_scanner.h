@@ -23,9 +23,9 @@
 
 #include "kv_store.h"
 
-#if (defined(ROCKSDB_CLOUD_FS_TYPE) &&
- (ROCKSDB_CLOUD_FS_TYPE == ROCKSDB_CLOUD_FS_TYPE_S3 ||
-  ROCKSDB_CLOUD_FS_TYPE == ROCKSDB_CLOUD_FS_TYPE_GCS))
+#if (defined(ROCKSDB_CLOUD_FS_TYPE) &&                                         \
+     (ROCKSDB_CLOUD_FS_TYPE == ROCKSDB_CLOUD_FS_TYPE_S3 ||                     \
+      ROCKSDB_CLOUD_FS_TYPE == ROCKSDB_CLOUD_FS_TYPE_GCS))
 #include "rocksdb/cloud/db_cloud.h"
 #else
 #include "rocksdb/db.h"
