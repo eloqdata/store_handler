@@ -1840,10 +1840,9 @@ rocksdb::InfoLogLevel RocksDBHandler::StringToInfoLogLevel(
         return rocksdb::InfoLogLevel::INFO_LEVEL;
     }
 }
-#if
-(defined(ROCKSDB_CLOUD_FS_TYPE) && \
- (ROCKSDB_CLOUD_FS_TYPE == ROCKSDB_CLOUD_FS_TYPE_S3 || \
-  ROCKSDB_CLOUD_FS_TYPE == ROCKSDB_CLOUD_FS_TYPE_GCS))
+#if (defined(ROCKSDB_CLOUD_FS_TYPE) &&                                         \
+     (ROCKSDB_CLOUD_FS_TYPE == ROCKSDB_CLOUD_FS_TYPE_S3 ||                     \
+      ROCKSDB_CLOUD_FS_TYPE == ROCKSDB_CLOUD_FS_TYPE_GCS))
 #define ROCKSDB_CLOUD_FS 1
 #endif
 
