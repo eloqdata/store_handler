@@ -84,6 +84,7 @@ struct RocksDBCloudConfig
     std::string bucket_prefix_;
     std::string region_;
     uint64_t sst_file_cache_size_;
+    int sst_file_cache_num_shard_bits_;
     uint32_t db_ready_timeout_us_;
     uint32_t db_file_deletion_delay_;
     std::string s3_endpoint_url_;

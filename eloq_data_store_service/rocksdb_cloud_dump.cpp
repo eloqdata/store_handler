@@ -376,7 +376,7 @@ int main(int argc, char **argv)
 
         // Add sst_file_cache for accelerating random access on sst files
         cfs_options.sst_file_cache =
-            rocksdb::NewLRUCache(3 * 1024 * 1024 * 1024L);  // 3GB cache
+            rocksdb::NewLRUCache(10 * 1024 * 1024 * 1024L, 5);  // 10GB cache
 
         cfs_options.resync_on_open =
             true;  // Sync cloud manifest and manifest files

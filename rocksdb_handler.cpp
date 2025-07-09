@@ -579,7 +579,8 @@ void RocksDBHandler::UpsertTable(
                 }
                 std::shared_ptr<void> defer_unpin(
                     nullptr,
-                    [ng_id](void *) {
+                    [ng_id](void *)
+                    {
                         txservice::Sharder::Instance().UnpinNodeGroupData(
                             ng_id);
                     });

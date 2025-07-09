@@ -526,8 +526,11 @@ bool RocksDBCloudDataStore::StartDB(std::string cookie, std::string prev_cookie)
     cfs_options_.dest_bucket.SetRegion(cloud_config_.region_);
     cfs_options_.dest_bucket.SetObjectPath("rocksdb_cloud");
     // Add sst_file_cache for accerlating random access on sst files
+    // use 2^5 = 32 shards for the cache, each shard has sst_file_cache_size_/32
+    // bytes capacity
     cfs_options_.sst_file_cache =
-        rocksdb::NewLRUCache(cloud_config_.sst_file_cache_size_);
+        rocksdb::NewLRUCache(cloud_config_.sst_file_cache_size_,
+                             cloud_config_.sst_file_cache_num_shard_bits_);
     // delay cloud file deletion for 1 hour
     cfs_options_.cloud_file_deletion_delay =
         std::chrono::seconds(cloud_config_.db_file_deletion_delay_);
