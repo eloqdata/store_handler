@@ -359,7 +359,7 @@ int main(int argc, char *argv[])
             data_store_service_.get());
 
 #elif defined(DATA_STORE_TYPE_ELOQDSS_ELOQSTORE)
-        ::kvstore::KvOptions store_config;
+        ::eloqstore::KvOptions store_config;
         store_config.num_threads = eloq_store_config.worker_count_;
         store_config.store_path.emplace_back()
             .append(eloq_store_config.storage_path_)

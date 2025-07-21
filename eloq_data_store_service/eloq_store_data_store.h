@@ -82,7 +82,7 @@ public:
     ScanDeleteOperationData(const ScanDeleteOperationData &rhs) = delete;
     ScanDeleteOperationData(ScanDeleteOperationData &&rhs) = delete;
 
-    void Reset(Poolable *ds_req_ptr, ::kvstore::EloqStore *store)
+    void Reset(Poolable *ds_req_ptr, ::eloqstore::EloqStore *store)
     {
         data_store_request_ptr_ = ds_req_ptr;
         op_ts_ =
@@ -101,12 +101,12 @@ public:
         entries_.clear();
     }
 
-    ::kvstore::ScanRequest &EloqStoreScanRequest()
+    ::eloqstore::ScanRequest &EloqStoreScanRequest()
     {
         return kv_scan_req_;
     }
 
-    ::kvstore::BatchWriteRequest &EloqStoreWriteRequest()
+    ::eloqstore::BatchWriteRequest &EloqStoreWriteRequest()
     {
         return kv_write_req_;
     }
@@ -141,20 +141,20 @@ public:
         return op_stage_;
     }
 
-    ::kvstore::EloqStore *EloqStoreService() const
+    ::eloqstore::EloqStore *EloqStoreService() const
     {
         return eloq_store_;
     }
 
 private:
-    ::kvstore::ScanRequest kv_scan_req_;
-    ::kvstore::BatchWriteRequest kv_write_req_;
+    ::eloqstore::ScanRequest kv_scan_req_;
+    ::eloqstore::BatchWriteRequest kv_write_req_;
     Poolable *data_store_request_ptr_{nullptr};
     uint64_t op_ts_{0};
-    std::vector<::kvstore::WriteDataEntry> entries_;
+    std::vector<::eloqstore::WriteDataEntry> entries_;
     std::string last_scan_end_key_{""};
     Stage op_stage_{Stage::SCAN};
-    ::kvstore::EloqStore *eloq_store_{nullptr};
+    ::eloqstore::EloqStore *eloq_store_{nullptr};
 
     friend class EloqStoreDataStore;
 };
@@ -171,7 +171,7 @@ class EloqStoreDataStore : public DataStore
 public:
     EloqStoreDataStore(uint32_t shard_id,
                        DataStoreService *data_store_service,
-                       const kvstore::KvOptions &configs);
+                       const eloqstore::KvOptions &configs);
 
     ~EloqStoreDataStore() = default;
 
@@ -182,13 +182,13 @@ public:
 
     bool StartDB(std::string cookie = "", std::string prev_cookie = "") override
     {
-        ::kvstore::KvError res = eloq_store_service_.Start();
-        if (res != ::kvstore::KvError::NoError)
+        ::eloqstore::KvError res = eloq_store_service_.Start();
+        if (res != ::eloqstore::KvError::NoError)
         {
             LOG(ERROR) << "EloqStore start failed with error code: "
                        << static_cast<uint32_t>(res);
         }
-        return res == ::kvstore::KvError::NoError;
+        return res == ::eloqstore::KvError::NoError;
     }
 
     void Shutdown() override
@@ -262,16 +262,16 @@ public:
     void SwitchToReadWrite() override;
 
 private:
-    static void OnRead(::kvstore::KvRequest *req);
-    static void OnBatchWrite(::kvstore::KvRequest *req);
-    static void OnDeleteRange(::kvstore::KvRequest *req);
-    static void OnScanNext(::kvstore::KvRequest *req);
-    static void OnScanDelete(::kvstore::KvRequest *req);
-    static void OnFloor(::kvstore::KvRequest *req);
+    static void OnRead(::eloqstore::KvRequest *req);
+    static void OnBatchWrite(::eloqstore::KvRequest *req);
+    static void OnDeleteRange(::eloqstore::KvRequest *req);
+    static void OnScanNext(::eloqstore::KvRequest *req);
+    static void OnScanDelete(::eloqstore::KvRequest *req);
+    static void OnFloor(::eloqstore::KvRequest *req);
 
     void ScanDelete(DeleteRangeRequest *delete_range_req);
     void Floor(ScanRequest *scan_req);
 
-    ::kvstore::EloqStore eloq_store_service_;
+    ::eloqstore::EloqStore eloq_store_service_;
 };
 }  // namespace EloqDS
