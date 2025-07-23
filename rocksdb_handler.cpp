@@ -412,6 +412,12 @@ bool RocksDBHandler::PutAll(std::vector<txservice::FlushRecord> &batch,
     const std::string &kv_cf_name =
         table_schema->GetKVCatalogInfo()->kv_table_name_;
     rocksdb::ColumnFamilyHandle *cfh = GetColumnFamilyHandler(kv_cf_name);
+    if (cfh == nullptr)
+    {
+        LOG(ERROR) << "Failed to get column family, cf name: " << kv_cf_name;
+        return false;
+    }
+
     assert(cfh != nullptr);
     uint64_t write_batch_size = 0;
     uint64_t now = txservice::LocalCcShards::ClockTsInMillseconds();
@@ -501,6 +507,13 @@ bool RocksDBHandler::PersistKV(const std::vector<std::string> &kv_table_names)
     for (const std::string &kv_cf_name : kv_table_names)
     {
         rocksdb::ColumnFamilyHandle *cfh = GetColumnFamilyHandler(kv_cf_name);
+        if (cfh == nullptr)
+        {
+            LOG(ERROR) << "Failed to get column family, cf name: "
+                       << kv_cf_name;
+            return false;
+        }
+
         assert(cfh != nullptr);
         rocksdb::FlushOptions flush_options;
         flush_options.allow_write_stall = true;
@@ -1067,12 +1080,13 @@ RocksDBHandler::FetchRecord(txservice::FetchRecordCc *fetch_cc)
     {
         fetch_cc->start_ = metrics::Clock::now();
     }
-    const std::string &kv_cf_name =
-        fetch_cc->table_schema_->GetKVCatalogInfo()->kv_table_name_;
-    rocksdb::ColumnFamilyHandle *cfh = GetColumnFamilyHandler(kv_cf_name);
 
     query_worker_pool_->SubmitWork(
-        [this, fetch_cc, redis_key = std::move(redis_key_copy), cfh]()
+        [this,
+         fetch_cc,
+         redis_key = std::move(redis_key_copy),
+         kv_cf_name =
+             fetch_cc->table_schema_->GetKVCatalogInfo()->kv_table_name_]()
         {
             std::shared_lock<std::shared_mutex> db_lk(db_mux_);
             auto db = GetDBPtr();
@@ -1082,8 +1096,21 @@ RocksDBHandler::FetchRecord(txservice::FetchRecordCc *fetch_cc)
                     static_cast<int>(txservice::CcErrorCode::DATA_STORE_ERR));
                 return;
             }
-            std::string value;
+
+            rocksdb::ColumnFamilyHandle *cfh =
+                GetColumnFamilyHandler(kv_cf_name);
+            if (cfh == nullptr)
+            {
+                LOG(ERROR) << "Failed to get column family, cf name: "
+                           << kv_cf_name;
+                fetch_cc->SetFinish(
+                    static_cast<int>(txservice::CcErrorCode::DATA_STORE_ERR));
+                return;
+            }
+
             assert(cfh != nullptr);
+
+            std::string value;
             rocksdb::Status status =
                 db->Get(rocksdb::ReadOptions(),
                         cfh,
@@ -1137,6 +1164,7 @@ RocksDBHandler::FetchRecord(txservice::FetchRecordCc *fetch_cc)
 rocksdb::ColumnFamilyHandle *RocksDBHandler::GetColumnFamilyHandler(
     const std::string &cf)
 {
+    // TODO(lokax): add mutex?
     auto cfh = column_families_.find(cf);
     if (cfh != column_families_.cend())
     {
