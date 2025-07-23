@@ -32,6 +32,7 @@
 #include <glog/logging.h>
 #include <rocksdb/convenience.h>
 #include <rocksdb/db.h>
+#include <rocksdb/slice.h>
 #include <rocksdb/sst_file_reader.h>
 #include <rocksdb/trace_reader_writer.h>
 #include <rocksdb/utilities/checkpoint.h>
@@ -49,6 +50,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
@@ -579,8 +581,7 @@ void RocksDBHandler::UpsertTable(
                 }
                 std::shared_ptr<void> defer_unpin(
                     nullptr,
-                    [ng_id](void *)
-                    {
+                    [ng_id](void *) {
                         txservice::Sharder::Instance().UnpinNodeGroupData(
                             ng_id);
                     });
@@ -649,6 +650,7 @@ void RocksDBHandler::UpsertTable(
                 }
 
                 uint64_t store_schema_version = 0;
+                std::string store_cf_name;
                 const rocksdb::WideColumns &table_catalog_wc1 =
                     pinnable_table_catalog.columns();
                 for (auto &column : table_catalog_wc1)
@@ -660,9 +662,14 @@ void RocksDBHandler::UpsertTable(
                         store_schema_version =
                             *reinterpret_cast<const uint64_t *>(val.data());
                     }
+                    else if (column.name() == "kv_cf_name")
+                    {
+                        const rocksdb::Slice &val = column.value();
+                        store_cf_name = val.ToString();
+                    }
                 }
 
-                if (store_schema_version >= table_schema->Version())
+                if (store_schema_version > table_schema->Version())
                 {
                     // has updated, skip it.
                     if (hd_res != nullptr)
@@ -676,49 +683,74 @@ void RocksDBHandler::UpsertTable(
                     }
                     return;
                 }
+                else if (store_schema_version == table_schema->Version())
+                {
+                    // If rocksdb failed to flush in the last round, we need to
+                    // flush again.
+                    rocksdb::ColumnFamilyHandle *cfh_default =
+                        GetColumnFamilyHandler(
+                            rocksdb::kDefaultColumnFamilyName);
+                    rocksdb::FlushOptions flush_options;
+                    flush_options.allow_write_stall = false;
+                    flush_options.wait = true;
+                    auto status = db->Flush(flush_options, cfh_default);
+                    if (hd_res != nullptr)
+                    {
+                        if (!status.ok())
+                        {
+                            LOG(ERROR) << "Unable to flush db with error: "
+                                       << status.ToString();
+                            hd_res->SetError(
+                                txservice::CcErrorCode::DATA_STORE_ERR);
+                        }
+                        else
+                        {
+                            hd_res->SetFinished();
+                        }
+                    }
+                    else
+                    {
+                        *err_code =
+                            status.ok()
+                                ? txservice::CcErrorCode::NO_ERROR
+                                : txservice::CcErrorCode::DATA_STORE_ERR;
+                        ccs->Enqueue(cc_req);
+                    }
+
+                    return;
+                }
+                else if (store_schema_version == old_table_schema->Version())
+                {
+                    assert(
+                        store_cf_name ==
+                        old_table_schema->GetKVCatalogInfo()->kv_table_name_);
+                }
 
                 // Create the new column family and drop the old.
+                // step1. Create new column family
                 std::string new_cf_name =
                     table_schema->GetKVCatalogInfo()->kv_table_name_;
                 rocksdb::ColumnFamilyHandle *new_cfh;
                 auto status = db->CreateColumnFamily(
                     rocksdb::ColumnFamilyOptions(), new_cf_name, &new_cfh);
+
                 if (!status.ok())
                 {
-                    LOG(ERROR)
-                        << "Unable to create column family with error: "
-                        << status.ToString() << ", cfname: " << new_cf_name;
-                    if (hd_res != nullptr)
-                    {
-                        hd_res->SetError(
-                            txservice::CcErrorCode::DATA_STORE_ERR);
-                    }
-                    else
-                    {
-                        *err_code = txservice::CcErrorCode::DATA_STORE_ERR;
-                        ccs->Enqueue(cc_req);
-                    }
-                    return;
-                }
-                std::string old_cf_name =
-                    old_table_schema->GetKVCatalogInfo()->kv_table_name_;
-                rocksdb::ColumnFamilyHandle *cfh =
-                    GetColumnFamilyHandler(old_cf_name);
-                status = db->DropColumnFamily(cfh);
-                if (!status.ok())
-                {
+                    // already exist, use hash map to double check.
                     if (status.IsInvalidArgument())
                     {
                         LOG(WARNING)
-                            << "Unable to drop column family " << old_cf_name
-                            << " with error: " << status.ToString()
-                            << ", it may has been dropped, ignore it.";
+                            << "Unable to create column family " << new_cf_name
+                            << " with error: " << status.ToString();
+                        new_cfh = GetColumnFamilyHandler(new_cf_name);
                     }
-                    else
+
+                    if (new_cfh == nullptr)
                     {
                         LOG(ERROR)
-                            << "Unable to drop column family" << old_cf_name
-                            << " with error: " << status.ToString();
+                            << "Unable to create column family with error: "
+                            << status.ToString() << ", cfname: " << new_cf_name;
+
                         if (hd_res != nullptr)
                         {
                             hd_res->SetError(
@@ -732,9 +764,62 @@ void RocksDBHandler::UpsertTable(
                         return;
                     }
                 }
-                ResetColumnFamilyHandler(old_cf_name, new_cf_name, new_cfh);
+                else
+                {
+                    // insert new column family to hash map.
+                    column_families_.emplace(new_cf_name, new_cfh);
+                }
 
-                // Update the table catalog
+                // step2. Drop old column family.
+                rocksdb::ColumnFamilyHandle *cfh =
+                    GetColumnFamilyHandler(store_cf_name);
+                if (cfh != nullptr)
+                {
+                    status = db->DropColumnFamily(cfh);
+                    if (!status.ok())
+                    {
+                        if (status.IsInvalidArgument())
+                        {
+                            LOG(WARNING)
+                                << "Unable to drop column family "
+                                << store_cf_name
+                                << " with error: " << status.ToString()
+                                << ", it may has been dropped, ignore it.";
+                        }
+                        else
+                        {
+                            LOG(ERROR) << "Unable to drop column family"
+                                       << store_cf_name
+                                       << " with error: " << status.ToString();
+                            if (hd_res != nullptr)
+                            {
+                                hd_res->SetError(
+                                    txservice::CcErrorCode::DATA_STORE_ERR);
+                            }
+                            else
+                            {
+                                *err_code =
+                                    txservice::CcErrorCode::DATA_STORE_ERR;
+                                ccs->Enqueue(cc_req);
+                            }
+                            return;
+                        }
+                    }
+                    else
+                    {
+                        auto cfh_entry = column_families_.find(store_cf_name);
+                        assert(cfh_entry != column_families_.end());
+                        std::unique_ptr<rocksdb::ColumnFamilyHandle> &cfh_ptr =
+                            cfh_entry->second;
+                        rocksdb::ColumnFamilyHandle *old_cfh =
+                            cfh_ptr.release();
+                        db->DestroyColumnFamilyHandle(old_cfh);
+                        column_families_.erase(cfh_entry);
+                    }
+                }
+
+                // step3. write new column family name and version to table
+                // catalog
                 std::string table_key = table_name_str + "_catalog";
                 rocksdb::WideColumns table_catalog_wc;
                 table_catalog_wc.emplace_back("kv_cf_name", new_cf_name);
@@ -745,7 +830,7 @@ void RocksDBHandler::UpsertTable(
                 rocksdb::ColumnFamilyHandle *cfh_default =
                     GetColumnFamilyHandler(rocksdb::kDefaultColumnFamilyName);
                 DLOG(INFO) << "Update table catalog: " << table_key
-                           << ", from old cf: " << old_cf_name
+                           << ", from old cf: " << store_cf_name
                            << " to new cf: " << new_cf_name
                            << ", version: " << version;
                 status = db->PutEntity(rocksdb::WriteOptions(),
@@ -769,13 +854,12 @@ void RocksDBHandler::UpsertTable(
                     }
                     return;
                 }
-                // unlock ddl mutex
-                ddl_lk.unlock();
 
+                // step4. Flush table catalog from memory into sst.
                 rocksdb::FlushOptions flush_options;
                 flush_options.allow_write_stall = false;
                 flush_options.wait = true;
-                status = db->Flush(flush_options);
+                status = db->Flush(flush_options, cfh_default);
                 if (!status.ok())
                 {
                     LOG(ERROR) << "Unable to flush db with error: "
@@ -792,6 +876,9 @@ void RocksDBHandler::UpsertTable(
                     }
                     return;
                 }
+
+                // unlock ddl mutex
+                ddl_lk.unlock();
 
                 if (hd_res != nullptr)
                 {
