@@ -682,6 +682,10 @@ void RocksDBHandler::UpsertTable(
                     }
                 }
 
+                LOG(INFO) << "== UpsertTable: store schema version = "
+                          << store_schema_version << ", table schema version = "
+                          << table_schema->Version();
+
                 if (store_schema_version > table_schema->Version())
                 {
                     // has updated, skip it.
@@ -732,12 +736,14 @@ void RocksDBHandler::UpsertTable(
 
                     return;
                 }
+                /*
                 else if (store_schema_version == old_table_schema->Version())
                 {
                     assert(
                         store_cf_name ==
                         old_table_schema->GetKVCatalogInfo()->kv_table_name_);
                 }
+                */
 
                 // Create the new column family and drop the old.
                 // step1. Create new column family
