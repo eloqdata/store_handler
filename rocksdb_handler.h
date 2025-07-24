@@ -364,9 +364,7 @@ public:
     txservice::store::DataStoreHandler::DataStoreOpStatus FetchRecord(
         txservice::FetchRecordCc *fetch_cc) override;
     rocksdb::ColumnFamilyHandle *GetColumnFamilyHandler(const std::string &cf);
-    void ResetColumnFamilyHandler(const std::string &old_cf,
-                                  const std::string &new_cf,
-                                  rocksdb::ColumnFamilyHandle *cfh);
+
 #endif
 
     std::unique_ptr<txservice::store::DataStoreScanner> ScanForward(
@@ -561,6 +559,8 @@ protected:
     bool tx_enable_cache_replacement_{true};
 
     std::unordered_map<txservice::TableName, std::string> pre_built_tables_;
+
+    std::mutex column_families_mux_;
     std::unordered_map<std::string,
                        std::unique_ptr<rocksdb::ColumnFamilyHandle>>
         column_families_;
