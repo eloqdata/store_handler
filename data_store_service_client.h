@@ -118,10 +118,9 @@ public:
      * @param node_group
      * @return whether all entries are written to data store successfully
      */
-    bool PutAll(std::vector<txservice::FlushRecord> &batch,
-                const txservice::TableName &table_name,
-                const txservice::TableSchema *table_schema,
-                uint32_t node_group) override;
+    bool PutAll(std::unordered_map<std::string_view,
+                       std::vector<std::unique_ptr<txservice::FlushTaskEntry>>>
+        &flush_task) override;
 
     bool NeedPersistKV() override
     {
@@ -278,18 +277,16 @@ public:
      * @brief Write batch historical versions into DataStore.
      *
      */
-    bool PutArchivesAll(uint32_t node_group,
-                        const txservice::TableName &table_name,
-                        const txservice::KVCatalogInfo *kv_info,
-                        std::vector<txservice::FlushRecord> &batch) override;
+    bool PutArchivesAll(std::unordered_map<std::string_view,
+                       std::vector<std::unique_ptr<txservice::FlushTaskEntry>>>
+        &flush_task) override;
     /**
      * @brief Copy record from base/sk table to mvcc_archives.
      */
     bool CopyBaseToArchive(
-        std::vector<std::pair<txservice::TxKey, int32_t>> &batch,
-        uint32_t node_group,
-        const txservice::TableName &table_name,
-        const txservice::TableSchema *table_schema) override;
+        std::unordered_map<std::string_view,
+                       std::vector<std::unique_ptr<txservice::FlushTaskEntry>>>
+        &flush_task) override;
 
     /**
      * @brief  Get the latest visible(commit_ts <= upper_bound_ts)
