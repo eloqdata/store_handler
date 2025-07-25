@@ -190,15 +190,13 @@ bool DataStoreServiceClient::PutAll(
         uint16_t parts_cnt_per_key = 1;
         uint16_t parts_cnt_per_record =
             table_name.Engine() == txservice::TableEngine::EloqKv ? 1 : 5;
-
-        // Send the batch request
+        
+        // Write data for hash_partitioned table
         for (auto part_it = hash_partitions_map.begin();
              part_it != hash_partitions_map.end();
              ++part_it)
         {
-            uint64_t retired_ttl_for_deleted = now + 24 * 60 * 60 * 1000;
-            std::vector<size_t> record_tmp_mem_area;
-
+            assert(table_name.Engine() == txservice::TableEngine::EloqKv);
             auto &flush_recs = part_it->second;
             size_t recs_cnt = partition_record_cnt[part_it->first];
             key_parts.reserve(recs_cnt * parts_cnt_per_key);
@@ -206,10 +204,6 @@ bool DataStoreServiceClient::PutAll(
             records_ts.reserve(recs_cnt);
             records_ttl.reserve(recs_cnt);
             op_types.reserve(recs_cnt);
-            if (table_name.Engine() != txservice::TableEngine::EloqKv)
-            {
-                record_tmp_mem_area.reserve(recs_cnt * 2);
-            }
             for (auto idx : flush_recs)
             {
                 txservice::FlushRecord &ckpt_rec =
@@ -232,6 +226,25 @@ bool DataStoreServiceClient::PutAll(
                                       SyncCallback,
                                       parts_cnt_per_key,
                                       parts_cnt_per_record);
+                    sync_putall.Wait();
+
+                    if (sync_putall.Result().error_code() !=
+                        EloqDS::remote::DataStoreError::NO_ERROR)
+                    {
+                        LOG(WARNING) << "DataStoreHandler: Failed to write batch.";
+
+                        return false;
+                    }
+                    key_parts.clear();
+                    record_parts.clear();
+                    records_ts.clear();
+                    records_ttl.clear();
+                    op_types.clear();
+            key_parts.reserve(recs_cnt * parts_cnt_per_key);
+            record_parts.reserve(recs_cnt * parts_cnt_per_record);
+            records_ts.reserve(recs_cnt);
+            records_ttl.reserve(recs_cnt);
+            op_types.reserve(recs_cnt);
                     write_batch_size = 0;
                 }
 
@@ -240,8 +253,6 @@ bool DataStoreServiceClient::PutAll(
                        ckpt_rec.payload_status_ ==
                            txservice::RecordStatus::Deleted);
 
-                if (table_name.Engine() == txservice::TableEngine::EloqKv)
-                {
                     assert(ckpt_rec.payload_status_ ==
                                txservice::RecordStatus::Normal ||
                            ckpt_rec.payload_status_ ==
@@ -291,9 +302,106 @@ bool DataStoreServiceClient::PutAll(
                         op_types.push_back(WriteOpType::DELETE);
                         write_batch_size += sizeof(WriteOpType);
                     }
-                }
-                else
+            }
+            // Send out the last batch
+            if (key_parts.size() > 0)
+            {
+                sync_putall.Reset();
+                BatchWriteRecords(kv_table_name,
+                                  part_it->first,
+                                  std::move(key_parts),
+                                  std::move(record_parts),
+                                  std::move(records_ts),
+                                  std::move(records_ttl),
+                                  std::move(op_types),
+                                  true,
+                                  &sync_putall,
+                                  &SyncCallback,
+                                  parts_cnt_per_key,
+                                  parts_cnt_per_record);
+                sync_putall.Wait();
+                    key_parts.clear();
+                    record_parts.clear();
+                    records_ts.clear();
+                    records_ttl.clear();
+                    op_types.clear();
+                write_batch_size = 0;
+                if (sync_putall.Result().error_code() !=
+                    EloqDS::remote::DataStoreError::NO_ERROR)
                 {
+                    LOG(WARNING) << "DataStoreHandler: Failed to write batch.";
+
+                    return false;
+                }
+            }
+        }
+
+
+        // Write data for range_partitioned table
+        for (auto part_it = range_partitions_map.begin();
+             part_it != range_partitions_map.end();
+             ++part_it)
+        {
+            uint64_t retired_ttl_for_deleted = now + 24 * 60 * 60 * 1000;
+            std::vector<size_t> record_tmp_mem_area;
+
+            size_t recs_cnt = partition_record_cnt[part_it->first];
+            key_parts.reserve(recs_cnt * parts_cnt_per_key);
+            record_parts.reserve(recs_cnt * parts_cnt_per_record);
+            records_ts.reserve(recs_cnt);
+            records_ttl.reserve(recs_cnt);
+            op_types.reserve(recs_cnt);
+                record_tmp_mem_area.reserve(recs_cnt * 2);
+            for (auto idx : part_it->second)
+            {
+                for (auto &ckpt_rec : *entries.at(idx)->data_sync_vec_)
+                {
+                txservice::TxKey tx_key = ckpt_rec.Key();
+
+                // Start a new batch if done with current partition.
+                if (write_batch_size >= MAX_WRITE_BATCH_SIZE)
+                {
+                    sync_putall.Reset();
+                    BatchWriteRecords(kv_table_name,
+                                      part_it->first,
+                                      std::move(key_parts),
+                                      std::move(record_parts),
+                                      std::move(records_ts),
+                                      std::move(records_ttl),
+                                      std::move(op_types),
+                                      true,
+                                      &sync_putall,
+                                      SyncCallback,
+                                      parts_cnt_per_key,
+                                      parts_cnt_per_record);
+                    sync_putall.Wait();
+
+                    if (sync_putall.Result().error_code() !=
+                        EloqDS::remote::DataStoreError::NO_ERROR)
+                    {
+                        LOG(WARNING) << "DataStoreHandler: Failed to write batch.";
+
+                        return false;
+                    }
+                    record_tmp_mem_area.clear();
+                    key_parts.clear();
+                    record_parts.clear();
+                    records_ts.clear();
+                    records_ttl.clear();
+                    op_types.clear();
+            key_parts.reserve(recs_cnt * parts_cnt_per_key);
+            record_parts.reserve(recs_cnt * parts_cnt_per_record);
+            records_ts.reserve(recs_cnt);
+            records_ttl.reserve(recs_cnt);
+            op_types.reserve(recs_cnt);
+                    write_batch_size = 0;
+                }
+
+                assert(ckpt_rec.payload_status_ ==
+                           txservice::RecordStatus::Normal ||
+                       ckpt_rec.payload_status_ ==
+                           txservice::RecordStatus::Deleted);
+
                     bool is_deleted = !(ckpt_rec.payload_status_ ==
                                         txservice::RecordStatus::Normal);
                     key_parts.emplace_back(
@@ -323,7 +431,6 @@ bool DataStoreServiceClient::PutAll(
 
                     records_ts.push_back(ckpt_rec.commit_ts_);
                     write_batch_size += sizeof(uint64_t);
-                }
             }
             // Send out the last batch
             if (key_parts.size() > 0)
@@ -343,6 +450,11 @@ bool DataStoreServiceClient::PutAll(
                                   parts_cnt_per_record);
                 sync_putall.Wait();
                 record_tmp_mem_area.clear();
+                    key_parts.clear();
+                    record_parts.clear();
+                    records_ts.clear();
+                    records_ttl.clear();
+                    op_types.clear();
                 write_batch_size = 0;
                 if (sync_putall.Result().error_code() !=
                     EloqDS::remote::DataStoreError::NO_ERROR)
@@ -351,6 +463,7 @@ bool DataStoreServiceClient::PutAll(
 
                     return false;
                 }
+            }
             }
         }
     }
@@ -1080,7 +1193,8 @@ bool DataStoreServiceClient::UpdateRangeSlices(
         EncodeRangeSliceKey(table_name, partition_id, segment_cnt);
     std::string segment_record;
     size_t batch_size = segment_key.size() + sizeof(uint64_t);
-    segment_record.reserve(MAX_WRITE_BATCH_SIZE - segment_key.size());
+    size_t max_segment_size = 1024 * 1024;
+    segment_record.reserve(max_segment_size - segment_key.size());
     segment_record.append(reinterpret_cast<const char *>(&version),
                           sizeof(uint64_t));
     batch_size += sizeof(uint64_t);
@@ -1097,7 +1211,7 @@ bool DataStoreServiceClient::UpdateRangeSlices(
         batch_size += sizeof(uint32_t);
         batch_size += key_size;
 
-        if (batch_size >= MAX_WRITE_BATCH_SIZE)
+        if (batch_size >= max_segment_size)
         {
             segment_keys.emplace_back(std::move(segment_key));
             segment_records.emplace_back(std::move(segment_record));
@@ -1108,7 +1222,7 @@ bool DataStoreServiceClient::UpdateRangeSlices(
             batch_size = segment_key.size();
 
             segment_record.clear();
-            segment_record.reserve(MAX_WRITE_BATCH_SIZE - segment_key.size());
+            segment_record.reserve(max_segment_size - segment_key.size());
             segment_record.append(reinterpret_cast<const char *>(&version),
                                   sizeof(uint64_t));
             batch_size += sizeof(uint64_t);
@@ -1162,6 +1276,11 @@ bool DataStoreServiceClient::UpdateRangeSlices(
                           &callback_data,
                           &SyncCallback);
         callback_data.Wait();
+        keys.clear();
+        records.clear();
+        records_ts.clear();
+        records_ttl.clear();
+        op_types.clear();
 
         if (callback_data.Result().error_code() !=
             EloqDS::remote::DataStoreError::NO_ERROR)
@@ -1172,11 +1291,6 @@ bool DataStoreServiceClient::UpdateRangeSlices(
     }
 
     // 3- store range info into {kv_range_table_name}
-    keys.clear();
-    records.clear();
-    records_ts.clear();
-    records_ttl.clear();
-    op_types.clear();
     callback_data.Reset();
 
     std::string key_str = EncodeRangeKey(table_name, range_start_key);
@@ -1756,13 +1870,10 @@ bool DataStoreServiceClient::PutArchivesAll(
                        std::vector<std::unique_ptr<txservice::FlushTaskEntry>>>
         &flush_task)
 {
+        std::unordered_map<uint32_t, std::vector<std::pair<std::string_view, txservice::FlushRecord *>>>
+            partitions_map;
     for (auto &[kv_table_name, flush_task_entry] : flush_task)
     {
-        auto &table_name =
-            flush_task_entry.front()->data_sync_task_->table_name_;
-        std::unordered_map<uint32_t, std::vector<std::pair<size_t, size_t>>>
-            partitions_map;
-        size_t flush_task_entry_idx = 0;
 
         for (auto &entry : flush_task_entry)
         {
@@ -1785,18 +1896,14 @@ bool DataStoreServiceClient::PutArchivesAll(
                     // TODO(liunyl): use a better estimation
                     it->second.reserve(archive_vec.size() / 1024 * 2);
                 }
-                it->second.emplace_back(flush_task_entry_idx, i);
+                it->second.emplace_back(kv_table_name, &archive_vec[i]);
             }
-            ++flush_task_entry_idx;
         }
 
-        if (partitions_map.empty())
-        {
-            continue;
-        }
+    }
 
         // Send the batch request
-        for (auto &[partition_id, rec_idx_pairs] : partitions_map)
+        for (auto &[partition_id, archive_ptrs] : partitions_map)
         {
             std::vector<std::string_view> keys;
             std::vector<std::string_view> records;
@@ -1807,7 +1914,7 @@ bool DataStoreServiceClient::PutArchivesAll(
             // for keeping record upack info and encoded blob sizes
             std::vector<uint64_t> record_tmp_mem_area;
             record_tmp_mem_area.resize(
-                rec_idx_pairs.size() *
+                archive_ptrs.size() *
                 2);  // unpack_info_size + encoded_blob_size
             size_t write_batch_size = 0;
             uint64_t now = txservice::LocalCcShards::ClockTsInMillseconds();
@@ -1821,26 +1928,21 @@ bool DataStoreServiceClient::PutArchivesAll(
             // Send the batch request
             SyncPutAllData sync_putall;
             uint32_t batch_cnt = 0;
-            for (auto part_it = partitions_map.begin();
-                 part_it != partitions_map.end();
-                 ++part_it)
-            {
-                auto &rec_idx_pairs = part_it->second;
-                size_t recs_cnt = rec_idx_pairs.size();
+
+                size_t recs_cnt = archive_ptrs.size();
                 keys.reserve(recs_cnt * parts_cnt_per_key);
                 records.reserve(recs_cnt * parts_cnt_per_record);
                 records_ts.reserve(recs_cnt);
                 records_ttl.reserve(recs_cnt);
                 op_types.reserve(recs_cnt);
 
-                for (auto [flush_task_entry_idx, idx] : rec_idx_pairs)
+                for (size_t i = 0; i < archive_ptrs.size(); ++i)
                 {
                     // Start a new batch if done with current partition.
                     if (write_batch_size >= MAX_WRITE_BATCH_SIZE)
                     {
-                        int32_t part_id = part_it->first;
                         BatchWriteRecords(kv_mvcc_archive_name,
-                                          part_id,
+                                          partition_id,
                                           std::move(keys),
                                           std::move(records),
                                           std::move(records_ts),
@@ -1851,15 +1953,23 @@ bool DataStoreServiceClient::PutArchivesAll(
                                           SyncPutAllCallback,
                                           parts_cnt_per_key,
                                           parts_cnt_per_record);
-                        // TODO(liunyl) : should we wait here before sending the
-                        // next batch?
+                    keys.clear();
+                    records.clear();
+                    records_ts.clear();
+                    records_ttl.clear();
+                    op_types.clear();
+
+                    keys.reserve(recs_cnt * parts_cnt_per_key);
+                    records.reserve(recs_cnt * parts_cnt_per_record);
+                    records_ts.reserve(recs_cnt);
+                    records_ttl.reserve(recs_cnt);
+                    op_types.reserve(recs_cnt);
                         write_batch_size = 0;
                         ++batch_cnt;
                     }
 
-                    txservice::FlushRecord &ckpt_rec =
-                        flush_task_entry[flush_task_entry_idx]
-                            ->archive_vec_->at(idx);
+                    txservice::FlushRecord &ckpt_rec = *archive_ptrs[i].second;
+                    std::string_view kv_table_name = archive_ptrs[i].first;
                     txservice::TxKey tx_key = ckpt_rec.Key();
 
                     assert(ckpt_rec.payload_status_ ==
@@ -1890,16 +2000,9 @@ bool DataStoreServiceClient::PutArchivesAll(
                     // Encode value
                     const txservice::TxRecord *rec = ckpt_rec.Payload();
                     std::string record_str;
-                    if (table_name.Engine() == txservice::TableEngine::EloqKv)
-                    {
-                        LOG(ERROR) << "Not Archives for EloqKv";
-                        assert(false);
-                    }
-                    else
-                    {
-                        size_t &unpack_info_size = record_tmp_mem_area[idx * 2];
+                        size_t &unpack_info_size = record_tmp_mem_area[i * 2];
                         size_t &encode_blob_size =
-                            record_tmp_mem_area[idx * 2 + 1];
+                            record_tmp_mem_area[i * 2 + 1];
                         if (rec != nullptr)
                         {
                             unpack_info_size = rec->UnpackInfoSize();
@@ -1913,15 +2016,13 @@ bool DataStoreServiceClient::PutArchivesAll(
                                            encode_blob_size,
                                            records,
                                            write_batch_size);
-                    }
                 }
 
                 // Send out the last batch of this partition
                 if (keys.size() > 0)
                 {
-                    uint32_t part_id = part_it->first;
                     BatchWriteRecords(kv_mvcc_archive_name,
-                                      part_id,
+                                      partition_id,
                                       std::move(keys),
                                       std::move(records),
                                       std::move(records_ts),
@@ -1932,10 +2033,20 @@ bool DataStoreServiceClient::PutArchivesAll(
                                       SyncPutAllCallback,
                                       parts_cnt_per_key,
                                       parts_cnt_per_record);
+                    keys.clear();
+                    records.clear();
+                    records_ts.clear();
+                    records_ttl.clear();
+                    op_types.clear();
+
+                    keys.reserve(recs_cnt * parts_cnt_per_key);
+                    records.reserve(recs_cnt * parts_cnt_per_record);
+                    records_ts.reserve(recs_cnt);
+                    records_ttl.reserve(recs_cnt);
+                    op_types.reserve(recs_cnt);
                     write_batch_size = 0;
                     ++batch_cnt;
                 }
-            }
 
             // Wait the result.
             {
@@ -1956,7 +2067,6 @@ bool DataStoreServiceClient::PutArchivesAll(
                 return false;
             }
         }
-    }
 
     return true;
 }
@@ -2134,6 +2244,7 @@ bool DataStoreServiceClient::FetchArchives(
     std::vector<txservice::VersionTxRecord> &archives,
     uint64_t from_ts)
 {
+    LOG(INFO) << "FetchArchives: table_name: " << table_name.StringView();
     const std::string &kv_table_name = kv_info->GetKvTableName(table_name);
     uint64_t be_from_ts = EloqShare::host_to_big_endian(from_ts);
     std::string lower_bound_key = EncodeArchiveKey(

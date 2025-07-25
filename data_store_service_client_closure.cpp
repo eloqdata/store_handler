@@ -235,9 +235,6 @@ void FetchTableCatalogCallback(void *data,
         // and EloqKV. And all data_store_handler share one KvCatalogInfo.
         catalog_image.append(read_closure->ValueString());
 
-        LOG(INFO) << "FetchTableCatalogCallback, key:" << read_closure->Key()
-                  << ", catalog_image: " << catalog_image;
-
         fetch_cc->SetFinish(txservice::RecordStatus::Normal, 0);
     }
     else
