@@ -736,14 +736,13 @@ void RocksDBHandler::UpsertTable(
 
                     return;
                 }
-                /*
-                else if (store_schema_version == old_table_schema->Version())
+                else if (old_table_schema != nullptr &&
+                         store_schema_version == old_table_schema->Version())
                 {
                     assert(
                         store_cf_name ==
                         old_table_schema->GetKVCatalogInfo()->kv_table_name_);
                 }
-                */
 
                 // Create the new column family and drop the old.
                 // step1. Create new column family
