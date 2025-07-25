@@ -49,6 +49,9 @@ namespace GFLAGS_NAMESPACE = google;
     defined(DATA_STORE_TYPE_ELOQDSS_ROCKSDB_CLOUD_GCS)
 #include "rocksdb_cloud_data_store.h"
 #include "rocksdb_cloud_data_store_factory.h"
+#elif defined(DATA_STORE_TYPE_ELOQDSS_ROCKSDB)
+#include "rocksdb_data_store.h"
+#include "rocksdb_data_store_factory.h"
 #elif defined(DATA_STORE_TYPE_ELOQDSS_ELOQSTORE)
 #include "eloq_store_data_store_factory.h"
 #endif
@@ -293,6 +296,14 @@ int main(int argc, char *argv[])
     auto ds_factory = std::make_unique<EloqDS::RocksDBCloudDataStoreFactory>(
         rocksdb_config, rocksdb_cloud_config, enable_cache_replacement_);
 
+#elif defined(DATA_STORE_TYPE_ELOQDSS_ROCKSDB)
+    bool enable_cache_replacement_ = FLAGS_enable_cache_replacement;
+    bool is_single_node = eloq_dss_peer_node.empty();
+
+    EloqDS::RocksDBConfig rocksdb_config(config_reader, data_path);
+    auto ds_factory = std::make_unique<EloqDS::RocksDBDataStoreFactory>(
+        rocksdb_config, enable_cache_replacement_);
+
 #elif defined(DATA_STORE_TYPE_ELOQDSS_ELOQSTORE)
     EloqDS::EloqStoreConfig eloq_store_config;
     eloq_store_config.worker_count_ =
@@ -352,6 +363,13 @@ int main(int argc, char *argv[])
         // TODO(lzx): move setup datastore to data_store_service
         auto ds = std::make_unique<EloqDS::RocksDBCloudDataStore>(
             rocksdb_cloud_config,
+            rocksdb_config,
+            (FLAGS_bootstrap || is_single_node),
+            enable_cache_replacement_,
+            shard_id,
+            data_store_service_.get());
+#elif defined(DATA_STORE_TYPE_ELOQDSS_ROCKSDB)
+        auto ds = std::make_unique<EloqDS::RocksDBDataStore>(
             rocksdb_config,
             (FLAGS_bootstrap || is_single_node),
             enable_cache_replacement_,
