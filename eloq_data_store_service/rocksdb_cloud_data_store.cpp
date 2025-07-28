@@ -19,8 +19,6 @@
  *    <http://www.gnu.org/licenses/>.
  *
  */
-#include "rocksdb_cloud_data_store.h"
-
 #include <aws/core/client/ClientConfiguration.h>
 #include <aws/s3/S3Client.h>
 #include <bthread/condition_variable.h>
@@ -43,6 +41,7 @@
 #include "ds_request.pb.h"
 #include "internal_request.h"
 #include "rocksdb/cloud/cloud_storage_provider.h"
+#include "rocksdb_cloud_data_store.h"
 
 #define LONG_STR_SIZE 21
 
@@ -542,14 +541,20 @@ bool RocksDBCloudDataStore::StartDB(std::string cookie, std::string prev_cookie)
     // sync cloudmanifest and manifest files when open db
     cfs_options_.resync_on_open = true;
 
-    // use aws transfer manager to upload/download files
-    // the transfer manager can leverage multipart upload and download
-    cfs_options_.use_aws_transfer_manager = true;
-
     if (!cloud_config_.s3_endpoint_url_.empty())
     {
         cfs_options_.s3_client_factory =
             BuildS3ClientFactory(cloud_config_.s3_endpoint_url_);
+        // Intermittent and unpredictable IOError happend from time to
+        // time when using aws transfer manager with minio. Disable aws
+        // transfer manager if endpoint is set (minio).
+        cfs_options_.use_aws_transfer_manager = false;
+    }
+    else
+    {
+        // use aws transfer manager to upload/download files
+        // the transfer manager can leverage multipart upload and download
+        cfs_options_.use_aws_transfer_manager = true;
     }
 
     DLOG(INFO) << "DBCloud Open";
