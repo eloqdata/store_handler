@@ -682,10 +682,6 @@ void RocksDBHandler::UpsertTable(
                     }
                 }
 
-                LOG(INFO) << "== UpsertTable: store schema version = "
-                          << store_schema_version << ", table schema version = "
-                          << table_schema->Version();
-
                 if (store_schema_version > table_schema->Version())
                 {
                     // has updated, skip it.
