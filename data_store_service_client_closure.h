@@ -1508,7 +1508,7 @@ public:
             std::string *mutable_key = item->mutable_key();
             for (uint16_t j = 0; j < parts_cnt_per_key_; j++)
             {
-                uint16_t key_part_idx = i * parts_cnt_per_key_ + j;
+                size_t key_part_idx = i * parts_cnt_per_key_ + j;
                 mutable_key->append(key_parts_[key_part_idx].data(),
                                     key_parts_[key_part_idx].size());
             }
@@ -1517,7 +1517,7 @@ public:
             std::string *mutable_value = item->mutable_value();
             for (uint16_t j = 0; j < parts_cnt_per_record_; j++)
             {
-                uint16_t record_part_idx = j + i * parts_cnt_per_record_;
+                size_t record_part_idx = j + i * parts_cnt_per_record_;
                 mutable_value->append(record_parts_[record_part_idx].data(),
                                       record_parts_[record_part_idx].size());
             }
