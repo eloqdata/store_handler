@@ -538,9 +538,11 @@ bool RocksDBHandler::PersistKV(const std::vector<std::string> &kv_table_names)
     return true;
 };
 
-void RocksDBHandler::UpsertTable(
-    const txservice::TableSchema *old_table_schema,
-    const txservice::TableSchema *table_schema,
+void RocksDBHandler::UpsertTableInternal(
+    const std::string &old_schema_kv_table_name,
+    uint64_t old_schema_version,
+    const std::string &new_schema_kv_table_name,
+    std::string_view new_schema_table_name,
     txservice::OperationType op_type,
     uint64_t write_time,
     txservice::NodeGroupId ng_id,
@@ -561,8 +563,10 @@ void RocksDBHandler::UpsertTable(
     case txservice::OperationType::TruncateTable:
         query_worker_pool_->SubmitWork(
             [this,
-             old_table_schema,
-             table_schema,
+             old_schema_version,
+             old_schema_kv_table_name = old_schema_kv_table_name,
+             new_schema_kv_table_name = new_schema_kv_table_name,
+             new_schema_table_name = std::string(new_schema_table_name),
              write_time,
              hd_res,
              ng_id,
@@ -626,8 +630,10 @@ void RocksDBHandler::UpsertTable(
                 if (!db)
                 {
                     std::unique_lock<std::mutex> ddl_lk(pending_ddl_mux_);
-                    pending_ddl_req_.emplace(old_table_schema,
-                                             table_schema,
+                    pending_ddl_req_.emplace(old_schema_kv_table_name,
+                                             old_schema_version,
+                                             new_schema_kv_table_name,
+                                             new_schema_table_name,
                                              op_type,
                                              write_time,
                                              ng_id,
@@ -640,8 +646,7 @@ void RocksDBHandler::UpsertTable(
                 }
 
                 std::unique_lock<std::mutex> ddl_lk(ddl_mux_);
-                const std::string &table_name_str =
-                    table_schema->GetBaseTableName().String();
+                const std::string &table_name_str = new_schema_table_name;
 
                 // check catalog version
                 std::string catalog_cf_name = table_name_str + "_catalog";
@@ -690,7 +695,7 @@ void RocksDBHandler::UpsertTable(
                     }
                 }
 
-                if (store_schema_version > table_schema->Version())
+                if (store_schema_version > write_time)
                 {
                     // has updated, skip it.
                     if (hd_res != nullptr)
@@ -704,7 +709,7 @@ void RocksDBHandler::UpsertTable(
                     }
                     return;
                 }
-                else if (store_schema_version == table_schema->Version())
+                else if (store_schema_version == write_time)
                 {
                     // If rocksdb failed to flush in the last round, we need to
                     // flush again.
@@ -740,18 +745,14 @@ void RocksDBHandler::UpsertTable(
 
                     return;
                 }
-                else if (old_table_schema != nullptr &&
-                         store_schema_version == old_table_schema->Version())
+                else if (store_schema_version == old_schema_version)
                 {
-                    assert(
-                        store_cf_name ==
-                        old_table_schema->GetKVCatalogInfo()->kv_table_name_);
+                    assert(store_cf_name == old_schema_kv_table_name);
                 }
 
                 // Create the new column family and drop the old.
                 // step1. Create new column family
-                std::string new_cf_name =
-                    table_schema->GetKVCatalogInfo()->kv_table_name_;
+                std::string new_cf_name = new_schema_kv_table_name;
                 rocksdb::ColumnFamilyHandle *new_cfh;
                 auto status = db->CreateColumnFamily(
                     rocksdb::ColumnFamilyOptions(), new_cf_name, &new_cfh);
@@ -849,7 +850,7 @@ void RocksDBHandler::UpsertTable(
                 std::string table_key = table_name_str + "_catalog";
                 rocksdb::WideColumns table_catalog_wc;
                 table_catalog_wc.emplace_back("kv_cf_name", new_cf_name);
-                uint64_t version = table_schema->Version();
+                uint64_t version = write_time;
                 rocksdb::Slice version_value(
                     reinterpret_cast<const char *>(&version), sizeof(uint64_t));
                 table_catalog_wc.emplace_back("version", version_value);
@@ -931,6 +932,42 @@ void RocksDBHandler::UpsertTable(
             << static_cast<int>(op_type);
         break;
     }
+}
+
+void RocksDBHandler::UpsertTable(
+    const txservice::TableSchema *old_table_schema,
+    const txservice::TableSchema *new_table_schema,
+    txservice::OperationType op_type,
+    uint64_t write_time,
+    txservice::NodeGroupId ng_id,
+    int64_t tx_term,
+    txservice::CcHandlerResult<txservice::Void> *hd_res,
+    const txservice::AlterTableInfo *alter_table_info,
+    txservice::CcRequestBase *cc_req,
+    txservice::CcShard *ccs,
+    txservice::CcErrorCode *err_code)
+{
+    uint64_t old_schema_version = old_table_schema->Version();
+    std::string &old_schema_kv_table_name =
+        old_table_schema->GetKVCatalogInfo()->kv_table_name_;
+    std::string &new_schema_kv_table_name =
+        new_table_schema->GetKVCatalogInfo()->kv_table_name_;
+    std::string_view new_schema_table_name =
+        new_table_schema->GetBaseTableName().StringView();
+
+    UpsertTableInternal(old_schema_kv_table_name,
+                        old_schema_version,
+                        new_schema_kv_table_name,
+                        new_schema_table_name,
+                        op_type,
+                        write_time,
+                        ng_id,
+                        tx_term,
+                        hd_res,
+                        alter_table_info,
+                        cc_req,
+                        ccs,
+                        err_code);
 }
 
 void RocksDBHandler::FetchTableCatalog(
@@ -2990,17 +3027,19 @@ bool RocksDBHandlerImpl::StartDB(bool is_ng_leader, uint32_t *next_leader_node)
             UpsertTableReq ddl_req = std::move(pending_ddl_req_.front());
             pending_ddl_req_.pop();
             ddl_lk.unlock();
-            UpsertTable(ddl_req.old_table_schema_,
-                        ddl_req.table_schema_,
-                        ddl_req.op_type_,
-                        ddl_req.write_time_,
-                        ddl_req.ng_id_,
-                        ddl_req.tx_term_,
-                        nullptr,
-                        ddl_req.alter_table_info_,
-                        ddl_req.cc_req_,
-                        ddl_req.ccs_,
-                        ddl_req.err_code_);
+            UpsertTableInternal(ddl_req.old_schema_kv_table_name_,
+                                ddl_req.old_schema_version_,
+                                ddl_req.new_schema_kv_table_name_,
+                                ddl_req.new_schema_table_name_,
+                                ddl_req.op_type_,
+                                ddl_req.write_time_,
+                                ddl_req.ng_id_,
+                                ddl_req.tx_term_,
+                                nullptr,
+                                ddl_req.alter_table_info_,
+                                ddl_req.cc_req_,
+                                ddl_req.ccs_,
+                                ddl_req.err_code_);
             ddl_lk.lock();
         }
     }
