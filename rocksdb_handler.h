@@ -230,7 +230,7 @@ public:
     {
     }
     RocksDBCatalogInfo(const std::string &kv_table_name,
-                       const std::string &kv_index_names) {};
+                       const std::string &kv_index_names){};
     ~RocksDBCatalogInfo()
     {
     }
@@ -286,6 +286,23 @@ public:
     {
         return true;
     }
+
+    // Decouples UpsertTable from TableSchema, which is ephemeral during DDL
+    // replay from the commit log on non-shared storage.
+    void UpsertTableInternal(
+        const std::string &old_schema_kv_table_name,
+        uint64_t old_schema_version,
+        const std::string &new_schema_kv_table_name,
+        std::string_view new_schema_table_name,
+        txservice::OperationType op_type,
+        uint64_t write_time,
+        txservice::NodeGroupId ng_id,
+        int64_t tx_term,
+        txservice::CcHandlerResult<txservice::Void> *hd_res,
+        const txservice::AlterTableInfo *alter_table_info,
+        txservice::CcRequestBase *cc_req,
+        txservice::CcShard *ccs,
+        txservice::CcErrorCode *err_code);
 
     void UpsertTable(
         const txservice::TableSchema *old_table_schema,
@@ -566,8 +583,10 @@ protected:
 
     struct UpsertTableReq
     {
-        UpsertTableReq(const txservice::TableSchema *old_table_schema,
-                       const txservice::TableSchema *table_schema,
+        UpsertTableReq(const std::string &old_schema_kv_table_name,
+                       uint64_t old_schema_version,
+                       const std::string &new_schema_kv_table_name,
+                       const std::string &new_schema_table_name,
                        txservice::OperationType op_type,
                        uint64_t write_time,
                        txservice::NodeGroupId ng_id,
@@ -576,8 +595,10 @@ protected:
                        txservice::CcRequestBase *cc_req,
                        txservice::CcShard *ccs,
                        txservice::CcErrorCode *err_code)
-            : old_table_schema_(old_table_schema),
-              table_schema_(table_schema),
+            : old_schema_kv_table_name_(old_schema_kv_table_name),
+              old_schema_version_(old_schema_version),
+              new_schema_kv_table_name_(new_schema_kv_table_name),
+              new_schema_table_name_(new_schema_table_name),
               op_type_(op_type),
               write_time_(write_time),
               ng_id_(ng_id),
@@ -589,8 +610,10 @@ protected:
         {
         }
 
-        const txservice::TableSchema *old_table_schema_;
-        const txservice::TableSchema *table_schema_;
+        const std::string old_schema_kv_table_name_;
+        uint64_t old_schema_version_;
+        const std::string new_schema_kv_table_name_;
+        const std::string new_schema_table_name_;
         txservice::OperationType op_type_;
         uint64_t write_time_;
         txservice::NodeGroupId ng_id_;
