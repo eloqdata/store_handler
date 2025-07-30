@@ -531,11 +531,6 @@ private:
 
     bool InitTableLastRangePartitionId(const txservice::TableName &table_name);
 
-    bool DeleteTableLastRangePartitionId(
-        const txservice::TableName &table_name);
-
-    bool DeleteSequence(const txservice::TableName &base_table_name);
-
     bool DeleteTableStatistics(const txservice::TableName &base_table_name);
 
     // Caculate kv partition id of records in System table(catalogs, ranges,
@@ -565,13 +560,6 @@ private:
 #else
         return key_partition;
 #endif
-    }
-
-    int32_t InitialRangePartitionIdOf(const txservice::TableName &table) const
-    {
-        assert(table.Engine() != txservice::TableEngine::EloqKv);
-        std::string_view sv = table.StringView();
-        return (std::hash<std::string_view>()(sv)) & 0xFFF;
     }
 
     /**
