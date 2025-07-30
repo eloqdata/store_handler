@@ -151,7 +151,7 @@ bool DataStoreServiceClient::PutAll(
                 continue;
             }
 
-            if (table_name.Engine() == txservice::TableEngine::EloqKv)
+            if (table_name.IsHashPartitioned())
             {
                 for (size_t i = 0; i < batch.size(); ++i)
                 {
@@ -161,8 +161,7 @@ bool DataStoreServiceClient::PutAll(
                         hash_partitions_map.try_emplace(kv_partition_id);
                     if (inserted)
                     {
-                        // TODO(liunyl): use a better estimation
-                        it->second.reserve(batch.size() / 1024 * 2);
+                        it->second.reserve(batch.size() / 1024 * 2 * entries.size());
                     }
                     it->second.emplace_back(
                         std::make_pair(flush_task_entry_idx, i));
@@ -189,7 +188,7 @@ bool DataStoreServiceClient::PutAll(
         SyncCallbackData sync_putall;
         uint16_t parts_cnt_per_key = 1;
         uint16_t parts_cnt_per_record =
-            table_name.Engine() == txservice::TableEngine::EloqKv ? 1 : 5;
+            table_name.IsHashPartitioned() ? 1 : 5;
 
         // Write data for hash_partitioned table
         for (auto part_it = hash_partitions_map.begin();
@@ -472,8 +471,6 @@ bool DataStoreServiceClient::PutAll(
     return true;
 }
 
-// TODO(lzx): change DataStoreHander::PersistKV(), only need KVCatalogInfo
-// instead of TableSchema. why "node_group" and "version" are not used now ?
 bool DataStoreServiceClient::PersistKV(
     const std::vector<std::string> &kv_table_names)
 {
@@ -1896,8 +1893,7 @@ bool DataStoreServiceClient::PutArchivesAll(
                     KvPartitionIdOf(partition_id, true));
                 if (inserted)
                 {
-                    // TODO(liunyl): use a better estimation
-                    it->second.reserve(archive_vec.size() / 1024 * 2);
+                    it->second.reserve(archive_vec.size() / 1024 * 2 * flush_task_entry.size() * flush_task.size());
                 }
                 it->second.emplace_back(kv_table_name, &archive_vec[i]);
             }
