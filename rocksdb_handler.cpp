@@ -412,6 +412,12 @@ bool RocksDBHandler::PutAll(std::vector<txservice::FlushRecord> &batch,
     const std::string &kv_cf_name =
         table_schema->GetKVCatalogInfo()->kv_table_name_;
     rocksdb::ColumnFamilyHandle *cfh = GetColumnFamilyHandler(kv_cf_name);
+    if (cfh == nullptr)
+    {
+        LOG(ERROR) << "Failed to get column family, cf name: " << kv_cf_name;
+        return false;
+    }
+
     assert(cfh != nullptr);
     uint64_t write_batch_size = 0;
     uint64_t now = txservice::LocalCcShards::ClockTsInMillseconds();
@@ -501,6 +507,13 @@ bool RocksDBHandler::PersistKV(const std::vector<std::string> &kv_table_names)
     for (const std::string &kv_cf_name : kv_table_names)
     {
         rocksdb::ColumnFamilyHandle *cfh = GetColumnFamilyHandler(kv_cf_name);
+        if (cfh == nullptr)
+        {
+            LOG(ERROR) << "Failed to get column family, cf name: "
+                       << kv_cf_name;
+            return false;
+        }
+
         assert(cfh != nullptr);
         rocksdb::FlushOptions flush_options;
         flush_options.allow_write_stall = true;
@@ -719,7 +732,8 @@ void RocksDBHandler::UpsertTable(
 
                     return;
                 }
-                else if (store_schema_version == old_table_schema->Version())
+                else if (old_table_schema != nullptr &&
+                         store_schema_version == old_table_schema->Version())
                 {
                     assert(
                         store_cf_name ==
@@ -766,6 +780,8 @@ void RocksDBHandler::UpsertTable(
                 }
                 else
                 {
+                    std::lock_guard<std::mutex> column_families_lk(
+                        column_families_mux_);
                     // insert new column family to hash map.
                     column_families_.emplace(new_cf_name, new_cfh);
                 }
@@ -807,6 +823,8 @@ void RocksDBHandler::UpsertTable(
                     }
                     else
                     {
+                        std::lock_guard<std::mutex> column_families_lk(
+                            column_families_mux_);
                         auto cfh_entry = column_families_.find(store_cf_name);
                         assert(cfh_entry != column_families_.end());
                         std::unique_ptr<rocksdb::ColumnFamilyHandle> &cfh_ptr =
@@ -1067,12 +1085,13 @@ RocksDBHandler::FetchRecord(txservice::FetchRecordCc *fetch_cc)
     {
         fetch_cc->start_ = metrics::Clock::now();
     }
-    const std::string &kv_cf_name =
-        fetch_cc->table_schema_->GetKVCatalogInfo()->kv_table_name_;
-    rocksdb::ColumnFamilyHandle *cfh = GetColumnFamilyHandler(kv_cf_name);
 
     query_worker_pool_->SubmitWork(
-        [this, fetch_cc, redis_key = std::move(redis_key_copy), cfh]()
+        [this,
+         fetch_cc,
+         redis_key = std::move(redis_key_copy),
+         kv_cf_name =
+             fetch_cc->table_schema_->GetKVCatalogInfo()->kv_table_name_]()
         {
             std::shared_lock<std::shared_mutex> db_lk(db_mux_);
             auto db = GetDBPtr();
@@ -1082,8 +1101,21 @@ RocksDBHandler::FetchRecord(txservice::FetchRecordCc *fetch_cc)
                     static_cast<int>(txservice::CcErrorCode::DATA_STORE_ERR));
                 return;
             }
-            std::string value;
+
+            rocksdb::ColumnFamilyHandle *cfh =
+                GetColumnFamilyHandler(kv_cf_name);
+            if (cfh == nullptr)
+            {
+                LOG(ERROR) << "Failed to get column family, cf name: "
+                           << kv_cf_name;
+                fetch_cc->SetFinish(
+                    static_cast<int>(txservice::CcErrorCode::DATA_STORE_ERR));
+                return;
+            }
+
             assert(cfh != nullptr);
+
+            std::string value;
             rocksdb::Status status =
                 db->Get(rocksdb::ReadOptions(),
                         cfh,
@@ -1137,6 +1169,10 @@ RocksDBHandler::FetchRecord(txservice::FetchRecordCc *fetch_cc)
 rocksdb::ColumnFamilyHandle *RocksDBHandler::GetColumnFamilyHandler(
     const std::string &cf)
 {
+    // Acquire a lock to avoid concurrent modifications to the hash map.
+    // Since we have already acquired a read lock or a write lock on the catalog
+    // when geting the column family, returning the pointer is safe.
+    std::lock_guard<std::mutex> column_families_lk(column_families_mux_);
     auto cfh = column_families_.find(cf);
     if (cfh != column_families_.cend())
     {
@@ -1146,20 +1182,6 @@ rocksdb::ColumnFamilyHandle *RocksDBHandler::GetColumnFamilyHandler(
     return nullptr;
 }
 
-void RocksDBHandler::ResetColumnFamilyHandler(const std::string &old_cf,
-                                              const std::string &new_cf,
-                                              rocksdb::ColumnFamilyHandle *cfh)
-{
-    auto cfh_entry = column_families_.find(old_cf);
-    assert(cfh_entry != column_families_.cend());
-    std::unique_ptr<rocksdb::ColumnFamilyHandle> &cfh_ptr = cfh_entry->second;
-    rocksdb::ColumnFamilyHandle *old_cfh = cfh_ptr.release();
-    GetDBPtr()->DestroyColumnFamilyHandle(old_cfh);
-    column_families_.erase(cfh_entry);
-    assert(new_cf == cfh->GetName());
-    [[maybe_unused]] auto pair = column_families_.emplace(new_cf, cfh);
-    assert(pair.second);
-}
 #endif
 
 std::unique_ptr<txservice::store::DataStoreScanner> RocksDBHandler::ScanForward(
@@ -1972,12 +1994,17 @@ void RocksDBCloudHandlerImpl::Shutdown()
     }
     if (db_ != nullptr)
     {
-        for (auto &cfh : column_families_)
         {
-            rocksdb::ColumnFamilyHandle *cfh_ptr = cfh.second.release();
-            db_->DestroyColumnFamilyHandle(cfh_ptr);
+            std::lock_guard<std::mutex> column_families_lk(
+                column_families_mux_);
+            for (auto &cfh : column_families_)
+            {
+                rocksdb::ColumnFamilyHandle *cfh_ptr = cfh.second.release();
+                db_->DestroyColumnFamilyHandle(cfh_ptr);
+            }
+            column_families_.clear();
         }
-        column_families_.clear();
+
         db_->Close();
         db_->PauseBackgroundWork();
         delete db_;
@@ -2353,10 +2380,13 @@ bool RocksDBCloudHandlerImpl::OpenCloudDB(
     // Reset max_open_files to default value of -1 after DB::Open
     db_->SetDBOptions({{"max_open_files", "-1"}});
 
-    // set the column family handlers
-    for (auto cfh : cfhs)
     {
-        column_families_.emplace(cfh->GetName(), cfh);
+        std::lock_guard<std::mutex> column_families_lk(column_families_mux_);
+        // set the column family handlers
+        for (auto cfh : cfhs)
+        {
+            column_families_.emplace(cfh->GetName(), cfh);
+        }
     }
 
     if (is_ng_leader)
@@ -2396,12 +2426,16 @@ bool RocksDBCloudHandlerImpl::OpenCloudDB(
             flush_options.wait = true;
             status = db_->Flush(flush_options);
 
-            for (auto &cfh : column_families_)
             {
-                rocksdb::ColumnFamilyHandle *cfh_ptr = cfh.second.release();
-                db_->DestroyColumnFamilyHandle(cfh_ptr);
+                std::lock_guard<std::mutex> column_families_lk(
+                    column_families_mux_);
+                for (auto &cfh : column_families_)
+                {
+                    rocksdb::ColumnFamilyHandle *cfh_ptr = cfh.second.release();
+                    db_->DestroyColumnFamilyHandle(cfh_ptr);
+                }
+                column_families_.clear();
             }
-            column_families_.clear();
             db_->Close();
             db_->PauseBackgroundWork();
             delete db_;
@@ -2421,12 +2455,16 @@ bool RocksDBCloudHandlerImpl::OpenCloudDB(
             LOG(ERROR)
                 << "Failed to get previous ng leader cache from rocksdb: "
                 << status.ToString();
-            for (auto &cfh : column_families_)
             {
-                rocksdb::ColumnFamilyHandle *cfh_ptr = cfh.second.release();
-                db_->DestroyColumnFamilyHandle(cfh_ptr);
+                std::lock_guard<std::mutex> column_families_lk(
+                    column_families_mux_);
+                for (auto &cfh : column_families_)
+                {
+                    rocksdb::ColumnFamilyHandle *cfh_ptr = cfh.second.release();
+                    db_->DestroyColumnFamilyHandle(cfh_ptr);
+                }
+                column_families_.clear();
             }
-            column_families_.clear();
             db_->Close();
             db_->PauseBackgroundWork();
             delete db_;
@@ -2436,9 +2474,8 @@ bool RocksDBCloudHandlerImpl::OpenCloudDB(
         }
     }
 
-    auto cf_pair = column_families_.find(rocksdb::kDefaultColumnFamilyName);
-    assert(cf_pair != column_families_.end());
-    rocksdb::ColumnFamilyHandle *cfh_default = cf_pair->second.get();
+    rocksdb::ColumnFamilyHandle *cfh_default =
+        GetColumnFamilyHandler(rocksdb::kDefaultColumnFamilyName);
     assert(cfh_default != nullptr);
 
     if (need_init_prebuilt_schema)
@@ -2783,10 +2820,13 @@ bool RocksDBHandlerImpl::StartDB(bool is_ng_leader, uint32_t *next_leader_node)
         return false;
     }
 
-    // set the column family handlers
-    for (auto cfh : cfhs)
     {
-        column_families_.emplace(cfh->GetName(), cfh);
+        std::lock_guard<std::mutex> column_families_lk(column_families_mux_);
+        // set the column family handlers
+        for (auto cfh : cfhs)
+        {
+            column_families_.emplace(cfh->GetName(), cfh);
+        }
     }
 
     if (is_ng_leader)
@@ -2826,12 +2866,17 @@ bool RocksDBHandlerImpl::StartDB(bool is_ng_leader, uint32_t *next_leader_node)
             flush_options.wait = true;
             status = db_->Flush(flush_options);
 
-            for (auto &cfh : column_families_)
             {
-                rocksdb::ColumnFamilyHandle *cfh_ptr = cfh.second.release();
-                db_->DestroyColumnFamilyHandle(cfh_ptr);
+                std::lock_guard<std::mutex> column_families_lk(
+                    column_families_mux_);
+                for (auto &cfh : column_families_)
+                {
+                    rocksdb::ColumnFamilyHandle *cfh_ptr = cfh.second.release();
+                    db_->DestroyColumnFamilyHandle(cfh_ptr);
+                }
+                column_families_.clear();
             }
-            column_families_.clear();
+
             db_->Close();
             db_->PauseBackgroundWork();
             delete db_;
@@ -2851,12 +2896,16 @@ bool RocksDBHandlerImpl::StartDB(bool is_ng_leader, uint32_t *next_leader_node)
             LOG(ERROR)
                 << "Failed to get previous ng leader cache from rocksdb: "
                 << status.ToString();
-            for (auto &cfh : column_families_)
             {
-                rocksdb::ColumnFamilyHandle *cfh_ptr = cfh.second.release();
-                db_->DestroyColumnFamilyHandle(cfh_ptr);
+                std::lock_guard<std::mutex> column_families_lk(
+                    column_families_mux_);
+                for (auto &cfh : column_families_)
+                {
+                    rocksdb::ColumnFamilyHandle *cfh_ptr = cfh.second.release();
+                    db_->DestroyColumnFamilyHandle(cfh_ptr);
+                }
+                column_families_.clear();
             }
-            column_families_.clear();
             db_->Close();
             db_->PauseBackgroundWork();
             delete db_;
@@ -3024,12 +3073,16 @@ void RocksDBHandlerImpl::Shutdown()
     }
     if (db_ != nullptr)
     {
-        for (auto &cfh : column_families_)
         {
-            rocksdb::ColumnFamilyHandle *cfh_ptr = cfh.second.release();
-            db_->DestroyColumnFamilyHandle(cfh_ptr);
+            std::lock_guard<std::mutex> column_families_lk(
+                column_families_mux_);
+            for (auto &cfh : column_families_)
+            {
+                rocksdb::ColumnFamilyHandle *cfh_ptr = cfh.second.release();
+                db_->DestroyColumnFamilyHandle(cfh_ptr);
+            }
+            column_families_.clear();
         }
-        column_families_.clear();
         db_->Close();
         db_->PauseBackgroundWork();
         delete db_;
