@@ -27,6 +27,7 @@
 #include <utility>
 
 #include "partition.h"  // Partition
+#include "store_util.h" // host_to_big_endian
 #include "tx_service/include/cc/cc_request.h"
 #include "tx_service/include/cc/local_cc_shards.h"
 
@@ -174,23 +175,41 @@ void FetchRecordCallback(void *data,
             if (is_deleted)
             {
                 fetch_cc->rec_status_ = txservice::RecordStatus::Deleted;
-                fetch_cc->rec_ts_ = 1U;
-                fetch_cc->SetFinish(0);
-                return;
+                fetch_cc->rec_ts_= read_closure->Ts();
+            }
+            else
+            {
+              fetch_cc->rec_status_= txservice::RecordStatus::Normal;
+              fetch_cc->rec_ts_= read_closure->Ts();
+              fetch_cc->rec_str_.assign(val.data() + offset,
+                                        val.size() - offset);
             }
 
-            fetch_cc->rec_status_ = txservice::RecordStatus::Normal;
-            fetch_cc->rec_ts_ = read_closure->Ts();
-            fetch_cc->rec_str_.clear();
-            fetch_cc->rec_str_.resize(val.size() - offset);
-            fetch_cc->rec_str_.assign(val.data() + offset, val.size() - offset);
-            fetch_cc->SetFinish(0);
+            if (fetch_cc->snapshot_read_ts_ > 0 &&
+                fetch_cc->snapshot_read_ts_ < fetch_cc->rec_ts_)
+            {
+              auto op_st= client.FetchArchives(fetch_cc);
+
+              if (op_st != txservice::store::DataStoreHandler::
+                               DataStoreOpStatus::Success)
+              {
+                LOG(ERROR) << "FetchArchives failed, key: "
+                           << fetch_cc->tx_key_.ToString();
+                // Through fetch archive failed, we can also backfill the
+                // base version.
+                fetch_cc->SetFinish(0);
+              }
+            }
+            else
+            {
+              fetch_cc->SetFinish(0);
+            }
         }
     }
     else
     {
-        fetch_cc->SetFinish(
-            static_cast<int>(txservice::CcErrorCode::DATA_STORE_ERR));
+      fetch_cc->SetFinish(
+          static_cast<int>(txservice::CcErrorCode::DATA_STORE_ERR));
     }
 }
 
@@ -281,6 +300,39 @@ void FetchTableCallback(void *data,
     fetch_table_data->Result().set_error_msg(result.error_msg());
 
     fetch_table_data->Notify();
+}
+
+void ReadRecordCallback(void *data, ::google::protobuf::Closure *closure,
+                        DataStoreServiceClient &client,
+                        const remote::CommonResult &result)
+{
+  auto *read_record_data= reinterpret_cast<ReadRecordCallbackData *>(data);
+  ReadClosure *read_closure= static_cast<ReadClosure *>(closure);
+  auto err_code= result.error_code();
+
+  if (err_code == remote::DataStoreError::KEY_NOT_FOUND)
+  {
+    read_record_data->found_= false;
+    read_record_data->payload_.clear();
+    read_record_data->version_ts_= 1;
+  }
+  else if (result.error_code() == remote::DataStoreError::NO_ERROR)
+  {
+    read_record_data->found_= true;
+    read_record_data->version_ts_= read_closure->Ts();
+    read_record_data->payload_= read_closure->ValueString();
+  }
+  else
+  {
+    read_record_data->found_= false;
+    read_record_data->payload_.clear();
+    read_record_data->version_ts_= 1;
+  }
+
+  read_record_data->Result().set_error_code(result.error_code());
+  read_record_data->Result().set_error_msg(result.error_msg());
+
+  read_record_data->Notify();
 }
 
 void SyncPutAllCallback(void *data,
@@ -1034,7 +1086,6 @@ void FetchArchivesCallback(void *data,
     uint32_t items_size = scan_next_closure->ItemsSize();
     std::string archive_key;
     std::string archive_value;
-    std::string record_str;
     uint64_t commit_ts;
     uint64_t ttl;
 
@@ -1070,6 +1121,113 @@ void FetchArchivesCallback(void *data,
                         fetch_data,
                         &FetchArchivesCallback);
     }
+}
+
+void FetchRecordArchivesCallback(void *data,
+                                 ::google::protobuf::Closure *closure,
+                                 DataStoreServiceClient &client,
+                                 const remote::CommonResult &result)
+{
+  FetchRecordArchivesCallbackData *fetch_data=
+      static_cast<FetchRecordArchivesCallbackData *>(data);
+  txservice::FetchRecordCc *fetch_cc= fetch_data->fetch_cc_;
+
+  ScanNextClosure *scan_next_closure= static_cast<ScanNextClosure *>(closure);
+  auto err_code= result.error_code();
+
+  if (err_code != remote::DataStoreError::NO_ERROR)
+  {
+    assert(err_code != remote::DataStoreError::KEY_NOT_FOUND);
+    DLOG(INFO) << "FetchRecordArchivesCallback, error_code:" << err_code
+               << ", error_msg: " << result.error_msg();
+    fetch_cc->SetFinish(
+        static_cast<int>(txservice::CcErrorCode::DATA_STORE_ERR));
+    delete fetch_data;
+    return;
+  }
+
+  uint32_t items_size= scan_next_closure->ItemsSize();
+  DLOG(INFO) << "FetchRecordArchivesCallback, items_size:" << items_size;
+  std::string archive_key;
+  std::string archive_value;
+  uint64_t commit_ts;
+  uint64_t ttl;
+
+  if (fetch_cc->archive_records_ == nullptr)
+  {
+    fetch_cc->archive_records_= std::make_unique<std::vector<
+        std::tuple<uint64_t, txservice::RecordStatus, std::string>>>();
+  }
+  auto &archive_records= *fetch_cc->archive_records_;
+
+  archive_records.reserve(archive_records.size() + items_size);
+  for (uint32_t i= 0; i < items_size; i++)
+  {
+    scan_next_closure->GetItem(i, archive_key, archive_value, commit_ts, ttl);
+    // parse archive_value
+    bool is_deleted= false;
+    size_t value_offset= 0;
+    client.DecodeArchiveValue(archive_value, is_deleted, value_offset);
+    if (is_deleted)
+    {
+      archive_records.emplace_back(commit_ts, txservice::RecordStatus::Deleted,
+                                   "");
+    }
+    else
+    {
+      std::string record_str(archive_value.data() + value_offset,
+                             archive_value.size() - value_offset);
+      assert(record_str.size() > 0);
+      archive_records.emplace_back(commit_ts, txservice::RecordStatus::Normal,
+                                   std::move(record_str));
+    }
+  }
+
+  if (scan_next_closure->BatchSize() == 1 && !scan_next_closure->ScanForward())
+  {
+    if (items_size == 0)
+    {
+      // Not found the visible archive version in the archives table.
+      assert(archive_records.size() == 0);
+      archive_records.emplace_back(1U, txservice::RecordStatus::Deleted, "");
+
+      fetch_data->start_key_= client.EncodeArchiveKey(
+          fetch_cc->kv_table_name_,
+          std::string_view(fetch_cc->tx_key_.Data(), fetch_cc->tx_key_.Size()),
+          EloqShare::host_to_big_endian(1U));
+    }
+    else
+    {
+      fetch_data->start_key_= std::move(archive_key);
+    }
+
+    // Fetched the visible version, next scan is fetching all the
+    // archives whose commit_ts is bigger than the visible version.
+    fetch_data->end_key_= client.EncodeArchiveKey(
+        fetch_cc->kv_table_name_,
+        std::string_view(fetch_cc->tx_key_.Data(), fetch_cc->tx_key_.Size()),
+        EloqShare::host_to_big_endian(UINT64_MAX));
+
+    client.ScanNext(fetch_data->kv_table_name_, fetch_data->partition_id_,
+                    fetch_data->start_key_, fetch_data->end_key_,
+                    scan_next_closure->SessionId(), false, false, true, 100,
+                    nullptr, fetch_data, &FetchRecordArchivesCallback);
+  }
+  else if (items_size < scan_next_closure->BatchSize())
+  {
+    assert(archive_records.size() > 0);
+    fetch_cc->SetFinish(0);
+    delete fetch_data;
+  }
+  else
+  {
+    // set the start key of next scan batch
+    fetch_data->start_key_= std::move(archive_key);
+    client.ScanNext(fetch_data->kv_table_name_, fetch_data->partition_id_,
+                    fetch_data->start_key_, fetch_data->end_key_,
+                    scan_next_closure->SessionId(), false, false, true, 100,
+                    nullptr, fetch_data, &FetchRecordArchivesCallback);
+  }
 }
 
 }  // namespace EloqDS
