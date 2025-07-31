@@ -189,12 +189,22 @@ public:
 
     DataStoreOpStatus FetchRecord(txservice::FetchRecordCc *fetch_cc) override;
 
+    DataStoreOpStatus
+    FetchSnapshot(txservice::FetchSnapshotCc *fetch_cc) override;
+
     /**
      * @brief Fetch archives from the visible archive version to the
      * upper_bound archive version asynchronously. (This is called in
      * FetchRecord)
      */
     DataStoreOpStatus FetchArchives(txservice::FetchRecordCc *fetch_cc);
+
+    /**
+     * @brief Only Fetch visible archive asynchronously. (This is called in
+     * FetchSnapshot)
+     */
+    DataStoreOpStatus
+    FetchVisibleArchive(txservice::FetchSnapshotCc *fetch_cc);
 
     std::unique_ptr<txservice::store::DataStoreScanner> ScanForward(
         const txservice::TableName &table_name,

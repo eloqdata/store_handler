@@ -213,6 +213,94 @@ void FetchRecordCallback(void *data,
     }
 }
 
+void FetchSnapshotCallback(void *data, ::google::protobuf::Closure *closure,
+                           DataStoreServiceClient &client,
+                           const remote::CommonResult &result)
+{
+  auto *read_closure= static_cast<ReadClosure *>(closure);
+
+  auto *fetch_cc= static_cast<txservice::FetchSnapshotCc *>(data);
+  auto err_code= result.error_code();
+
+  if (metrics::enable_kv_metrics)
+  {
+    metrics::kv_meter->CollectDuration(metrics::NAME_KV_READ_DURATION,
+                                       fetch_cc->start_);
+    metrics::kv_meter->Collect(metrics::NAME_KV_READ_TOTAL, 1);
+  }
+
+  if (err_code == remote::DataStoreError::KEY_NOT_FOUND)
+  {
+    fetch_cc->rec_status_= txservice::RecordStatus::Deleted;
+    fetch_cc->rec_ts_= 1U;
+
+    fetch_cc->SetFinish(0);
+  }
+  else if (err_code == remote::DataStoreError::NO_ERROR)
+  {
+    uint64_t now= txservice::LocalCcShards::ClockTsInMillseconds();
+    uint64_t rec_ttl= read_closure->Ttl();
+    std::string_view val= read_closure->Value();
+
+    if (fetch_cc->table_name_.Engine() == txservice::TableEngine::EloqKv)
+    {
+      // Hash partition
+      assert(false);
+      fetch_cc->SetFinish(
+          static_cast<int>(txservice::CcErrorCode::DATA_STORE_ERR));
+    }
+    else
+    {
+      // Range partition
+      if (fetch_cc->snapshot_read_ts_ >= read_closure->Ts())
+      {
+        bool is_deleted= false;
+        size_t offset= 0;
+        if (!DataStoreServiceClient::DeserializeTxRecordStr(val, is_deleted,
+                                                            offset))
+        {
+          LOG(ERROR) << "====fetch snapshot===decode error=="
+                     << " key: " << read_closure->Key()
+                     << " status: " << (int) fetch_cc->rec_status_;
+          std::abort();
+        }
+
+        if (is_deleted)
+        {
+          fetch_cc->rec_status_= txservice::RecordStatus::Deleted;
+          fetch_cc->rec_ts_= read_closure->Ts();
+        }
+        else
+        {
+          fetch_cc->rec_status_= txservice::RecordStatus::Normal;
+          fetch_cc->rec_ts_= read_closure->Ts();
+          fetch_cc->rec_str_.assign(val.data() + offset, val.size() - offset);
+        }
+        fetch_cc->SetFinish(0);
+      }
+      else
+      {
+        auto op_st= client.FetchVisibleArchive(fetch_cc);
+        assert(op_st ==
+               txservice::store::DataStoreHandler::DataStoreOpStatus::Success);
+        if (op_st !=
+            txservice::store::DataStoreHandler::DataStoreOpStatus::Success)
+        {
+          LOG(ERROR) << "FetchSnapshot failed on FetchArchive, key: "
+                     << fetch_cc->tx_key_.ToString();
+          fetch_cc->SetFinish(
+              static_cast<int>(txservice::CcErrorCode::DATA_STORE_ERR));
+        }
+      }
+    }
+  }
+  else
+  {
+    fetch_cc->SetFinish(
+        static_cast<int>(txservice::CcErrorCode::DATA_STORE_ERR));
+  }
+}
+
 void AsyncDropTableCallback(void *data,
                             ::google::protobuf::Closure *closure,
                             DataStoreServiceClient &client,
@@ -1228,6 +1316,69 @@ void FetchRecordArchivesCallback(void *data,
                     scan_next_closure->SessionId(), false, false, true, 100,
                     nullptr, fetch_data, &FetchRecordArchivesCallback);
   }
+}
+
+void FetchSnapshotArchiveCallback(void *data,
+                                  ::google::protobuf::Closure *closure,
+                                  DataStoreServiceClient &client,
+                                  const remote::CommonResult &result)
+{
+  FetchSnapshotArchiveCallbackData *fetch_data=
+      static_cast<FetchSnapshotArchiveCallbackData *>(data);
+  txservice::FetchSnapshotCc *fetch_cc= fetch_data->fetch_cc_;
+
+  ScanNextClosure *scan_next_closure= static_cast<ScanNextClosure *>(closure);
+  auto err_code= result.error_code();
+
+  if (err_code != remote::DataStoreError::NO_ERROR)
+  {
+    assert(err_code != remote::DataStoreError::KEY_NOT_FOUND);
+    DLOG(INFO) << "FetchSnapshotArchiveCallback, error_code:" << err_code
+               << ", error_msg: " << result.error_msg();
+    fetch_cc->SetFinish(
+        static_cast<int>(txservice::CcErrorCode::DATA_STORE_ERR));
+    delete fetch_data;
+    return;
+  }
+
+  uint32_t items_size= scan_next_closure->ItemsSize();
+  DLOG(INFO) << "FetchSnapshotArchiveCallback, items_size:" << items_size;
+
+  if (items_size == 1)
+  {
+    std::string archive_key;
+    std::string archive_value;
+    uint64_t commit_ts;
+    uint64_t ttl;
+    assert(items_size <= 1);
+
+    scan_next_closure->GetItem(0, archive_key, archive_value, commit_ts, ttl);
+
+    // parse archive_value
+    bool is_deleted= false;
+    size_t value_offset= 0;
+    client.DecodeArchiveValue(archive_value, is_deleted, value_offset);
+    if (is_deleted)
+    {
+      fetch_cc->rec_ts_= commit_ts;
+      fetch_cc->rec_status_= txservice::RecordStatus::Deleted;
+    }
+    else
+    {
+      fetch_cc->rec_str_.assign(archive_value.data() + value_offset,
+                                archive_value.size() - value_offset);
+      fetch_cc->rec_ts_= commit_ts;
+      fetch_cc->rec_status_= txservice::RecordStatus::Normal;
+    }
+  }
+  else
+  {
+    // Not found the visible archive version in the archives table.
+    fetch_cc->rec_ts_= 1U;
+    fetch_cc->rec_status_= txservice::RecordStatus::Deleted;
+  }
+
+  fetch_cc->SetFinish(0);
 }
 
 }  // namespace EloqDS
