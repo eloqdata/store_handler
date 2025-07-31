@@ -195,6 +195,13 @@ public:
 
     DataStoreOpStatus FetchRecord(txservice::FetchRecordCc *fetch_cc) override;
 
+    /**
+     * @brief Fetch archives from the visible archive version to the
+     * upper_bound archive version asynchronously. (This is called in
+     * FetchRecord)
+     */
+    DataStoreOpStatus FetchArchives(txservice::FetchRecordCc *fetch_cc);
+
     std::unique_ptr<txservice::store::DataStoreScanner> ScanForward(
         const txservice::TableName &table_name,
         uint32_t ng_id,
@@ -648,6 +655,9 @@ private:
                                       ::google::protobuf::Closure *closure,
                                       DataStoreServiceClient &client,
                                       const remote::CommonResult &result);
+    friend void FetchRecordArchivesCallback(
+        void *data, ::google::protobuf::Closure *closure,
+        DataStoreServiceClient &client, const remote::CommonResult &result);
 };
 
 struct UpsertTableData
