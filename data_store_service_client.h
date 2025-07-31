@@ -180,12 +180,6 @@ public:
         const txservice::TxKey *start_key,
         const txservice::TableSchema *table_schema) override;
 
-    bool GetNextRangePartitionId(const txservice::TableName &tablename,
-                                 const txservice::TableSchema *table_schema,
-                                 uint32_t range_cnt,
-                                 int32_t &out_next_partition_id,
-                                 int retry_count) override;
-
     bool Read(const txservice::TableName &table_name,
               const txservice::TxKey &key,
               txservice::TxRecord &rec,

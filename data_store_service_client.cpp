@@ -922,45 +922,6 @@ bool DataStoreServiceClient::DeleteOutOfRangeData(
     return true;
 }
 
-// TODO(lzx): remove this function from DataStoreHandler after updating
-// other store_handler (fetch range partition id from sequences table).
-bool DataStoreServiceClient::GetNextRangePartitionId(
-    const txservice::TableName &tablename,
-    const txservice::TableSchema *table_schema,
-    uint32_t range_cnt,
-    int32_t &out_next_partition_id,
-    int retry_count)
-{
-    int64_t reserved_cnt;
-    uint64_t key_schema_ts;
-    if (tablename.IsBase())
-    {
-        key_schema_ts = table_schema->KeySchema()->SchemaTs();
-    }
-    else
-    {
-        key_schema_ts = table_schema->IndexKeySchema(tablename)->SchemaTs();
-    }
-
-    int64_t first_reserved_id = -1;
-    bool res = txservice::Sequences::ApplyIdOfTableRangePartition(
-        tablename, range_cnt, first_reserved_id, reserved_cnt, key_schema_ts);
-
-    if (!res)
-    {
-        LOG(ERROR) << "GetNextRangePartitionId failed for not assigned "
-                      "enough range ids, first_reserved_id:"
-                   << first_reserved_id << ", reserved_cnt: " << reserved_cnt;
-        return false;
-    }
-    assert(reserved_cnt == range_cnt);
-
-    assert(first_reserved_id + reserved_cnt < INT32_MAX);
-
-    out_next_partition_id = static_cast<int32_t>(first_reserved_id);
-    return true;
-}
-
 bool DataStoreServiceClient::Read(const txservice::TableName &table_name,
                                   const txservice::TxKey &key,
                                   txservice::TxRecord &rec,
