@@ -389,10 +389,10 @@ void RocksDBHandler::DeserializeRecord(const char *payload,
     }
 }
 
-bool RocksDBHandler::PutAll(std::vector<txservice::FlushRecord> &batch,
-                            const txservice::TableName &table_name,
-                            const txservice::TableSchema *table_schema,
-                            uint32_t node_group)
+bool RocksDBHandler::PutAll(
+    std::unordered_map<std::string_view,
+                       std::vector<std::unique_ptr<txservice::FlushTaskEntry>>>
+        &batch)
 {
     std::thread::id this_id = std::this_thread::get_id();
     if (batch.empty())
@@ -409,64 +409,72 @@ bool RocksDBHandler::PutAll(std::vector<txservice::FlushRecord> &batch,
     write_options.disableWAL = true;
     write_options.no_slowdown = false;
     rocksdb::WriteBatch write_batch;
-    const std::string &kv_cf_name =
-        table_schema->GetKVCatalogInfo()->kv_table_name_;
-    rocksdb::ColumnFamilyHandle *cfh = GetColumnFamilyHandler(kv_cf_name);
-    if (cfh == nullptr)
-    {
-        LOG(ERROR) << "Failed to get column family, cf name: " << kv_cf_name;
-        return false;
-    }
-
-    assert(cfh != nullptr);
     uint64_t write_batch_size = 0;
-    uint64_t now = txservice::LocalCcShards::ClockTsInMillseconds();
-    for (auto &flush_rec : batch)
+    for (auto &[kv_cf_name, flush_task_entries] : batch)
     {
-        txservice::TxKey key = flush_rec.Key();
-        const EloqKV::EloqKey *redis_key = key.GetKey<EloqKV::EloqKey>();
-        if (flush_rec.payload_status_ == txservice::RecordStatus::Normal &&
-            flush_rec.Payload()->GetTTL() > now)
+        rocksdb::ColumnFamilyHandle *cfh =
+            GetColumnFamilyHandler(kv_cf_name.data());
+        if (cfh == nullptr)
         {
-            std::vector<char> rec_buf;
-            SerializeFlushRecord(flush_rec, rec_buf);
-            write_batch_size += redis_key->Length();
-            write_batch_size += rec_buf.size();
-            write_batch.Put(
-                cfh,
-                rocksdb::Slice(redis_key->Buf(), redis_key->Length()),
-                rocksdb::Slice(rec_buf.data(), rec_buf.size()));
+            LOG(ERROR) << "Failed to get column family, cf name: " << kv_cf_name;
+            return false;
         }
-        else
+        uint64_t now = txservice::LocalCcShards::ClockTsInMillseconds();
+        for (auto &flush_task_entry : flush_task_entries)
         {
-            write_batch_size += redis_key->Length();
-            write_batch.Delete(
-                cfh, rocksdb::Slice(redis_key->Buf(), redis_key->Length()));
-        }
-
-        if (write_batch_size >= batch_write_size_)
-        {
-            auto status = db->Write(write_options, &write_batch);
-            if (!status.ok())
+            for (auto &flush_rec : *flush_task_entry->data_sync_vec_)
             {
-                LOG(ERROR) << "PutAll end failed, table:" << table_name.String()
-                           << ", thread id: " << this_id
-                           << ", result:" << static_cast<int>(status.ok())
-                           << ", batch size:" << batch.size()
-                           << ", error: " << status.ToString()
-                           << ", error code: " << status.code();
-                return false;
-            }
-            // collect metrics: flush rows
-            if (metrics::enable_kv_metrics)
-            {
-                metrics::kv_meter->Collect(metrics::NAME_KV_FLUSH_ROWS_TOTAL,
-                                           write_batch.Count(),
-                                           "base");
-            }
+                txservice::TxKey key = flush_rec.Key();
+                const EloqKV::EloqKey *redis_key =
+                    key.GetKey<EloqKV::EloqKey>();
+                if (flush_rec.payload_status_ ==
+                        txservice::RecordStatus::Normal &&
+                    flush_rec.Payload()->GetTTL() > now)
+                {
+                    std::vector<char> rec_buf;
+                    SerializeFlushRecord(flush_rec, rec_buf);
+                    write_batch_size += redis_key->Length();
+                    write_batch_size += rec_buf.size();
+                    write_batch.Put(
+                        cfh,
+                        rocksdb::Slice(redis_key->Buf(), redis_key->Length()),
+                        rocksdb::Slice(rec_buf.data(), rec_buf.size()));
+                }
+                else
+                {
+                    write_batch_size += redis_key->Length();
+                    write_batch.Delete(
+                        cfh,
+                        rocksdb::Slice(redis_key->Buf(), redis_key->Length()));
+                }
 
-            write_batch.Clear();
-            write_batch_size = 0;
+                if (write_batch_size >= batch_write_size_)
+                {
+                    auto status = db->Write(write_options, &write_batch);
+                    if (!status.ok())
+                    {
+                        LOG(ERROR)
+                            << "PutAll end failed "
+                            << ", thread id: " << this_id
+                            << ", result:" << static_cast<int>(status.ok())
+                            << ", batch size:" << batch.size()
+                            << ", error: " << status.ToString()
+                            << ", error code: " << status.code();
+                        return false;
+                    }
+                    // collect metrics: flush rows
+                    if (metrics::enable_kv_metrics)
+                    {
+                        metrics::kv_meter->Collect(
+                            metrics::NAME_KV_FLUSH_ROWS_TOTAL,
+                            write_batch.Count(),
+                            "base");
+                    }
+
+                    write_batch.Clear();
+                    write_batch_size = 0;
+                }
+            }
         }
     }
 
@@ -476,7 +484,7 @@ bool RocksDBHandler::PutAll(std::vector<txservice::FlushRecord> &batch,
 
         if (!status.ok())
         {
-            LOG(ERROR) << "PutAll end failed, table:" << table_name.String()
+            LOG(ERROR) << "PutAll end failed "
                        << ", thread id: " << this_id
                        << ", result:" << static_cast<int>(status.ok())
                        << ", batch size:" << batch.size()
@@ -1368,10 +1376,10 @@ std::string RocksDBHandler::CreateNewKVCatalogInfo(
  * @brief Write batch historical versions into DataStore.
  *
  */
-bool RocksDBHandler::PutArchivesAll(uint32_t node_group,
-                                    const txservice::TableName &table_name,
-                                    const txservice::KVCatalogInfo *kv_info,
-                                    std::vector<txservice::FlushRecord> &batch)
+bool RocksDBHandler::PutArchivesAll(
+    std::unordered_map<std::string_view,
+                       std::vector<std::unique_ptr<txservice::FlushTaskEntry>>>
+        &batch)
 {
     LOG(ERROR) << "RocksDBHandler::PutArchivesAll not implemented";
     // Not implemented
@@ -1382,10 +1390,9 @@ bool RocksDBHandler::PutArchivesAll(uint32_t node_group,
  * @brief Copy record from base/sk table to mvcc_archives.
  */
 bool RocksDBHandler::CopyBaseToArchive(
-    std::vector<std::pair<txservice::TxKey, int32_t>> &batch,
-    uint32_t node_group,
-    const txservice::TableName &table_name,
-    const txservice::TableSchema *table_schema)
+    std::unordered_map<std::string_view,
+                       std::vector<std::unique_ptr<txservice::FlushTaskEntry>>>
+        &batch)
 {
     LOG(ERROR) << "RocksDBHandler::CopyBaseToArchive not implemented";
     // Not implemented
