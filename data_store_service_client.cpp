@@ -922,45 +922,6 @@ bool DataStoreServiceClient::DeleteOutOfRangeData(
     return true;
 }
 
-// TODO(lzx): remove this function from DataStoreHandler after updating
-// other store_handler (fetch range partition id from sequences table).
-bool DataStoreServiceClient::GetNextRangePartitionId(
-    const txservice::TableName &tablename,
-    const txservice::TableSchema *table_schema,
-    uint32_t range_cnt,
-    int32_t &out_next_partition_id,
-    int retry_count)
-{
-    int64_t reserved_cnt;
-    uint64_t key_schema_ts;
-    if (tablename.IsBase())
-    {
-        key_schema_ts = table_schema->KeySchema()->SchemaTs();
-    }
-    else
-    {
-        key_schema_ts = table_schema->IndexKeySchema(tablename)->SchemaTs();
-    }
-
-    int64_t first_reserved_id = -1;
-    bool res = txservice::Sequences::ApplyIdOfTableRangePartition(
-        tablename, range_cnt, first_reserved_id, reserved_cnt, key_schema_ts);
-
-    if (!res)
-    {
-        LOG(ERROR) << "GetNextRangePartitionId failed for not assigned "
-                      "enough range ids, first_reserved_id:"
-                   << first_reserved_id << ", reserved_cnt: " << reserved_cnt;
-        return false;
-    }
-    assert(reserved_cnt == range_cnt);
-
-    assert(first_reserved_id + reserved_cnt < INT32_MAX);
-
-    out_next_partition_id = static_cast<int32_t>(first_reserved_id);
-    return true;
-}
-
 bool DataStoreServiceClient::Read(const txservice::TableName &table_name,
                                   const txservice::TxKey &key,
                                   txservice::TxRecord &rec,
@@ -2829,7 +2790,8 @@ bool DataStoreServiceClient::InitTableRanges(
 {
     // init_partition_id and kv_partition_id
     int32_t kv_partition_id = KvPartitionIdOf(table_name);
-    int32_t init_range_id = InitialRangePartitionIdOf(table_name);
+    int32_t init_range_id =
+        txservice::Sequences::InitialRangePartitionIdOf(table_name);
 
     const txservice::TxKey *neg_inf_key =
         txservice::TxKeyFactory::PackedNegativeInfinity();
@@ -2921,7 +2883,8 @@ bool DataStoreServiceClient::DeleteTableRanges(
 bool DataStoreServiceClient::InitTableLastRangePartitionId(
     const txservice::TableName &table_name)
 {
-    int32_t init_range_id = InitialRangePartitionIdOf(table_name);
+    int32_t init_range_id =
+        txservice::Sequences::InitialRangePartitionIdOf(table_name);
 
     if (txservice::Sequences::Initialized())
     {
@@ -3000,22 +2963,6 @@ bool DataStoreServiceClient::InitTableLastRangePartitionId(
         }
     }
     return false;
-}
-
-bool DataStoreServiceClient::DeleteTableLastRangePartitionId(
-    const txservice::TableName &table_name)
-{
-    txservice::Sequences::DeleteSequence(
-        table_name, txservice::SequenceType::RangePartitionId);
-    return true;
-}
-
-bool DataStoreServiceClient::DeleteSequence(
-    const txservice::TableName &base_table_name)
-{
-    txservice::Sequences::DeleteSequence(
-        base_table_name, txservice::SequenceType::AutoIncrementColumn, true);
-    return true;
 }
 
 bool DataStoreServiceClient::DeleteTableStatistics(
@@ -3388,13 +3335,6 @@ void DataStoreServiceClient::UpsertTable(UpsertTableData *table_data)
                  [this, table_schema](
                      const std::pair<txservice::TableName, std::string> &p)
                  { return InitTableRanges(p.first, table_schema->Version()); });
-
-        ok = ok && InitTableLastRangePartitionId(base_table_name) &&
-             std::all_of(
-                 kv_info->kv_index_names_.begin(),
-                 kv_info->kv_index_names_.end(),
-                 [this](const std::pair<txservice::TableName, std::string> &p)
-                 { return InitTableLastRangePartitionId(p.first); });
 #endif
 
         // 3- Upsert table catalog
@@ -3422,13 +3362,6 @@ void DataStoreServiceClient::UpsertTable(UpsertTableData *table_data)
                  [this, table_schema](
                      const std::pair<txservice::TableName, std::string> &p)
                  { return InitTableRanges(p.first, table_schema->Version()); });
-
-        ok = ok &&
-             std::all_of(
-                 alter_table_info->index_add_names_.begin(),
-                 alter_table_info->index_add_names_.end(),
-                 [this](const std::pair<txservice::TableName, std::string> &p)
-                 { return InitTableLastRangePartitionId(p.first); });
 #endif
         // 3- Upsert table catalog
         ok = ok && UpsertCatalog(table_data->new_table_schema_,
@@ -3452,13 +3385,6 @@ void DataStoreServiceClient::UpsertTable(UpsertTableData *table_data)
                  alter_table_info->index_drop_names_.end(),
                  [this](const std::pair<txservice::TableName, std::string> &p)
                  { return DeleteTableRanges(p.first); });
-
-        ok = ok &&
-             std::all_of(
-                 alter_table_info->index_drop_names_.begin(),
-                 alter_table_info->index_drop_names_.end(),
-                 [this](const std::pair<txservice::TableName, std::string> &p)
-                 { return DeleteTableLastRangePartitionId(p.first); });
 #endif
 
         // 3- Upsert table catalog
@@ -3484,29 +3410,7 @@ void DataStoreServiceClient::UpsertTable(UpsertTableData *table_data)
                  kv_info->kv_index_names_.end(),
                  [this](const std::pair<txservice::TableName, std::string> &p)
                  { return DeleteTableRanges(p.first); });
-
-        ok = ok && DeleteTableLastRangePartitionId(base_table_name) &&
-             std::all_of(
-                 kv_info->kv_index_names_.begin(),
-                 kv_info->kv_index_names_.end(),
-                 [this](const std::pair<txservice::TableName, std::string> &p)
-                 { return DeleteTableLastRangePartitionId(p.first); });
 #endif
-
-        // 3- Delete sequence info of this table
-        if (ok)
-        {
-            const txservice::RecordSchema *rsch = table_schema->RecordSchema();
-            if (rsch->AutoIncrementIndex() >= 0)
-            {
-                // For CREATE TABLE, will write the initial sequence record
-                // into the sequence ccmap, and the record will be flush
-                // into the data store during normal checkpoint, so there is
-                // no need to insert the initial sequence record into data
-                // store here.
-                ok = DeleteSequence(base_table_name);
-            }
-        }
 
         // 4- Delete table statistics
         ok = ok && DeleteTableStatistics(base_table_name);
@@ -3520,22 +3424,6 @@ void DataStoreServiceClient::UpsertTable(UpsertTableData *table_data)
         assert(kv_info->kv_index_names_.empty());
         ok = ok && DropKvTable(kv_info->kv_table_name_);
 
-        // 2- delete sequence info of this table (must execute before
-        // InitTableLastRangePartitionId)
-        if (ok)
-        {
-            const txservice::RecordSchema *rsch = table_schema->RecordSchema();
-            if (rsch->AutoIncrementIndex() >= 0)
-            {
-                // For CREATE TABLE, will write the initial sequence record
-                // into the sequence ccmap, and the record will be flush
-                // into the data store during normal checkpoint, so there is
-                // no need to insert the initial sequence record into data
-                // store here.
-                ok = DeleteSequence(base_table_name);
-            }
-        }
-
 #ifdef RANGE_PARTITION_ENABLED
         // 3- Reset table ranges of  base and index tables
         ok = ok && DeleteTableRanges(base_table_name) &&
@@ -3544,13 +3432,6 @@ void DataStoreServiceClient::UpsertTable(UpsertTableData *table_data)
                  kv_info->kv_index_names_.end(),
                  [this](const std::pair<txservice::TableName, std::string> &p)
                  { return DeleteTableRanges(p.first); });
-
-        ok = ok && DeleteTableLastRangePartitionId(base_table_name) &&
-             std::all_of(
-                 kv_info->kv_index_names_.begin(),
-                 kv_info->kv_index_names_.end(),
-                 [this](const std::pair<txservice::TableName, std::string> &p)
-                 { return DeleteTableLastRangePartitionId(p.first); });
 
         auto *new_table_schema = table_data->new_table_schema_;
         ok = ok &&
@@ -3562,13 +3443,6 @@ void DataStoreServiceClient::UpsertTable(UpsertTableData *table_data)
                      return InitTableRanges(p.first,
                                             new_table_schema->Version());
                  });
-
-        ok = ok &&
-             std::all_of(
-                 alter_table_info->index_add_names_.begin(),
-                 alter_table_info->index_add_names_.end(),
-                 [this](const std::pair<txservice::TableName, std::string> &p)
-                 { return InitTableLastRangePartitionId(p.first); });
 #endif
 
         // 4- Delete table statistics
