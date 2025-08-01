@@ -2026,23 +2026,6 @@ void FetchTableCallback(void *data,
                         DataStoreServiceClient &client,
                         const remote::CommonResult &result);
 
-struct ReadRecordCallbackData : public SyncCallbackData
-{
-  ReadRecordCallbackData(std::string &payload, bool &found,
-                         uint64_t &version_ts)
-      : payload_(payload), found_(found), version_ts_(version_ts)
-  {
-  }
-
-  std::string &payload_;
-  bool &found_;
-  uint64_t &version_ts_;
-};
-
-void ReadRecordCallback(void *data, ::google::protobuf::Closure *closure,
-                        DataStoreServiceClient &client,
-                        const remote::CommonResult &result);
-
 void SyncPutAllCallback(void *data,
                         ::google::protobuf::Closure *closure,
                         DataStoreServiceClient &client,

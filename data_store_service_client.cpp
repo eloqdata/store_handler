@@ -929,58 +929,8 @@ bool DataStoreServiceClient::Read(const txservice::TableName &table_name,
                                   uint64_t &version_ts,
                                   const txservice::TableSchema *table_schema)
 {
-    assert(false);
-    return false;
-//   const std::string &kv_table_name=
-//       table_schema->GetKVCatalogInfo()->GetKvTableName(table_name);
-
-//   if (partition_finder == nullptr)
-//   {
-//     partition_finder= PartitionFinderFactory::Create();
-//   }
-// #ifdef RANGE_PARTITION_ENABLED
-//   if (!dynamic_cast<RangePartitionFinder *>(partition_finder.get())
-//            ->Init(tx_service_, UINT32_MAX))
-//   {
-//     LOG(ERROR) << "Failed to init RangePartitionFinder!";
-//     return false;
-//   }
-// #endif
-
-//   Partition pk;
-//   PartitionResultType rt= partition_finder->FindPartition(table_name, key, pk);
-//   if (rt != PartitionResultType::NORMAL)
-//   {
-//     partition_finder->ReleaseReadLocks();
-//     return false;
-//   }
-//   int32_t partition_id= pk.Pk1();
-
-//   uint32_t kv_partition_id= KvPartitionIdOf(
-//       partition_id, table_name.Engine() != txservice::TableEngine::EloqKv);
-//   std::string rec_str;
-
-//   ReadRecordCallbackData callback_data(rec_str, found, version_ts);
-//   Read(kv_table_name, kv_partition_id,
-//        std::string_view(key.Data(), key.Size()), &callback_data,
-//        &ReadRecordCallback);
-//   callback_data.Wait();
-
-//   partition_finder->ReleaseReadLocks();
-
-//   if (callback_data.HasError())
-//   {
-//     LOG(WARNING) << "Read record error: "
-//                  << callback_data.Result().error_msg();
-//   }
-//   if (found)
-//   {
-//     assert(rec_str.size() > 0);
-//     size_t offset= 0;
-//     rec.Deserialize(rec_str.data(), offset);
-//   }
-
-//   return !callback_data.HasError();
+    LOG(ERROR) << "Read not implemented";
+    return true;
 }
 
 std::unique_ptr<txservice::store::DataStoreScanner>

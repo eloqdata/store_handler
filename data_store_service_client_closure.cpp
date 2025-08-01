@@ -390,39 +390,6 @@ void FetchTableCallback(void *data,
     fetch_table_data->Notify();
 }
 
-void ReadRecordCallback(void *data, ::google::protobuf::Closure *closure,
-                        DataStoreServiceClient &client,
-                        const remote::CommonResult &result)
-{
-  auto *read_record_data= reinterpret_cast<ReadRecordCallbackData *>(data);
-  ReadClosure *read_closure= static_cast<ReadClosure *>(closure);
-  auto err_code= result.error_code();
-
-  if (err_code == remote::DataStoreError::KEY_NOT_FOUND)
-  {
-    read_record_data->found_= false;
-    read_record_data->payload_.clear();
-    read_record_data->version_ts_= 1;
-  }
-  else if (result.error_code() == remote::DataStoreError::NO_ERROR)
-  {
-    read_record_data->found_= true;
-    read_record_data->version_ts_= read_closure->Ts();
-    read_record_data->payload_= read_closure->ValueString();
-  }
-  else
-  {
-    read_record_data->found_= false;
-    read_record_data->payload_.clear();
-    read_record_data->version_ts_= 1;
-  }
-
-  read_record_data->Result().set_error_code(result.error_code());
-  read_record_data->Result().set_error_msg(result.error_msg());
-
-  read_record_data->Notify();
-}
-
 void SyncPutAllCallback(void *data,
                         ::google::protobuf::Closure *closure,
                         DataStoreServiceClient &client,
