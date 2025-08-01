@@ -2509,8 +2509,16 @@ bool DataStoreServiceClient::IsLocalPartition(int32_t partition_id)
 }
 
 txservice::store::DataStoreHandler::DataStoreOpStatus
-DataStoreServiceClient::FetchRecord(txservice::FetchRecordCc *fetch_cc)
+DataStoreServiceClient::FetchRecord(
+    txservice::FetchRecordCc *fetch_cc,
+    txservice::FetchSnapshotCc *fetch_snapshot_cc)
 {
+    if (fetch_snapshot_cc != nullptr)
+    {
+        assert(fetch_cc == nullptr);
+        return FetchSnapshot(fetch_snapshot_cc);
+    }
+
     if (metrics::enable_kv_metrics)
     {
         fetch_cc->start_ = metrics::Clock::now();
