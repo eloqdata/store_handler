@@ -1057,19 +1057,6 @@ bool RocksDBHandler::DeleteOutOfRangeData(
     return true;
 }
 
-bool RocksDBHandler::GetNextRangePartitionId(
-    const txservice::TableName &tablename,
-    const txservice::TableSchema *table_schema,
-    uint32_t range_cnt,
-    int32_t &out_next_partition_id,
-    int retry_count)
-{
-    LOG(ERROR) << "RocksDBHandler::GetNextRangePartitionId not implemented";
-    // Not implemented
-    assert(false);
-    return true;
-}
-
 bool RocksDBHandler::Read(const txservice::TableName &table_name,
                           const txservice::TxKey &key,
                           txservice::TxRecord &rec,
