@@ -187,10 +187,11 @@ public:
               uint64_t &version_ts,
               const txservice::TableSchema *table_schema) override;
 
-    DataStoreOpStatus FetchRecord(txservice::FetchRecordCc *fetch_cc) override;
+    DataStoreOpStatus FetchRecord(
+        txservice::FetchRecordCc *fetch_cc,
+        txservice::FetchSnapshotCc *fetch_snapshot_cc = nullptr) override;
 
-    DataStoreOpStatus
-    FetchSnapshot(txservice::FetchSnapshotCc *fetch_cc) override;
+    DataStoreOpStatus FetchSnapshot(txservice::FetchSnapshotCc *fetch_cc);
 
     /**
      * @brief Fetch archives from the visible archive version to the
