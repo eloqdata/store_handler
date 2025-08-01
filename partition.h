@@ -579,7 +579,7 @@ public:
                                       const txservice::TxKey &key,
                                       Partition &out_partition) override
     {
-#ifdef USE_ONE_CASS_SHARD
+#ifdef USE_ONE_DATA_STORE_SHARD
         int32_t pk1_hash = 0;
 #else
         int32_t pk1_hash;
@@ -615,7 +615,7 @@ public:
         std::vector<txservice::FlushRecord> &ckpt_rec,
         std::vector<std::pair<uint, Partition>> &out_partition) override
     {
-#ifdef USE_ONE_CASS_SHARD
+#ifdef USE_ONE_DATA_STORE_SHARD
         out_partition.emplace_back(0, Partition(0));
 #else
         Partition part;

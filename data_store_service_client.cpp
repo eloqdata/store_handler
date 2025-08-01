@@ -161,7 +161,8 @@ bool DataStoreServiceClient::PutAll(
                         hash_partitions_map.try_emplace(kv_partition_id);
                     if (inserted)
                     {
-                        it->second.reserve(batch.size() / 1024 * 2 * entries.size());
+                        it->second.reserve(batch.size() / 1024 * 2 *
+                                           entries.size());
                     }
                     it->second.emplace_back(
                         std::make_pair(flush_task_entry_idx, i));
@@ -187,8 +188,7 @@ bool DataStoreServiceClient::PutAll(
 
         SyncCallbackData sync_putall;
         uint16_t parts_cnt_per_key = 1;
-        uint16_t parts_cnt_per_record =
-            table_name.IsHashPartitioned() ? 1 : 5;
+        uint16_t parts_cnt_per_record = table_name.IsHashPartitioned() ? 1 : 5;
 
         // Write data for hash_partitioned table
         for (auto part_it = hash_partitions_map.begin();
@@ -1854,7 +1854,9 @@ bool DataStoreServiceClient::PutArchivesAll(
                     KvPartitionIdOf(partition_id, true));
                 if (inserted)
                 {
-                    it->second.reserve(archive_vec.size() / 1024 * 2 * flush_task_entry.size() * flush_task.size());
+                    it->second.reserve(archive_vec.size() / 1024 * 2 *
+                                       flush_task_entry.size() *
+                                       flush_task.size());
                 }
                 it->second.emplace_back(kv_table_name, &archive_vec[i]);
             }
@@ -3013,13 +3015,16 @@ bool DataStoreServiceClient::InitTableLastRangePartitionId(
             1,
             init_range_id + 1);
     // See PutAll(): encode is_delete, encoded_blob_data and unpack_info
-#ifdef RANGE_PARTITION_ENABLED
-    std::string encoded_tx_record =
-        SerializeTxRecord(false, seq_pair.second.get());
-#else
-    auto encoded_tx_record = std::string_view(
-        seq_pair.second->EncodedBlobData(), seq_pair.second->EncodedBlobSize());
-#endif
+    std::string encoded_tx_record;
+    if (table_name.IsHashPartitioned())
+    {
+        encoded_tx_record = std::string(seq_pair.second->EncodedBlobData(),
+                                        seq_pair.second->EncodedBlobSize());
+    }
+    else
+    {
+        encoded_tx_record = SerializeTxRecord(false, seq_pair.second.get());
+    }
     int32_t kv_partition_id =
         KvPartitionIdOf(txservice::Sequences::table_name_);
 
@@ -3359,16 +3364,18 @@ bool DataStoreServiceClient::InitPreBuiltTables()
             continue;
         }
 
-#ifdef RANGE_PARTITION_ENABLED
-        // init table last range partition id
-        bool ok = InitTableRanges(tablename, table_version);
-        ok &&InitTableLastRangePartitionId(tablename);
-        if (!ok)
+        if (!table_name.IsHashPartitioned())
         {
-            LOG(ERROR) << "InitPreBuiltTables failed on initing table ranges.";
-            return false;
+            // init table last range partition id
+            bool ok = InitTableRanges(tablename, table_version);
+            ok &&InitTableLastRangePartitionId(tablename);
+            if (!ok)
+            {
+                LOG(ERROR)
+                    << "InitPreBuiltTables failed on initing table ranges.";
+                return false;
+            }
         }
-#endif
 
         // write catalog to kvstore
         keys.emplace_back(tbl_sv);
@@ -3427,16 +3434,21 @@ void DataStoreServiceClient::UpsertTable(UpsertTableData *table_data)
         // 1- Create kv tables of base and indexes
         // (skip this step for all table data are stored in one cf.)
 
-#ifdef RANGE_PARTITION_ENABLED
         // 2- Init table ranges
-        ok = ok && InitTableRanges(base_table_name, table_schema->Version()) &&
+        if (!base_table_name.IsHashPartitioned())
+        {
+            // Only range partitioned base table needs to initialize range id.
+            ok =
+                ok && InitTableRanges(base_table_name, table_schema->Version());
+        }
+        // sk tables are always range partitioned.
+        ok = ok &&
              std::all_of(
                  kv_info->kv_index_names_.begin(),
                  kv_info->kv_index_names_.end(),
                  [this, table_schema](
                      const std::pair<txservice::TableName, std::string> &p)
                  { return InitTableRanges(p.first, table_schema->Version()); });
-#endif
 
         // 3- Upsert table catalog
 
@@ -3454,7 +3466,6 @@ void DataStoreServiceClient::UpsertTable(UpsertTableData *table_data)
         // 1- Create kv table of new index
         // (skip this step for all table data are stored in one cf.)
 
-#ifdef RANGE_PARTITION_ENABLED
         // 2- Init table ranges
         ok = ok &&
              std::all_of(
@@ -3463,7 +3474,6 @@ void DataStoreServiceClient::UpsertTable(UpsertTableData *table_data)
                  [this, table_schema](
                      const std::pair<txservice::TableName, std::string> &p)
                  { return InitTableRanges(p.first, table_schema->Version()); });
-#endif
         // 3- Upsert table catalog
         ok = ok && UpsertCatalog(table_data->new_table_schema_,
                                  table_data->commit_ts_);
@@ -3478,7 +3488,6 @@ void DataStoreServiceClient::UpsertTable(UpsertTableData *table_data)
                  [this](const std::pair<txservice::TableName, std::string> &p)
                  { return DropKvTable(p.second); });
 
-#ifdef RANGE_PARTITION_ENABLED
         // 2- Delete table ranges of the dropped index
         ok = ok &&
              std::all_of(
@@ -3486,7 +3495,6 @@ void DataStoreServiceClient::UpsertTable(UpsertTableData *table_data)
                  alter_table_info->index_drop_names_.end(),
                  [this](const std::pair<txservice::TableName, std::string> &p)
                  { return DeleteTableRanges(p.first); });
-#endif
 
         // 3- Upsert table catalog
         ok = ok && UpsertCatalog(table_data->new_table_schema_,
@@ -3502,16 +3510,17 @@ void DataStoreServiceClient::UpsertTable(UpsertTableData *table_data)
                  [this](const std::pair<txservice::TableName, std::string> &p)
                  { return DropKvTable(p.second); });
 
-#ifdef RANGE_PARTITION_ENABLED
         // 2- Delete table ranges of  base and index tables
-
-        ok = ok && DeleteTableRanges(base_table_name) &&
+        if (!base_table_name.IsHashPartitioned())
+        {
+            ok = ok && DeleteTableRanges(base_table_name);
+        }
+        ok = ok &&
              std::all_of(
                  kv_info->kv_index_names_.begin(),
                  kv_info->kv_index_names_.end(),
                  [this](const std::pair<txservice::TableName, std::string> &p)
                  { return DeleteTableRanges(p.first); });
-#endif
 
         // 4- Delete table statistics
         ok = ok && DeleteTableStatistics(base_table_name);
@@ -3525,9 +3534,12 @@ void DataStoreServiceClient::UpsertTable(UpsertTableData *table_data)
         assert(kv_info->kv_index_names_.empty());
         ok = ok && DropKvTable(kv_info->kv_table_name_);
 
-#ifdef RANGE_PARTITION_ENABLED
         // 3- Reset table ranges of  base and index tables
-        ok = ok && DeleteTableRanges(base_table_name) &&
+        if (!base_table_name.IsHashPartitioned())
+        {
+            ok = ok && DeleteTableRanges(base_table_name);
+        }
+        ok = ok &&
              std::all_of(
                  kv_info->kv_index_names_.begin(),
                  kv_info->kv_index_names_.end(),
@@ -3544,7 +3556,6 @@ void DataStoreServiceClient::UpsertTable(UpsertTableData *table_data)
                      return InitTableRanges(p.first,
                                             new_table_schema->Version());
                  });
-#endif
 
         // 4- Delete table statistics
         ok = ok && DeleteTableStatistics(base_table_name);

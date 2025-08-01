@@ -326,7 +326,7 @@ bool HashPartitionDynamoScanner<Direction>::Init()
     BuildScanPartitionRequest();
     scan_res_.reserve(1024);
 
-#ifdef USE_ONE_CASS_SHARD
+#ifdef USE_ONE_DATA_STORE_SHARD
     QueryOutcomeCallable scan_future = ScanPartition(0, dynamo_scan_page_limit);
     if (!AddPartitionResult(scan_future, 0))
     {
