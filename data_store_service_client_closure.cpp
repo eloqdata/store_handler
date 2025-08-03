@@ -242,12 +242,12 @@ void FetchSnapshotCallback(void *data, ::google::protobuf::Closure *closure,
     uint64_t rec_ttl= read_closure->Ttl();
     std::string_view val= read_closure->Value();
 
-    if (fetch_cc->table_name_.Engine() == txservice::TableEngine::EloqKv)
+    if (fetch_cc->table_name_.IsHashPartitioned())
     {
-      // Hash partition
-      assert(false);
-      fetch_cc->SetFinish(
-          static_cast<int>(txservice::CcErrorCode::DATA_STORE_ERR));
+        LOG(WARNING) << "FetchSnapshot on hash partition not supported";
+        assert(false);
+        fetch_cc->SetFinish(
+            static_cast<int>(txservice::CcErrorCode::DATA_STORE_ERR));
     }
     else
     {

@@ -2474,18 +2474,6 @@ DataStoreServiceClient::FetchRecord(
         fetch_cc->start_ = metrics::Clock::now();
     }
 
-    const std::string &kv_table_name = fetch_cc->kv_table_name_;
-
-    int32_t partition_id;
-    if (fetch_cc->table_name_.Engine() != txservice::TableEngine::EloqKv)
-    {
-        partition_id = fetch_cc->range_id_;
-    }
-    else
-    {
-        partition_id = MapKeyHashToPartitionId(fetch_cc->tx_key_);
-    }
-
     if (!fetch_cc->tx_key_.IsOwner())
     {
         fetch_cc->tx_key_ = fetch_cc->tx_key_.Clone();
@@ -2496,11 +2484,12 @@ DataStoreServiceClient::FetchRecord(
       return FetchArchives(fetch_cc);
     }
 
-    Read(kv_table_name,
-         KvPartitionIdOf(partition_id, fetch_cc->table_name_.Engine() !=
-                                           txservice::TableEngine::EloqKv),
+    Read(fetch_cc->kv_table_name_,
+         KvPartitionIdOf(fetch_cc->partition_id_,
+                         !fetch_cc->table_name_.IsHashPartitioned()),
          std::string_view(fetch_cc->tx_key_.Data(), fetch_cc->tx_key_.Size()),
-         fetch_cc, &FetchRecordCallback);
+         fetch_cc,
+         &FetchRecordCallback);
 
     return txservice::store::DataStoreHandler::DataStoreOpStatus::Success;
 }
@@ -2513,18 +2502,6 @@ DataStoreServiceClient::FetchSnapshot(txservice::FetchSnapshotCc *fetch_cc)
     fetch_cc->start_= metrics::Clock::now();
   }
 
-  const std::string &kv_table_name= fetch_cc->kv_table_name_;
-
-  int32_t partition_id;
-  if (fetch_cc->table_name_.Engine() != txservice::TableEngine::EloqKv)
-  {
-    partition_id= fetch_cc->range_id_;
-  }
-  else
-  {
-    partition_id= MapKeyHashToPartitionId(fetch_cc->tx_key_);
-  }
-
   if (!fetch_cc->tx_key_.IsOwner())
   {
     fetch_cc->tx_key_= fetch_cc->tx_key_.Clone();
@@ -2535,11 +2512,12 @@ DataStoreServiceClient::FetchSnapshot(txservice::FetchSnapshotCc *fetch_cc)
     return FetchVisibleArchive(fetch_cc);
   }
 
-  Read(kv_table_name,
-       KvPartitionIdOf(partition_id, fetch_cc->table_name_.Engine() !=
-                                         txservice::TableEngine::EloqKv),
+  Read(fetch_cc->kv_table_name_,
+       KvPartitionIdOf(fetch_cc->partition_id_,
+                       !fetch_cc->table_name_.IsHashPartitioned()),
        std::string_view(fetch_cc->tx_key_.Data(), fetch_cc->tx_key_.Size()),
-       fetch_cc, &FetchSnapshotCallback);
+       fetch_cc,
+       &FetchSnapshotCallback);
 
   return txservice::store::DataStoreHandler::DataStoreOpStatus::Success;
 }
