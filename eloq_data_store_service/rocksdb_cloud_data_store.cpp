@@ -293,11 +293,11 @@ bool RocksDBCloudDataStore::StartDB(std::string cookie, std::string prev_cookie)
     cfs_options_.src_bucket.SetBucketName(cloud_config_.bucket_name_,
                                           cloud_config_.bucket_prefix_);
     cfs_options_.src_bucket.SetRegion(cloud_config_.region_);
-    cfs_options_.src_bucket.SetObjectPath("rocksdb_cloud");
+    cfs_options_.src_bucket.SetObjectPath(cloud_config_.object_path_);
     cfs_options_.dest_bucket.SetBucketName(cloud_config_.bucket_name_,
                                            cloud_config_.bucket_prefix_);
     cfs_options_.dest_bucket.SetRegion(cloud_config_.region_);
-    cfs_options_.dest_bucket.SetObjectPath("rocksdb_cloud");
+    cfs_options_.dest_bucket.SetObjectPath(cloud_config_.object_path_);
     // Add sst_file_cache for accerlating random access on sst files
     // use 2^5 = 32 shards for the cache, each shard has sst_file_cache_size_/32
     // bytes capacity
@@ -737,3 +737,4 @@ inline int64_t RocksDBCloudDataStore::FindMaxTermFromCloudManifestFiles(
     return max_term;
 }
 }  // namespace EloqDS
+
