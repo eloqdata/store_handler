@@ -361,6 +361,7 @@ bool RocksDBCloudDataStore::StartDB(std::string cookie, std::string prev_cookie)
         FindMaxTermFromCloudManifestFiles(storage_provider,
                                           cloud_config_.bucket_prefix_,
                                           cloud_config_.bucket_name_,
+                                          cloud_config_.object_path_,
                                           ng_id);
 
     if (max_term != -1)
@@ -689,6 +690,7 @@ inline int64_t RocksDBCloudDataStore::FindMaxTermFromCloudManifestFiles(
         &storage_provider,
     const std::string &bucket_prefix,
     const std::string &bucket_name,
+    const std::string &object_path,
     const int64_t cc_ng_id_in_cookie)
 {
     // find the max term cookie from cloud manifest files
@@ -699,7 +701,7 @@ inline int64_t RocksDBCloudDataStore::FindMaxTermFromCloudManifestFiles(
     cloud_manifest_prefix.append(std::to_string(cc_ng_id_in_cookie));
     auto st = storage_provider->ListCloudObjectsWithPrefix(
         bucket_prefix + bucket_name,
-        "rocksdb_cloud",
+        object_path,
         cloud_manifest_prefix,
         &cloud_objects);
     if (!st.ok())
