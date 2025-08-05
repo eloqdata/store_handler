@@ -252,6 +252,9 @@ DEFINE_string(rocksdb_cloud_bucket_name,
 DEFINE_string(rocksdb_cloud_bucket_prefix,
               "eloqkv-",
               "RocksDB cloud bucket prefix");
+DEFINE_string(rocksdb_cloud_object_path,
+              "rocksdb_cloud",
+              "RocksDB cloud object path");
 DEFINE_string(rocksdb_cloud_region, "ap-northeast-1", "RocksDB cloud region");
 DEFINE_string(rocksdb_cloud_sst_file_cache_size,
               "20GB",
@@ -513,6 +516,12 @@ RocksDBCloudConfig::RocksDBCloudConfig(const INIReader &config)
             : config.GetString("store",
                                "rocksdb_cloud_bucket_prefix",
                                FLAGS_rocksdb_cloud_bucket_prefix);
+    object_path_ = !CheckCommandLineFlagIsDefault("rocksdb_cloud_object_path")
+                       ? FLAGS_rocksdb_cloud_object_path
+                       : config.GetString("store",
+                                          "rocksdb_cloud_object_path",
+                                          FLAGS_rocksdb_cloud_object_path);
+
     region_ =
         !CheckCommandLineFlagIsDefault("rocksdb_cloud_region")
             ? FLAGS_rocksdb_cloud_region
