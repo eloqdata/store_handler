@@ -2324,6 +2324,12 @@ bool DataStoreServiceClient::FetchVisibleArchive(
         return false;
     }
 
+    if (callback_data.archive_values_.empty())
+    {
+      rec_status= txservice::RecordStatus::Deleted;
+      return true;
+    }
+
     assert(callback_data.archive_values_.size() == 1);
     const std::string &archive_value_str = callback_data.archive_values_[0];
 
@@ -2348,6 +2354,71 @@ bool DataStoreServiceClient::FetchVisibleArchive(
     }
 
     return true;
+}
+
+txservice::store::DataStoreHandler::DataStoreOpStatus
+DataStoreServiceClient::FetchArchives(txservice::FetchRecordCc *fetch_cc)
+{
+  // 1- fetch the visible version archive.
+  // 2- fetch all archives that from the visible version to the latest
+  // version.
+
+  const std::string &kv_table_name= fetch_cc->kv_table_name_;
+  const txservice::TxKey &key= fetch_cc->tx_key_;
+
+  uint64_t be_read_ts=
+      EloqShare::host_to_big_endian(fetch_cc->snapshot_read_ts_);
+  std::string start_key= EncodeArchiveKey(
+      kv_table_name, std::string_view(key.Data(), key.Size()), be_read_ts);
+  std::string end_key= EncodeArchiveKey(
+      kv_table_name, std::string_view(key.Data(), key.Size()), 0);
+  uint32_t partition_id= HashArchiveKey(kv_table_name, key);
+  int32_t kv_partition_id= KvPartitionIdOf(partition_id, true);
+  auto *callback_data= new FetchRecordArchivesCallbackData(
+      fetch_cc, kv_mvcc_archive_name, kv_partition_id, std::move(start_key),
+      std::move(end_key));
+  ScanNext(callback_data->kv_table_name_, callback_data->partition_id_,
+           callback_data->start_key_, callback_data->end_key_,
+           callback_data->session_id_,
+           true,  // include start key
+           false, // include end key
+           false, // scan forward: false
+           1,
+           nullptr, // search condition
+           callback_data, &FetchRecordArchivesCallback);
+  return txservice::store::DataStoreHandler::DataStoreOpStatus::Success;
+}
+
+txservice::store::DataStoreHandler::DataStoreOpStatus
+DataStoreServiceClient::FetchVisibleArchive(
+    txservice::FetchSnapshotCc *fetch_cc)
+{
+  // Only Fetch the visible version archive.
+
+  const std::string &kv_table_name= fetch_cc->kv_table_name_;
+  const txservice::TxKey &key= fetch_cc->tx_key_;
+
+  uint64_t be_read_ts=
+      EloqShare::host_to_big_endian(fetch_cc->snapshot_read_ts_);
+  std::string start_key= EncodeArchiveKey(
+      kv_table_name, std::string_view(key.Data(), key.Size()), be_read_ts);
+  std::string end_key= EncodeArchiveKey(
+      kv_table_name, std::string_view(key.Data(), key.Size()), 0);
+  uint32_t partition_id= HashArchiveKey(kv_table_name, key);
+  int32_t kv_partition_id= KvPartitionIdOf(partition_id, true);
+  auto *callback_data= new FetchSnapshotArchiveCallbackData(
+      fetch_cc, kv_mvcc_archive_name, kv_partition_id, std::move(start_key),
+      std::move(end_key));
+  ScanNext(callback_data->kv_table_name_, callback_data->partition_id_,
+           callback_data->start_key_, callback_data->end_key_,
+           callback_data->session_id_,
+           true,  // include start key
+           false, // include end key
+           false, // scan forward: false
+           1,
+           nullptr, // search condition
+           callback_data, &FetchSnapshotArchiveCallback);
+  return txservice::store::DataStoreHandler::DataStoreOpStatus::Success;
 }
 
 bool DataStoreServiceClient::NeedCopyRange() const
@@ -2388,23 +2459,19 @@ bool DataStoreServiceClient::IsLocalPartition(int32_t partition_id)
 }
 
 txservice::store::DataStoreHandler::DataStoreOpStatus
-DataStoreServiceClient::FetchRecord(txservice::FetchRecordCc *fetch_cc)
+DataStoreServiceClient::FetchRecord(
+    txservice::FetchRecordCc *fetch_cc,
+    txservice::FetchSnapshotCc *fetch_snapshot_cc)
 {
+    if (fetch_snapshot_cc != nullptr)
+    {
+        assert(fetch_cc == nullptr);
+        return FetchSnapshot(fetch_snapshot_cc);
+    }
+
     if (metrics::enable_kv_metrics)
     {
         fetch_cc->start_ = metrics::Clock::now();
-    }
-
-    const std::string &kv_table_name = fetch_cc->kv_table_name_;
-
-    int32_t partition_id;
-    if (fetch_cc->table_name_.Engine() != txservice::TableEngine::EloqKv)
-    {
-        partition_id = fetch_cc->range_id_;
-    }
-    else
-    {
-        partition_id = MapKeyHashToPartitionId(fetch_cc->tx_key_);
     }
 
     if (!fetch_cc->tx_key_.IsOwner())
@@ -2412,13 +2479,47 @@ DataStoreServiceClient::FetchRecord(txservice::FetchRecordCc *fetch_cc)
         fetch_cc->tx_key_ = fetch_cc->tx_key_.Clone();
     }
 
-    Read(kv_table_name,
-         KvPartitionIdOf(partition_id, false),
+    if (fetch_cc->only_fetch_archives_)
+    {
+      return FetchArchives(fetch_cc);
+    }
+
+    Read(fetch_cc->kv_table_name_,
+         KvPartitionIdOf(fetch_cc->partition_id_,
+                         !fetch_cc->table_name_.IsHashPartitioned()),
          std::string_view(fetch_cc->tx_key_.Data(), fetch_cc->tx_key_.Size()),
          fetch_cc,
          &FetchRecordCallback);
 
     return txservice::store::DataStoreHandler::DataStoreOpStatus::Success;
+}
+
+txservice::store::DataStoreHandler::DataStoreOpStatus
+DataStoreServiceClient::FetchSnapshot(txservice::FetchSnapshotCc *fetch_cc)
+{
+  if (metrics::enable_kv_metrics)
+  {
+    fetch_cc->start_= metrics::Clock::now();
+  }
+
+  if (!fetch_cc->tx_key_.IsOwner())
+  {
+    fetch_cc->tx_key_= fetch_cc->tx_key_.Clone();
+  }
+
+  if (fetch_cc->only_fetch_archives_)
+  {
+    return FetchVisibleArchive(fetch_cc);
+  }
+
+  Read(fetch_cc->kv_table_name_,
+       KvPartitionIdOf(fetch_cc->partition_id_,
+                       !fetch_cc->table_name_.IsHashPartitioned()),
+       std::string_view(fetch_cc->tx_key_.Data(), fetch_cc->tx_key_.Size()),
+       fetch_cc,
+       &FetchSnapshotCallback);
+
+  return txservice::store::DataStoreHandler::DataStoreOpStatus::Success;
 }
 
 void DataStoreServiceClient::Read(const std::string_view kv_table_name,

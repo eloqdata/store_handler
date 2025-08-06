@@ -563,7 +563,23 @@ bool RocksDBCloudDataStore::OpenCloudDB(
 
     auto start = std::chrono::system_clock::now();
     std::unique_lock<std::shared_mutex> db_lk(db_mux_);
-    auto status = rocksdb::DBCloud::Open(options, db_path_, "", 0, &db_);
+    rocksdb::Status status;
+    uint32_t retry_num= 0;
+    // When restart in tests, the rocksdb::DBCloud::Open() operation may fail
+    // due to (minio) s3 service and the status only print IOError. Then, we
+    // retry serveral time if failed.
+    while (retry_num < 10)
+    {
+      status= rocksdb::DBCloud::Open(options, db_path_, "", 0, &db_);
+      if (status.ok())
+      {
+        break;
+      }
+      retry_num++;
+      LOG(WARNING) << "Open rocksdb cloud error : " << status.ToString()
+                   << ", retrying ...";
+      bthread_usleep(retry_num * 200000);
+    }
 
     auto end = std::chrono::system_clock::now();
     auto duration =
