@@ -77,6 +77,7 @@ void SyncBatchReadForArchiveCallback(void *data,
     {
         LOG(ERROR) << "BatchReadForArchiveCallback, error_code: " << err_code
                    << ", error_msg: " << result.error_msg();
+        LOG(INFO) << "=== DATA STORE ERROR";
         callback_data->SetErrorCode(
             static_cast<int>(txservice::CcErrorCode::DATA_STORE_ERR));
         callback_data->DecreaseFlyingReadCount();
@@ -189,6 +190,7 @@ void FetchRecordCallback(void *data,
     }
     else
     {
+        LOG(INFO) << "=== DATA STORE ERROR";
         fetch_cc->SetFinish(
             static_cast<int>(txservice::CcErrorCode::DATA_STORE_ERR));
     }
@@ -239,6 +241,7 @@ void FetchTableCatalogCallback(void *data,
     }
     else
     {
+        LOG(INFO) << "=== DATA STORE ERROR";
         fetch_cc->SetFinish(
             txservice::RecordStatus::Unknown,
             static_cast<int>(txservice::CcErrorCode::DATA_STORE_ERR));
@@ -473,7 +476,7 @@ void FetchTableRangesCallback(void *data,
     {
         DLOG(INFO) << "FetchTableRangesCallback, error_code:" << err_code
                    << ", error_msg: " << result.error_msg();
-
+        LOG(INFO) << "=== DATA STORE ERROR";        
         fetch_range_cc->SetFinish(
             static_cast<int>(txservice::CcErrorCode::DATA_STORE_ERR));
         delete fetch_data;
@@ -624,6 +627,7 @@ void FetchRangeSlicesCallback(void *data,
             // Only read partial range slices info. Caller should retry.
             LOG(ERROR) << "Fetch range slices failed: Partial result, keep "
                           "retring";
+            LOG(INFO) << "=== DATA STORE ERROR";
             fetch_req->SetFinish(txservice::CcErrorCode::DATA_STORE_ERR);
             txservice::Sharder::Instance().UnpinNodeGroupData(ng_id);
             delete fetch_data;
@@ -691,6 +695,7 @@ void FetchRangeSlicesCallback(void *data,
             // Only read partial range slices info. Caller should retry.
             LOG(ERROR) << "Fetch range slices failed: Partial result, keep "
                           "retring";
+            LOG(INFO) << "=== DATA STORE ERROR";
             fetch_req->SetFinish(txservice::CcErrorCode::DATA_STORE_ERR);
             txservice::Sharder::Instance().UnpinNodeGroupData(ng_id);
             delete fetch_data;
@@ -701,6 +706,7 @@ void FetchRangeSlicesCallback(void *data,
             // Only read partial range slices info. Caller should retry.
             LOG(ERROR) << "Fetch range slices failed: Partial result, keep "
                           "retring";
+            LOG(INFO) << "=== DATA STORE ERROR";
             fetch_req->SetFinish(txservice::CcErrorCode::DATA_STORE_ERR);
             txservice::Sharder::Instance().UnpinNodeGroupData(ng_id);
             delete fetch_data;
@@ -796,6 +802,7 @@ void FetchCurrentTableStatsCallback(void *data,
     }
     else if (err_code != remote::DataStoreError::NO_ERROR)
     {
+        LOG(INFO) << "=== DATA STORE ERROR";
         fetch_cc->SetFinish(
             static_cast<int>(txservice::CcErrorCode::DATA_STORE_ERR));
     }
@@ -826,6 +833,7 @@ void FetchTableStatsCallback(void *data,
         DLOG(INFO) << "FetchTableStatsCallback, error_code:" << err_code
                    << ", error_msg: " << result.error_msg();
 
+        LOG(INFO) << "=== DATA STORE ERROR";
         fetch_cc->SetFinish(
             static_cast<int>(txservice::CcErrorCode::DATA_STORE_ERR));
 
