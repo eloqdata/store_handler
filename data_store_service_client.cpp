@@ -3465,7 +3465,6 @@ void DataStoreServiceClient::UpsertTable(UpsertTableData *table_data)
     }
     else
     {
-        LOG(INFO) << "=== DATA STORE ERROR";
         table_data->SetError(txservice::CcErrorCode::DATA_STORE_ERR);
     }
 }
