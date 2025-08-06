@@ -44,6 +44,9 @@ DEFINE_string(aws_access_key_id, "", "AWS access key ID");
 DEFINE_string(aws_secret_key, "", "AWS secret access key");
 DEFINE_string(bucket_name, "", "S3 bucket name");
 DEFINE_string(bucket_prefix, "", "S3 bucket prefix");
+DEFINE_string(object_path,
+              "rocksdb_cloud",
+              "S3 object path for RocksDB Cloud storage");
 DEFINE_string(region, "us-east-1", "AWS region");
 DEFINE_string(s3_endpoint, "", "Custom S3 endpoint URL (optional)");
 DEFINE_string(db_path, "./db", "Local DB path");
@@ -70,6 +73,7 @@ void print_usage(const char *prog_name)
         "  --aws_secret_key=SECRET      AWS secret access key\n"
         "  --bucket_name=BUCKET         S3 bucket name\n"
         "  --bucket_prefix=PREFIX       S3 bucket prefix\n"
+        "  --object_path=PATH           S3 object path for RocksDB Cloud "
         "  --region=REGION              AWS region (default: us-east-1)\n"
         "  --s3_endpoint=URL            Custom S3 endpoint URL (optional)\n"
         "  --db_path=PATH               Local DB path (default: ./db)\n"
@@ -90,6 +94,7 @@ struct CmdLineParams
     std::string aws_secret_key;
     std::string bucket_name;
     std::string bucket_prefix;
+    std::string object_path;
     std::string region;
     std::string s3_endpoint_url;
     std::string db_path;
@@ -108,6 +113,7 @@ CmdLineParams parse_arguments()
     params.aws_secret_key = FLAGS_aws_secret_key;
     params.bucket_name = FLAGS_bucket_name;
     params.bucket_prefix = FLAGS_bucket_prefix;
+    params.object_path = FLAGS_object_path;
     params.region = FLAGS_region;
     params.s3_endpoint_url = FLAGS_s3_endpoint;
     params.db_path = FLAGS_db_path;
@@ -367,11 +373,11 @@ int main(int argc, char **argv)
         cfs_options.src_bucket.SetBucketName(params.bucket_name,
                                              params.bucket_prefix);
         cfs_options.src_bucket.SetRegion(params.region);
-        cfs_options.src_bucket.SetObjectPath("rocksdb_cloud");
+        cfs_options.src_bucket.SetObjectPath(params.object_path);
         cfs_options.dest_bucket.SetBucketName(params.bucket_name,
                                               params.bucket_prefix);
         cfs_options.dest_bucket.SetRegion(params.region);
-        cfs_options.dest_bucket.SetObjectPath("rocksdb_cloud");
+        cfs_options.dest_bucket.SetObjectPath(params.object_path);
         cfs_options.cookie_on_open = params.cookie_on_open;
 
         // Add sst_file_cache for accelerating random access on sst files

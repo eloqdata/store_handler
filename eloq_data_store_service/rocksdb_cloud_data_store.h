@@ -91,6 +91,7 @@ private:
             &storage_provider,
         const std::string &bucket_prefix,
         const std::string &bucket_name,
+        const std::string &object_path,
         const int64_t cc_ng_id_in_cookie);
 
     /* Convert a string into a long long. Returns 1 if the string could be
