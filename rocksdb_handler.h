@@ -373,7 +373,8 @@ public:
                                       int64_t &version_ts);
 
     txservice::store::DataStoreHandler::DataStoreOpStatus FetchRecord(
-        txservice::FetchRecordCc *fetch_cc) override;
+        txservice::FetchRecordCc *fetch_cc,
+        txservice::FetchSnapshotCc *fetch_snapshot_cc = nullptr) override;
     rocksdb::ColumnFamilyHandle *GetColumnFamilyHandler(const std::string &cf);
 
 #endif
