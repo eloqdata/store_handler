@@ -1109,8 +1109,13 @@ bool RocksDBHandler::Read(const txservice::TableName &table_name,
 
 #ifdef ON_KEY_OBJECT
 txservice::store::DataStoreHandler::DataStoreOpStatus
-RocksDBHandler::FetchRecord(txservice::FetchRecordCc *fetch_cc)
+RocksDBHandler::FetchRecord(txservice::FetchRecordCc *fetch_cc,
+                            txservice::FetchSnapshotCc *fetch_snapshot_cc)
 {
+    assert(fetch_snapshot_cc == nullptr);
+    LOG_IF(ERROR, fetch_snapshot_cc != nullptr)
+        << "RocksDBHandler::FetchRecord with FetchSnapshotCc not implemented";
+
     const EloqKey *redis_key_ptr = fetch_cc->tx_key_.GetKey<EloqKV::EloqKey>();
     EloqKey redis_key_copy(*redis_key_ptr);
     if (metrics::enable_kv_metrics)
