@@ -416,7 +416,8 @@ bool RocksDBHandler::PutAll(
             GetColumnFamilyHandler(kv_cf_name.data());
         if (cfh == nullptr)
         {
-            LOG(ERROR) << "Failed to get column family, cf name: " << kv_cf_name;
+            LOG(ERROR) << "Failed to get column family, cf name: "
+                       << kv_cf_name;
             return false;
         }
         uint64_t now = txservice::LocalCcShards::ClockTsInMillseconds();
@@ -1235,6 +1236,12 @@ std::unique_ptr<txservice::store::DataStoreScanner> RocksDBHandler::ScanForward(
 {
     const std::string &kv_cf_name = kv_info->kv_table_name_;
     rocksdb::ColumnFamilyHandle *cfh = GetColumnFamilyHandler(kv_cf_name);
+    if (cfh == nullptr)
+    {
+        LOG(ERROR) << "Failed to get column family, cf name: " << kv_cf_name;
+        return nullptr;
+    }
+
     std::unique_ptr<RocksDBScanner> scanner =
         std::make_unique<RocksDBScanner>(GetDBPtr(),
                                          cfh,
@@ -1503,6 +1510,16 @@ void RocksDBHandler::ParallelIterateTable(
         table_names->pop();
         lk.unlock();
         rocksdb::ColumnFamilyHandle *cfh = GetColumnFamilyHandler(kv_cf_name);
+        if (cfh == nullptr)
+        {
+            LOG(ERROR) << "Failed to get column family, cf name: "
+                       << kv_cf_name;
+            txservice::CcErrorCode expected = txservice::CcErrorCode::NO_ERROR;
+            cancel_data_loading_on_error->compare_exchange_strong(
+                expected, txservice::CcErrorCode::DATA_STORE_ERR);
+            return;
+        }
+
         std::unique_ptr<rocksdb::Iterator> it =
             std::unique_ptr<rocksdb::Iterator>(
                 GetDBPtr()->NewIterator(read_options, cfh));
