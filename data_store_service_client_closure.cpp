@@ -238,8 +238,6 @@ void FetchSnapshotCallback(void *data, ::google::protobuf::Closure *closure,
   }
   else if (err_code == remote::DataStoreError::NO_ERROR)
   {
-    uint64_t now= txservice::LocalCcShards::ClockTsInMillseconds();
-    uint64_t rec_ttl= read_closure->Ttl();
     std::string_view val= read_closure->Value();
 
     if (fetch_cc->table_name_.IsHashPartitioned())
