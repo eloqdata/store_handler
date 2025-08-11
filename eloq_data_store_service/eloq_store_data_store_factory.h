@@ -43,7 +43,7 @@ public:
         DataStoreService *data_store_service,
         bool start_db = true) override
     {
-        ::kvstore::KvOptions store_config;
+        ::eloqstore::KvOptions store_config;
         store_config.num_threads = eloq_store_configs_.worker_count_;
         store_config.store_path.emplace_back()
             .append(eloq_store_configs_.storage_path_)

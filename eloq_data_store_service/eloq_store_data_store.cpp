@@ -25,15 +25,15 @@
 
 namespace EloqDS
 {
-thread_local ObjectPool<EloqStoreOperationData<::kvstore::ReadRequest>>
+thread_local ObjectPool<EloqStoreOperationData<::eloqstore::ReadRequest>>
     eloq_store_read_op_pool_;
-thread_local ObjectPool<EloqStoreOperationData<::kvstore::BatchWriteRequest>>
+thread_local ObjectPool<EloqStoreOperationData<::eloqstore::BatchWriteRequest>>
     eloq_store_batch_write_op_pool_;
-thread_local ObjectPool<EloqStoreOperationData<::kvstore::ScanRequest>>
+thread_local ObjectPool<EloqStoreOperationData<::eloqstore::ScanRequest>>
     eloq_store_scan_req_op_pool_;
-thread_local ObjectPool<EloqStoreOperationData<::kvstore::TruncateRequest>>
+thread_local ObjectPool<EloqStoreOperationData<::eloqstore::TruncateRequest>>
     eloq_store_truncate_op_pool_;
-thread_local ObjectPool<EloqStoreOperationData<::kvstore::FloorRequest>>
+thread_local ObjectPool<EloqStoreOperationData<::eloqstore::FloorRequest>>
     eloq_store_floor_op_pool_;
 thread_local ObjectPool<ScanDeleteOperationData> eloq_store_scan_del_op_pool_;
 
@@ -65,27 +65,27 @@ inline void BuildValue(const WriteRecordsRequest &write_req,
 
 EloqStoreDataStore::EloqStoreDataStore(uint32_t shard_id,
                                        DataStoreService *data_store_service,
-                                       const ::kvstore::KvOptions &configs)
+                                       const ::eloqstore::KvOptions &configs)
     : DataStore(shard_id, data_store_service), eloq_store_service_(configs)
 {
 }
 
 void EloqStoreDataStore::Read(ReadRequest *read_req)
 {
-    ::kvstore::TableIdent eloq_store_table_id;
+    ::eloqstore::TableIdent eloq_store_table_id;
     eloq_store_table_id.tbl_name_ = read_req->GetTableName();
     eloq_store_table_id.partition_id_ = read_req->GetPartitionId();
 
     std::string_view key = read_req->GetKey();
 
     // Read from eloqstore async
-    EloqStoreOperationData<::kvstore::ReadRequest> *read_op =
+    EloqStoreOperationData<::eloqstore::ReadRequest> *read_op =
         eloq_store_read_op_pool_.NextObject();
     read_op->Reset(read_req);
 
     PoolableGuard op_guard(read_op);
 
-    ::kvstore::ReadRequest &kv_read_req = read_op->EloqStoreRequest();
+    ::eloqstore::ReadRequest &kv_read_req = read_op->EloqStoreRequest();
     kv_read_req.SetArgs(eloq_store_table_id, key);
 
     uint64_t user_data = reinterpret_cast<uint64_t>(read_op);
@@ -100,31 +100,31 @@ void EloqStoreDataStore::Read(ReadRequest *read_req)
     op_guard.Release();
 }
 
-void EloqStoreDataStore::OnRead(::kvstore::KvRequest *req)
+void EloqStoreDataStore::OnRead(::eloqstore::KvRequest *req)
 {
-    EloqStoreOperationData<::kvstore::ReadRequest> *read_op =
-        static_cast<EloqStoreOperationData<::kvstore::ReadRequest> *>(
+    EloqStoreOperationData<::eloqstore::ReadRequest> *read_op =
+        static_cast<EloqStoreOperationData<::eloqstore::ReadRequest> *>(
             reinterpret_cast<void *>(req->UserData()));
 
     assert(req == &read_op->EloqStoreRequest());
-    ::kvstore::ReadRequest *read_req =
-        static_cast<::kvstore::ReadRequest *>(req);
+    ::eloqstore::ReadRequest *read_req =
+        static_cast<::eloqstore::ReadRequest *>(req);
 
     PoolableGuard op_guard(read_op);
 
     ReadRequest *ds_read_req =
         static_cast<ReadRequest *>(read_op->DataStoreRequest());
 
-    if (read_req->Error() != ::kvstore::KvError::NoError)
+    if (read_req->Error() != ::eloqstore::KvError::NoError)
     {
-        LOG_IF(ERROR, read_req->Error() != ::kvstore::KvError::NotFound)
+        LOG_IF(ERROR, read_req->Error() != ::eloqstore::KvError::NotFound)
             << "Read from EloqStore failed with error code: "
             << static_cast<uint32_t>(read_req->Error())
             << ", error message: " << read_req->ErrMessage()
             << ". Table: " << req->TableId();
 
         remote::DataStoreError error_code =
-            read_req->Error() == ::kvstore::KvError::NotFound
+            read_req->Error() == ::eloqstore::KvError::NotFound
                 ? remote::DataStoreError::KEY_NOT_FOUND
                 : remote::DataStoreError::READ_FAILED;
         ds_read_req->SetFinish(error_code);
@@ -138,20 +138,20 @@ void EloqStoreDataStore::OnRead(::kvstore::KvRequest *req)
 
 void EloqStoreDataStore::BatchWriteRecords(WriteRecordsRequest *write_req)
 {
-    ::kvstore::TableIdent eloq_store_table_id;
+    ::eloqstore::TableIdent eloq_store_table_id;
     eloq_store_table_id.tbl_name_ = write_req->GetTableName();
     eloq_store_table_id.partition_id_ = write_req->GetPartitionId();
 
     // Write to eloqstore async
-    EloqStoreOperationData<::kvstore::BatchWriteRequest> *write_op =
+    EloqStoreOperationData<::eloqstore::BatchWriteRequest> *write_op =
         eloq_store_batch_write_op_pool_.NextObject();
     write_op->Reset(write_req);
 
     PoolableGuard op_guard(write_op);
 
-    ::kvstore::BatchWriteRequest &kv_write_req = write_op->EloqStoreRequest();
+    ::eloqstore::BatchWriteRequest &kv_write_req = write_op->EloqStoreRequest();
 
-    std::vector<::kvstore::WriteDataEntry> entries;
+    std::vector<::eloqstore::WriteDataEntry> entries;
     size_t rec_cnt = write_req->RecordsCount();
     entries.reserve(rec_cnt);
     const uint16_t parts_per_key = write_req->PartsCountPerKey();
@@ -159,22 +159,22 @@ void EloqStoreDataStore::BatchWriteRecords(WriteRecordsRequest *write_req)
     size_t first_idx = 0;
     for (size_t i = 0; i < rec_cnt; ++i)
     {
-        ::kvstore::WriteDataEntry entry;
+        ::eloqstore::WriteDataEntry entry;
         first_idx = i * parts_per_key;
         BuildKey(*write_req, first_idx, parts_per_key, entry.key_);
         first_idx = i * parts_per_record;
         BuildValue(*write_req, first_idx, parts_per_record, entry.val_);
         entry.timestamp_ = write_req->GetRecordTs(i);
         entry.op_ = (write_req->KeyOpType(i) == WriteOpType::PUT
-                         ? ::kvstore::WriteOp::Upsert
-                         : ::kvstore::WriteOp::Delete);
+                         ? ::eloqstore::WriteOp::Upsert
+                         : ::eloqstore::WriteOp::Delete);
         entries.emplace_back(std::move(entry));
     }
 
     if (!std::is_sorted(entries.begin(),
                         entries.end(),
-                        [](const ::kvstore::WriteDataEntry &lhs,
-                           const ::kvstore::WriteDataEntry &rhs)
+                        [](const ::eloqstore::WriteDataEntry &lhs,
+                           const ::eloqstore::WriteDataEntry &rhs)
                         { return lhs.key_ < rhs.key_; }))
     {
         DLOG(INFO) << "Sort this batch records in non-descending order before "
@@ -183,8 +183,8 @@ void EloqStoreDataStore::BatchWriteRecords(WriteRecordsRequest *write_req)
         // Sort the batch keys
         std::sort(entries.begin(),
                   entries.end(),
-                  [](const ::kvstore::WriteDataEntry &lhs,
-                     const ::kvstore::WriteDataEntry &rhs)
+                  [](const ::eloqstore::WriteDataEntry &lhs,
+                     const ::eloqstore::WriteDataEntry &rhs)
                   { return lhs.key_ < rhs.key_; });
     }
 
@@ -205,15 +205,15 @@ void EloqStoreDataStore::BatchWriteRecords(WriteRecordsRequest *write_req)
     op_guard.Release();
 }
 
-void EloqStoreDataStore::OnBatchWrite(::kvstore::KvRequest *req)
+void EloqStoreDataStore::OnBatchWrite(::eloqstore::KvRequest *req)
 {
-    EloqStoreOperationData<::kvstore::BatchWriteRequest> *write_op =
-        static_cast<EloqStoreOperationData<::kvstore::BatchWriteRequest> *>(
+    EloqStoreOperationData<::eloqstore::BatchWriteRequest> *write_op =
+        static_cast<EloqStoreOperationData<::eloqstore::BatchWriteRequest> *>(
             reinterpret_cast<void *>(req->UserData()));
 
     assert(req == &write_op->EloqStoreRequest());
-    ::kvstore::BatchWriteRequest *write_req =
-        static_cast<::kvstore::BatchWriteRequest *>(req);
+    ::eloqstore::BatchWriteRequest *write_req =
+        static_cast<::eloqstore::BatchWriteRequest *>(req);
 
     PoolableGuard op_guard(write_op);
 
@@ -221,7 +221,7 @@ void EloqStoreDataStore::OnBatchWrite(::kvstore::KvRequest *req)
         static_cast<WriteRecordsRequest *>(write_op->DataStoreRequest());
 
     remote::CommonResult result;
-    if (write_req->Error() != ::kvstore::KvError::NoError)
+    if (write_req->Error() != ::eloqstore::KvError::NoError)
     {
         LOG(ERROR) << "Write to EloqStore failed with error code: "
                    << static_cast<uint32_t>(write_req->Error())
@@ -258,20 +258,20 @@ void EloqStoreDataStore::DeleteRange(DeleteRangeRequest *delete_range_req)
 
     // Truncate from start key.
 
-    ::kvstore::TableIdent eloq_store_table_id;
+    ::eloqstore::TableIdent eloq_store_table_id;
     eloq_store_table_id.tbl_name_ = delete_range_req->GetTableName(),
     eloq_store_table_id.partition_id_ = delete_range_req->GetPartitionId();
 
     const std::string_view start_key = delete_range_req->GetStartKey();
 
     // Delete records from eloqstore async
-    EloqStoreOperationData<::kvstore::TruncateRequest> *truncate_op =
+    EloqStoreOperationData<::eloqstore::TruncateRequest> *truncate_op =
         eloq_store_truncate_op_pool_.NextObject();
     truncate_op->Reset(delete_range_req);
 
     PoolableGuard op_guard(delete_range_req);
 
-    ::kvstore::TruncateRequest &kv_truncate_req =
+    ::eloqstore::TruncateRequest &kv_truncate_req =
         truncate_op->EloqStoreRequest();
     kv_truncate_req.SetArgs(eloq_store_table_id, start_key);
 
@@ -292,10 +292,10 @@ void EloqStoreDataStore::DeleteRange(DeleteRangeRequest *delete_range_req)
     op_guard.Release();
 }
 
-void EloqStoreDataStore::OnDeleteRange(::kvstore::KvRequest *req)
+void EloqStoreDataStore::OnDeleteRange(::eloqstore::KvRequest *req)
 {
-    EloqStoreOperationData<::kvstore::TruncateRequest> *truncate_op =
-        static_cast<EloqStoreOperationData<::kvstore::TruncateRequest> *>(
+    EloqStoreOperationData<::eloqstore::TruncateRequest> *truncate_op =
+        static_cast<EloqStoreOperationData<::eloqstore::TruncateRequest> *>(
             reinterpret_cast<void *>(req->UserData()));
 
     assert(req == &truncate_op->EloqStoreRequest());
@@ -306,8 +306,8 @@ void EloqStoreDataStore::OnDeleteRange(::kvstore::KvRequest *req)
         static_cast<DeleteRangeRequest *>(truncate_op->DataStoreRequest());
 
     remote::CommonResult result;
-    if (req->Error() != ::kvstore::KvError::NoError &&
-        req->Error() != ::kvstore::KvError::NotFound)
+    if (req->Error() != ::eloqstore::KvError::NoError &&
+        req->Error() != ::eloqstore::KvError::NotFound)
     {
         LOG(ERROR) << "Delete keys from EloqStore failed with error code: "
                    << static_cast<uint32_t>(req->Error())
@@ -352,7 +352,7 @@ void EloqStoreDataStore::ScanNext(ScanRequest *scan_req)
         return;
     }
 
-    ::kvstore::TableIdent eloq_store_table_id;
+    ::eloqstore::TableIdent eloq_store_table_id;
     eloq_store_table_id.tbl_name_ = scan_req->GetTableName();
     eloq_store_table_id.partition_id_ = scan_req->GetPartitionId();
 
@@ -362,13 +362,13 @@ void EloqStoreDataStore::ScanNext(ScanRequest *scan_req)
     // const bool inclusive_end = scan_req->InclusiveEnd();
 
     // Scan from eloqstore async
-    EloqStoreOperationData<::kvstore::ScanRequest> *scan_op =
+    EloqStoreOperationData<::eloqstore::ScanRequest> *scan_op =
         eloq_store_scan_req_op_pool_.NextObject();
     scan_op->Reset(scan_req);
 
     PoolableGuard op_guard(scan_op);
 
-    ::kvstore::ScanRequest &kv_scan_req = scan_op->EloqStoreRequest();
+    ::eloqstore::ScanRequest &kv_scan_req = scan_op->EloqStoreRequest();
     kv_scan_req.SetArgs(
         eloq_store_table_id, start_key, end_key, inclusive_start);
     kv_scan_req.SetPagination(batch_size, 0);
@@ -385,31 +385,31 @@ void EloqStoreDataStore::ScanNext(ScanRequest *scan_req)
     op_guard.Release();
 }
 
-void EloqStoreDataStore::OnScanNext(::kvstore::KvRequest *req)
+void EloqStoreDataStore::OnScanNext(::eloqstore::KvRequest *req)
 {
-    EloqStoreOperationData<::kvstore::ScanRequest> *scan_op =
-        static_cast<EloqStoreOperationData<::kvstore::ScanRequest> *>(
+    EloqStoreOperationData<::eloqstore::ScanRequest> *scan_op =
+        static_cast<EloqStoreOperationData<::eloqstore::ScanRequest> *>(
             reinterpret_cast<void *>(req->UserData()));
 
     assert(req == &scan_op->EloqStoreRequest());
-    ::kvstore::ScanRequest *scan_req =
-        static_cast<::kvstore::ScanRequest *>(req);
+    ::eloqstore::ScanRequest *scan_req =
+        static_cast<::eloqstore::ScanRequest *>(req);
 
     PoolableGuard op_guard(scan_op);
 
     ScanRequest *ds_scan_req =
         static_cast<ScanRequest *>(scan_op->DataStoreRequest());
 
-    if (scan_req->Error() != ::kvstore::KvError::NoError)
+    if (scan_req->Error() != ::eloqstore::KvError::NoError)
     {
-        LOG_IF(ERROR, scan_req->Error() != ::kvstore::KvError::NotFound)
+        LOG_IF(ERROR, scan_req->Error() != ::eloqstore::KvError::NotFound)
             << "Scan from EloqStore failed with error code: "
             << static_cast<uint32_t>(scan_req->Error())
             << ", error message: " << scan_req->ErrMessage()
             << ". Table: " << req->TableId();
 
         remote::DataStoreError error_code =
-            scan_req->Error() == ::kvstore::KvError::NotFound
+            scan_req->Error() == ::eloqstore::KvError::NotFound
                 ? remote::DataStoreError::NO_ERROR
                 : remote::DataStoreError::READ_FAILED;
         ds_scan_req->SetFinish(error_code);
@@ -472,7 +472,7 @@ void EloqStoreDataStore::SwitchToReadWrite()
 
 void EloqStoreDataStore::ScanDelete(DeleteRangeRequest *delete_range_req)
 {
-    ::kvstore::TableIdent eloq_store_table_id;
+    ::eloqstore::TableIdent eloq_store_table_id;
     eloq_store_table_id.tbl_name_ = delete_range_req->GetTableName();
     eloq_store_table_id.partition_id_ = delete_range_req->GetPartitionId();
 
@@ -486,7 +486,7 @@ void EloqStoreDataStore::ScanDelete(DeleteRangeRequest *delete_range_req)
 
     PoolableGuard op_guard(scan_del_op);
 
-    ::kvstore::ScanRequest &kv_scan_req = scan_del_op->EloqStoreScanRequest();
+    ::eloqstore::ScanRequest &kv_scan_req = scan_del_op->EloqStoreScanRequest();
     kv_scan_req.SetArgs(eloq_store_table_id, start_key, end_key, true);
     kv_scan_req.SetPagination(1024, 0);
 
@@ -505,7 +505,7 @@ void EloqStoreDataStore::ScanDelete(DeleteRangeRequest *delete_range_req)
     op_guard.Release();
 }
 
-void EloqStoreDataStore::OnScanDelete(::kvstore::KvRequest *req)
+void EloqStoreDataStore::OnScanDelete(::eloqstore::KvRequest *req)
 {
     ScanDeleteOperationData *scan_del_op =
         static_cast<ScanDeleteOperationData *>(
@@ -522,18 +522,18 @@ void EloqStoreDataStore::OnScanDelete(::kvstore::KvRequest *req)
     if (scan_del_op->OperationStage() == ScanDeleteOperationData::Stage::SCAN)
     {
         // scan stage
-        ::kvstore::ScanRequest *scan_req =
-            static_cast<::kvstore::ScanRequest *>(req);
+        ::eloqstore::ScanRequest *scan_req =
+            static_cast<::eloqstore::ScanRequest *>(req);
 
-        if (scan_req->Error() != ::kvstore::KvError::NoError)
+        if (scan_req->Error() != ::eloqstore::KvError::NoError)
         {
-            LOG_IF(ERROR, scan_req->Error() != ::kvstore::KvError::NotFound)
+            LOG_IF(ERROR, scan_req->Error() != ::eloqstore::KvError::NotFound)
                 << "Scan from EloqStore failed with error code: "
                 << static_cast<uint32_t>(scan_req->Error())
                 << ", error message: " << scan_req->ErrMessage()
                 << ". Table: " << req->TableId();
 
-            if (scan_req->Error() == ::kvstore::KvError::NotFound)
+            if (scan_req->Error() == ::eloqstore::KvError::NotFound)
             {
                 assert(!scan_req->HasRemaining() &&
                        scan_del_op->entries_.size() == 0);
@@ -558,19 +558,19 @@ void EloqStoreDataStore::OnScanDelete(::kvstore::KvRequest *req)
             // delete this batch keys
             scan_del_op->UpdateOperationStage(
                 ScanDeleteOperationData::Stage::DELETE);
-            ::kvstore::BatchWriteRequest &kv_write_req =
+            ::eloqstore::BatchWriteRequest &kv_write_req =
                 scan_del_op->EloqStoreWriteRequest();
 
             uint64_t delete_ts = scan_del_op->OpTs();
 
-            std::vector<::kvstore::WriteDataEntry> delete_entries;
+            std::vector<::eloqstore::WriteDataEntry> delete_entries;
             delete_entries.reserve(scan_key_cnt);
             for (auto &entry : scan_req->Entries())
             {
                 delete_entries.emplace_back(std::move(entry.key_),
                                             std::move(entry.value_),
                                             delete_ts,
-                                            ::kvstore::WriteOp::Delete);
+                                            ::eloqstore::WriteOp::Delete);
             }
 
             kv_write_req.SetArgs(scan_req->TableId(),
@@ -606,10 +606,10 @@ void EloqStoreDataStore::OnScanDelete(::kvstore::KvRequest *req)
         assert(scan_del_op->OperationStage() ==
                ScanDeleteOperationData::Stage::DELETE);
 
-        ::kvstore::BatchWriteRequest *write_req =
-            static_cast<::kvstore::BatchWriteRequest *>(req);
+        ::eloqstore::BatchWriteRequest *write_req =
+            static_cast<::eloqstore::BatchWriteRequest *>(req);
 
-        if (write_req->Error() != ::kvstore::KvError::NoError)
+        if (write_req->Error() != ::eloqstore::KvError::NoError)
         {
             LOG(ERROR)
                 << "Delete batch keys from EloqStore failed with error code: "
@@ -631,7 +631,7 @@ void EloqStoreDataStore::OnScanDelete(::kvstore::KvRequest *req)
             scan_del_op->UpdateOperationStage(
                 ScanDeleteOperationData::Stage::SCAN);
 
-            ::kvstore::ScanRequest &kv_scan_req =
+            ::eloqstore::ScanRequest &kv_scan_req =
                 scan_del_op->EloqStoreScanRequest();
             kv_scan_req.SetArgs(write_req->TableId(),
                                 last_scan_end_key,
@@ -669,20 +669,20 @@ void EloqStoreDataStore::Floor(ScanRequest *scan_req)
 {
     assert(scan_req->BatchSize() == 1);
 
-    ::kvstore::TableIdent eloq_store_table_id;
+    ::eloqstore::TableIdent eloq_store_table_id;
     eloq_store_table_id.tbl_name_ = scan_req->GetTableName();
     eloq_store_table_id.partition_id_ = scan_req->GetPartitionId();
 
     const std::string_view start_key = scan_req->GetStartKey();
 
     // Floor from eloqstore async
-    EloqStoreOperationData<::kvstore::FloorRequest> *floor_op =
+    EloqStoreOperationData<::eloqstore::FloorRequest> *floor_op =
         eloq_store_floor_op_pool_.NextObject();
     floor_op->Reset(scan_req);
 
     PoolableGuard op_guard(floor_op);
 
-    ::kvstore::FloorRequest &kv_floor_req = floor_op->EloqStoreRequest();
+    ::eloqstore::FloorRequest &kv_floor_req = floor_op->EloqStoreRequest();
     kv_floor_req.SetArgs(eloq_store_table_id, start_key);
 
     uint64_t user_data = reinterpret_cast<uint64_t>(floor_op);
@@ -697,22 +697,22 @@ void EloqStoreDataStore::Floor(ScanRequest *scan_req)
     op_guard.Release();
 }
 
-void EloqStoreDataStore::OnFloor(::kvstore::KvRequest *req)
+void EloqStoreDataStore::OnFloor(::eloqstore::KvRequest *req)
 {
-    EloqStoreOperationData<::kvstore::FloorRequest> *floor_op =
-        static_cast<EloqStoreOperationData<::kvstore::FloorRequest> *>(
+    EloqStoreOperationData<::eloqstore::FloorRequest> *floor_op =
+        static_cast<EloqStoreOperationData<::eloqstore::FloorRequest> *>(
             reinterpret_cast<void *>(req->UserData()));
 
     assert(req == &floor_op->EloqStoreRequest());
-    ::kvstore::FloorRequest *floor_req =
-        static_cast<::kvstore::FloorRequest *>(req);
+    ::eloqstore::FloorRequest *floor_req =
+        static_cast<::eloqstore::FloorRequest *>(req);
 
     PoolableGuard op_guard(floor_op);
 
     ScanRequest *ds_scan_req =
         static_cast<ScanRequest *>(floor_op->DataStoreRequest());
 
-    if (floor_req->Error() != ::kvstore::KvError::NoError)
+    if (floor_req->Error() != ::eloqstore::KvError::NoError)
     {
         LOG(ERROR) << "Floor from EloqStore failed with error code: "
                    << static_cast<uint32_t>(floor_req->Error())
