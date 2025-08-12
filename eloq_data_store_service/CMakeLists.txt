@@ -403,7 +403,7 @@ endif ()
 include_directories(
         ${PROJECT_SOURCE_DIR}/
 if(WITH_DATA_STORE STREQUAL "ELOQDSS_ELOQSTORE")
-        ${PROJECT_SOURCE_DIR}/eloq_store/
+        ${PROJECT_SOURCE_DIR}/eloqstore/
 endif ()
 )
 
