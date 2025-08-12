@@ -78,8 +78,7 @@ set(ELOQ_STORE_SOURCES
     ${ELOQ_STORE_SOURCE_DIR}/read_task.cpp
     ${ELOQ_STORE_SOURCE_DIR}/scan_task.cpp
     ${ELOQ_STORE_SOURCE_DIR}/batch_write_task.cpp
-    ${ELOQ_STORE_SOURCE_DIR}/compact_task.cpp
-    ${ELOQ_STORE_SOURCE_DIR}/archive_task.cpp
+    ${ELOQ_STORE_SOURCE_DIR}/background_write.cpp
     ${ELOQ_STORE_SOURCE_DIR}/async_io_manager.cpp
     ${ELOQ_STORE_SOURCE_DIR}/data_page.cpp
     ${ELOQ_STORE_SOURCE_DIR}/page.cpp
@@ -89,6 +88,7 @@ set(ELOQ_STORE_SOURCES
     ${ELOQ_STORE_SOURCE_DIR}/shard.cpp
     ${ELOQ_STORE_SOURCE_DIR}/root_meta.cpp
     ${ELOQ_STORE_SOURCE_DIR}/replayer.cpp
+    ${ELOQ_STORE_SOURCE_DIR}/external/random.cc
     ${ELOQ_STORE_SOURCE_DIR}/external/xxhash.c
     ${ELOQ_STORE_SOURCE_DIR}/kill_point.cpp
     ${ELOQ_STORE_SOURCE_DIR}/file_gc.cpp
