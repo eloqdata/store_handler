@@ -5,7 +5,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-SET(ELOQ_STORE_SOURCE_DIR ${ELOQSTORE_PARENT_DIR}/eloq_store)
+SET(ELOQ_STORE_SOURCE_DIR ${ELOQSTORE_PARENT_DIR}/eloqstore)
 
 option(ELOQ_MODULE_ENABLED "Enable EloqModule" OFF)
 message("ELOQ_MODULE_ENABLED: " ${ELOQ_MODULE_ENABLED})
@@ -55,8 +55,8 @@ endif()
 
 set(INI_SOURCES ${ELOQ_STORE_SOURCE_DIR}/inih/ini.c ${ELOQ_STORE_SOURCE_DIR}/inih/cpp/INIReader.cpp)
 
-option(WITH_ASAN "build with ASAN" OFF)
 if(WITH_ASAN)
+  message("build eloqstore with ASAN: ${WITH_ASAN}")
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsanitize=address -fno-omit-frame-pointer")
 endif()
 
