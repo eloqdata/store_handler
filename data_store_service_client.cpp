@@ -38,7 +38,6 @@
 #include "eloq_data_store_service/object_pool.h"  // ObjectPool
 #include "eloq_data_store_service/thread_worker_pool.h"
 #include "metrics.h"
-#include "partition.h"
 #include "store_util.h"  // host_to_big_endian
 #include "tx_service/include/cc/local_cc_shards.h"
 #include "tx_service/include/error_messages.h"
