@@ -50,11 +50,21 @@ public:
             .append("/ds_")
             .append(std::to_string(shard_id));
         store_config.fd_limit = eloq_store_configs_.open_files_limit_;
+        if (!eloq_store_configs_.cloud_store_path_.empty())
+        {
+            store_config.cloud_store_path
+                .append(eloq_store_configs_.cloud_store_path_)
+                .append("/ds_")
+                .append(std::to_string(shard_id));
+        }
+        store_config.num_gc_threads = eloq_store_configs_.gc_threads_;
 
         DLOG(INFO) << "Create EloqStore storage with workers: "
                    << store_config.num_threads
                    << ", store path: " << store_config.store_path.front()
-                   << ", open files limit: " << store_config.fd_limit;
+                   << ", open files limit: " << store_config.fd_limit
+                   << ", cloud store path: " << store_config.cloud_store_path
+                   << ", gc threads: " << store_config.num_gc_threads;
         auto ds = std::make_unique<EloqStoreDataStore>(
             shard_id, data_store_service, store_config);
         ds->Initialize();
