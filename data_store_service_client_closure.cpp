@@ -26,7 +26,6 @@
 #include <string>
 #include <utility>
 
-#include "partition.h"  // Partition
 #include "store_util.h" // host_to_big_endian
 #include "tx_service/include/cc/cc_request.h"
 #include "tx_service/include/cc/local_cc_shards.h"
@@ -662,8 +661,8 @@ void FetchTableRangesCallback(void *data,
             {
                 range_vec.emplace_back(
                     txservice::TxKeyFactory::NegInfTxKey()->GetShallowCopy(),
-                    Partition::InitialPartitionId(
-                        fetch_range_cc->table_name_.StringView()),
+                    txservice::Sequences::InitialRangePartitionIdOf(
+                        fetch_range_cc->table_name_),
                     1);
             }
             fetch_range_cc->AppendTableRanges(std::move(range_vec));
