@@ -111,7 +111,6 @@ bool RocksDBScanner::MoveNext()
 
     return iter_->Valid();
 }
-#ifdef ON_KEY_OBJECT
 void RocksDBScanner::Current(txservice::TxKey &key,
                              const txservice::TxRecord *&rec,
                              uint64_t &version_ts,
@@ -171,50 +170,6 @@ void RocksDBScanner::Current(txservice::TxKey &key,
         break;
     }
 }
-#else
-void RocksDBScanner::Current(const txservice::TxKey *&key,
-                             const txservice::TxRecord *&rec,
-                             uint64_t &version_ts,
-                             bool &deleted_)
-{
-    assert(initialized_);
-
-    if (iter_->Valid())
-    {
-        rocksdb::Slice key_slice = iter_->key();
-        rocksdb::Slice value_slice = iter_->value();
-        const char *payload = value_slice.data();
-        const size_t payload_size = value_slice.size();
-        bool is_deleted = false;
-        int64_t version = 0;
-        current_key_ = std::make_unique<EloqKV::EloqKey>(key_slice.data(),
-                                                         key_slice.size());
-        RocksDBHandler::DeserializeToTxRecord(
-            payload, payload_size, current_rec_, is_deleted, version);
-        if (!is_deleted)
-        {
-            key = current_key_.get();
-            rec = current_rec_.get();
-            version_ts = version;
-            deleted_ = false;
-        }
-        else
-        {
-            key_slice = nullptr;
-            rec = nullptr;
-            version_ts = 0;
-            deleted_ = true;
-        }
-    }
-    else
-    {
-        key = nullptr;
-        rec = nullptr;
-        version_ts = 0;
-        deleted_ = false;
-    }
-}
-#endif
 
 void RocksDBScanner::End()
 {
