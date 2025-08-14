@@ -58,13 +58,15 @@ public:
                 .append(std::to_string(shard_id));
         }
         store_config.num_gc_threads = eloq_store_configs_.gc_threads_;
+        store_config.rclone_threads = eloq_store_configs_.cloud_worker_count_;
 
         DLOG(INFO) << "Create EloqStore storage with workers: "
                    << store_config.num_threads
                    << ", store path: " << store_config.store_path.front()
                    << ", open files limit: " << store_config.fd_limit
                    << ", cloud store path: " << store_config.cloud_store_path
-                   << ", gc threads: " << store_config.num_gc_threads;
+                   << ", gc threads: " << store_config.num_gc_threads
+                   << ", cloud worker count: " << store_config.rclone_threads;
         auto ds = std::make_unique<EloqStoreDataStore>(
             shard_id, data_store_service, store_config);
         ds->Initialize();

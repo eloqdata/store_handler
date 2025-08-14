@@ -166,6 +166,7 @@ struct EloqStoreConfig
     uint32_t open_files_limit_{1024};
     std::string cloud_store_path_{""};
     uint16_t gc_threads_{1};
+    uint16_t cloud_worker_count_{1};
 };
 
 class EloqStoreDataStore : public DataStore
