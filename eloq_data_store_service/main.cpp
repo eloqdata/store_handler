@@ -163,7 +163,7 @@ int main(int argc, char *argv[])
     InitGoogleLogging(argv);
 #endif
 
-    FLAGS_stderrthreshold = google::GLOG_ERROR;
+    FLAGS_stderrthreshold = google::GLOG_FATAL;
     if (!FLAGS_alsologtostderr)
     {
         PrintHelloText();
