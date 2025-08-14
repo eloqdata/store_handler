@@ -297,9 +297,9 @@ endif()
 
 
 if ((WITH_DATA_STORE STREQUAL "ELOQDSS_ROCKSDB_CLOUD_S3") OR (WITH_DATA_STORE STREQUAL "ELOQDSS_ROCKSDB_CLOUD_GCS") OR (WITH_DATA_STORE STREQUAL "ELOQDSS_ROCKSDB"))
-    SET(RESMONOGRAPH_LIBRARY ${RESMONOGRAPH_LIBRARY} ${ROCKSDB_LIBRARIES})
+    SET(RESELOQ_LIBRARY ${RESELOQ_LIBRARY} ${ROCKSDB_LIBRARIES})
 elseif (WITH_DATA_STORE STREQUAL "ELOQDSS_ELOQSTORE")
-    SET(RESMONOGRAPH_LIBRARY ${RESMONOGRAPH_LIBRARY} eloqstore)
+    SET(RESELOQ_LIBRARY ${RESELOQ_LIBRARY} eloqstore)
 endif ()
 
 
@@ -362,9 +362,9 @@ endif ()
 
 # crcspeed
 # SET(CRCSPEED_SOURCES crcspeed/crcspeed.c crcspeed/crc16speed.c crcspeed/crc64speed.c)
-# SET(RESMONOGRAPH_SOURCES ${RESMONOGRAPH_SOURCES} ${CRCSPEED_SOURCES})
+# SET(RESELOQ_SOURCES ${RESELOQ_SOURCES} ${CRCSPEED_SOURCES})
 
-SET(RESMONOGRAPH_SOURCES ${RESMONOGRAPH_SOURCES}
+SET(RESELOQ_SOURCES ${RESELOQ_SOURCES}
         thread_worker_pool.cpp
         data_store_service.cpp
         data_store_fault_inject.cpp
@@ -373,7 +373,7 @@ SET(RESMONOGRAPH_SOURCES ${RESMONOGRAPH_SOURCES}
     )
 
 if (NOT (WITH_DATA_STORE STREQUAL "ELOQDSS_ELOQSTORE"))
-    SET(RESMONOGRAPH_SOURCES ${RESMONOGRAPH_SOURCES}
+    SET(RESELOQ_SOURCES ${RESELOQ_SOURCES}
         INIReader.cpp
         ini.c
     )
@@ -381,19 +381,19 @@ endif()
 
 if ((WITH_DATA_STORE STREQUAL "ELOQDSS_ROCKSDB_CLOUD_S3") OR
         (WITH_DATA_STORE STREQUAL "ELOQDSS_ROCKSDB_CLOUD_GCS"))
-    SET(RESMONOGRAPH_SOURCES ${RESMONOGRAPH_SOURCES}
+    SET(RESELOQ_SOURCES ${RESELOQ_SOURCES}
 	  rocksdb_data_store_common.cpp
           rocksdb_cloud_data_store.cpp
           rocksdb_config.cpp
     )
 elseif (WITH_DATA_STORE STREQUAL "ELOQDSS_ROCKSDB")
-    SET(RESMONOGRAPH_SOURCES ${RESMONOGRAPH_SOURCES}
+    SET(RESELOQ_SOURCES ${RESELOQ_SOURCES}
 	  rocksdb_data_store_common.cpp
           rocksdb_data_store.cpp
           rocksdb_config.cpp
     )
 elseif (WITH_DATA_STORE STREQUAL "ELOQDSS_ELOQSTORE")
-    SET(RESMONOGRAPH_SOURCES ${RESMONOGRAPH_SOURCES}
+    SET(RESELOQ_SOURCES ${RESELOQ_SOURCES}
         eloq_store_data_store.cpp
     )
 endif ()
@@ -417,8 +417,8 @@ endif ()
 # add_subdirectory(fpconv)
 
 # add_executable(redis_press redis_press.cpp)
-add_executable(dss_server main.cpp ${RESMONOGRAPH_SOURCES})
-target_link_libraries(dss_server ${RESMONOGRAPH_LIBRARY} ${DYNAMIC_LIB} )
+add_executable(dss_server main.cpp ${RESELOQ_SOURCES})
+target_link_libraries(dss_server ${RESELOQ_LIBRARY} ${DYNAMIC_LIB} )
 # target_link_libraries(dss_server  ${ABSEIL} lua fpconv)
 
 # Add rocksdb_cloud_dump utility
