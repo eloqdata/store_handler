@@ -304,9 +304,9 @@ bool RocksDBCloudDataStore::StartDB(std::string cookie, std::string prev_cookie)
     cfs_options_.sst_file_cache =
         rocksdb::NewLRUCache(cloud_config_.sst_file_cache_size_,
                              cloud_config_.sst_file_cache_num_shard_bits_);
-    // delay cloud file deletion for 1 hour
-    cfs_options_.cloud_file_deletion_delay =
-        std::chrono::seconds(cloud_config_.db_file_deletion_delay_);
+    // delay cloud file deletion for forever since we delete obsolete files
+    // using purger
+    cfs_options_.cloud_file_deletion_delay = std::chrono::seconds(INT_MAX);
 
     // keep invisible files in cloud storage since they can be referenced
     // by other nodes with old valid cloud manifest files during leader transfer
@@ -314,6 +314,15 @@ bool RocksDBCloudDataStore::StartDB(std::string cookie, std::string prev_cookie)
 
     // sync cloudmanifest and manifest files when open db
     cfs_options_.resync_on_open = true;
+
+    // run cloud file purger to delete obsolete files
+    cfs_options_.run_purger = true;
+    cfs_options_.purger_periodicity_millis =
+        cloud_config_.purger_periodicity_millis_;
+
+    DLOG(INFO) << "RocksDBCloudDataStore::StartDB, purger_periodicity_millis: "
+               << cfs_options_.purger_periodicity_millis << " ms"
+               << ", run_purger: " << cfs_options_.run_purger;
 
     if (!cloud_config_.s3_endpoint_url_.empty())
     {
@@ -564,21 +573,21 @@ bool RocksDBCloudDataStore::OpenCloudDB(
     auto start = std::chrono::system_clock::now();
     std::unique_lock<std::shared_mutex> db_lk(db_mux_);
     rocksdb::Status status;
-    uint32_t retry_num= 0;
+    uint32_t retry_num = 0;
     // When restart in tests, the rocksdb::DBCloud::Open() operation may fail
     // due to (minio) s3 service and the status only print IOError. Then, we
     // retry serveral time if failed.
     while (retry_num < 10)
     {
-      status= rocksdb::DBCloud::Open(options, db_path_, "", 0, &db_);
-      if (status.ok())
-      {
-        break;
-      }
-      retry_num++;
-      LOG(WARNING) << "Open rocksdb cloud error : " << status.ToString()
-                   << ", retrying ...";
-      bthread_usleep(retry_num * 200000);
+        status = rocksdb::DBCloud::Open(options, db_path_, "", 0, &db_);
+        if (status.ok())
+        {
+            break;
+        }
+        retry_num++;
+        LOG(WARNING) << "Open rocksdb cloud error : " << status.ToString()
+                     << ", retrying ...";
+        bthread_usleep(retry_num * 200000);
     }
 
     auto end = std::chrono::system_clock::now();
@@ -755,4 +764,3 @@ inline int64_t RocksDBCloudDataStore::FindMaxTermFromCloudManifestFiles(
     return max_term;
 }
 }  // namespace EloqDS
-

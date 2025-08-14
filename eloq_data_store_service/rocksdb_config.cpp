@@ -272,8 +272,9 @@ DEFINE_uint32(rocksdb_cloud_db_file_deletion_delay_sec,
 DEFINE_uint32(rocksdb_cloud_warm_up_thread_num,
               1,
               "Rocksdb cloud warm up thread number");
-// DECLARE_string(aws_access_key_id);
-// DECLARE_string(aws_secret_key);
+DEFINE_uint32(rocksdb_cloud_purger_periodicity_secs,
+              30,
+              "Rocksdb cloud purger periodicity seconds");
 DEFINE_string(aws_access_key_id, "", "AWS SDK access key id");
 DEFINE_string(aws_secret_key, "", "AWS SDK secret key");
 #endif
@@ -554,6 +555,13 @@ RocksDBCloudConfig::RocksDBCloudConfig(const INIReader &config)
             : config.GetInteger("store",
                                 "rocksdb_cloud_db_file_deletion_delay_sec",
                                 FLAGS_rocksdb_cloud_db_file_deletion_delay_sec);
+    uint64_t rocksdb_cloud_purger_periodicity_secs =
+        !CheckCommandLineFlagIsDefault(
+            "rocksdb_cloud_purger_periodicity_secs")
+            ? FLAGS_rocksdb_cloud_purger_periodicity_secs
+            : config.GetInteger("store",
+                                "rocksdb_cloud_purger_periodicity_secs",
+                                FLAGS_rocksdb_cloud_purger_periodicity_secs);
 
     sst_file_cache_size_ =
         parse_size(rocksdb_cloud_sst_file_cache_size.c_str());
@@ -561,6 +569,7 @@ RocksDBCloudConfig::RocksDBCloudConfig(const INIReader &config)
         rocksdb_cloud_sst_file_cache_num_shard_bits;
     db_ready_timeout_us_ = rocksdb_cloud_db_ready_timeout_sec * 1000000;
     db_file_deletion_delay_ = rocksdb_cloud_db_file_deletion_delay_sec;
+    purger_periodicity_millis_ = rocksdb_cloud_purger_periodicity_secs * 1000;
 
     s3_endpoint_url_ =
         !CheckCommandLineFlagIsDefault("rocksdb_cloud_s3_endpoint_url")
