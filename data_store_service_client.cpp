@@ -3251,6 +3251,7 @@ void DataStoreServiceClient::BatchWriteRecordsInternal(
         // prepare request
         closure->PrepareRemoteRequest();
         closure->SetChannel(channel);
+        closure->Controller()->set_timeout_ms(5000);
 
         // send request
         remote::DataStoreRpcService_Stub stub(channel.get());
