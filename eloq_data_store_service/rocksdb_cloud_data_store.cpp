@@ -304,7 +304,7 @@ bool RocksDBCloudDataStore::StartDB(std::string cookie, std::string prev_cookie)
     cfs_options_.sst_file_cache =
         rocksdb::NewLRUCache(cloud_config_.sst_file_cache_size_,
                              cloud_config_.sst_file_cache_num_shard_bits_);
-    // delay cloud file deletion for forever since we delete obsolete files
+    // delay cloud file deletion forever since we delete obsolete files
     // using purger
     cfs_options_.cloud_file_deletion_delay = std::chrono::seconds(INT_MAX);
 
