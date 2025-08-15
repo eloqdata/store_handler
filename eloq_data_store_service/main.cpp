@@ -100,6 +100,9 @@ DEFINE_uint32(
     eloq_store_gc_threads,
     1,
     "EloqStore gc threads count (Must be 0 when cloud store is enabled).");
+DEFINE_uint32(eloq_store_cloud_worker_count,
+              1,
+              "EloqStore cloud worker count.");
 #endif
 
 static bool CheckCommandLineFlagIsDefault(const char *name)
@@ -355,6 +358,12 @@ int main(int argc, char *argv[])
                    : config_reader.GetInteger("store",
                                               "eloq_store_gc_threads",
                                               FLAGS_eloq_store_gc_threads));
+    eloq_store_config.cloud_worker_count_ =
+        !CheckCommandLineFlagIsDefault("eloq_store_cloud_worker_count")
+            ? FLAGS_eloq_store_cloud_worker_count
+            : config_reader.GetInteger("store",
+                                       "eloq_store_cloud_worker_count",
+                                       FLAGS_eloq_store_cloud_worker_count);
     LOG_IF(INFO, !eloq_store_config.cloud_store_path_.empty())
         << "EloqStore cloud store enabled";
     auto ds_factory =
@@ -416,13 +425,15 @@ int main(int argc, char *argv[])
                 .append(std::to_string(shard_id));
         }
         store_config.num_gc_threads = eloq_store_config.gc_threads_;
+        store_config.rclone_threads = eloq_store_config.cloud_worker_count_;
 
         DLOG(INFO) << "Create EloqStore storage with workers: "
                    << store_config.num_threads
                    << ", store path: " << store_config.store_path.front()
                    << ", open files limit: " << store_config.fd_limit
                    << ", cloud store path: " << store_config.cloud_store_path
-                   << ", gc threads: " << store_config.num_gc_threads;
+                   << ", gc threads: " << store_config.num_gc_threads
+                   << ", cloud worker count: " << store_config.rclone_threads;
         auto ds = std::make_unique<EloqDS::EloqStoreDataStore>(
             shard_id, data_store_service_.get(), store_config);
 #else
