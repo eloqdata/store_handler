@@ -1487,7 +1487,6 @@ public:
         cntl_.set_timeout_ms(5000);
         request_.Clear();
         response_.Clear();
-        cntl_.Reset();
         is_local_request_ = false;
         channel_ = nullptr;
 
@@ -1988,7 +1987,8 @@ void FetchRecordCallback(void *data,
                          DataStoreServiceClient &client,
                          const remote::CommonResult &result);
 
-void FetchSnapshotCallback(void *data, ::google::protobuf::Closure *closure,
+void FetchSnapshotCallback(void *data,
+                           ::google::protobuf::Closure *closure,
                            DataStoreServiceClient &client,
                            const remote::CommonResult &result);
 
@@ -2351,24 +2351,27 @@ void FetchArchivesCallback(void *data,
 
 struct FetchRecordArchivesCallbackData
 {
-  FetchRecordArchivesCallbackData(txservice::FetchRecordCc *fetch_cc,
-                                  const std::string_view kv_table_name,
-                                  uint32_t partition_id,
-                                  std::string &&start_key,
-                                  std::string &&end_key)
-      : fetch_cc_(fetch_cc), kv_table_name_(kv_table_name),
-        partition_id_(partition_id), start_key_(std::move(start_key)),
-        end_key_(std::move(end_key)), session_id_("")
-  {
-  }
+    FetchRecordArchivesCallbackData(txservice::FetchRecordCc *fetch_cc,
+                                    const std::string_view kv_table_name,
+                                    uint32_t partition_id,
+                                    std::string &&start_key,
+                                    std::string &&end_key)
+        : fetch_cc_(fetch_cc),
+          kv_table_name_(kv_table_name),
+          partition_id_(partition_id),
+          start_key_(std::move(start_key)),
+          end_key_(std::move(end_key)),
+          session_id_("")
+    {
+    }
 
-  txservice::FetchRecordCc *fetch_cc_;
-  const std::string_view kv_table_name_;
-  const uint32_t partition_id_;
+    txservice::FetchRecordCc *fetch_cc_;
+    const std::string_view kv_table_name_;
+    const uint32_t partition_id_;
 
-  std::string start_key_;
-  std::string end_key_;
-  std::string session_id_;
+    std::string start_key_;
+    std::string end_key_;
+    std::string session_id_;
 };
 
 void FetchRecordArchivesCallback(void *data,
@@ -2378,24 +2381,27 @@ void FetchRecordArchivesCallback(void *data,
 
 struct FetchSnapshotArchiveCallbackData
 {
-  FetchSnapshotArchiveCallbackData(txservice::FetchSnapshotCc *fetch_cc,
-                                   const std::string_view kv_table_name,
-                                   uint32_t partition_id,
-                                   std::string &&start_key,
-                                   std::string &&end_key)
-      : fetch_cc_(fetch_cc), kv_table_name_(kv_table_name),
-        partition_id_(partition_id), start_key_(std::move(start_key)),
-        end_key_(std::move(end_key)), session_id_("")
-  {
-  }
+    FetchSnapshotArchiveCallbackData(txservice::FetchSnapshotCc *fetch_cc,
+                                     const std::string_view kv_table_name,
+                                     uint32_t partition_id,
+                                     std::string &&start_key,
+                                     std::string &&end_key)
+        : fetch_cc_(fetch_cc),
+          kv_table_name_(kv_table_name),
+          partition_id_(partition_id),
+          start_key_(std::move(start_key)),
+          end_key_(std::move(end_key)),
+          session_id_("")
+    {
+    }
 
-  txservice::FetchSnapshotCc *fetch_cc_;
-  const std::string_view kv_table_name_;
-  const uint32_t partition_id_;
+    txservice::FetchSnapshotCc *fetch_cc_;
+    const std::string_view kv_table_name_;
+    const uint32_t partition_id_;
 
-  std::string start_key_;
-  std::string end_key_;
-  std::string session_id_;
+    std::string start_key_;
+    std::string end_key_;
+    std::string session_id_;
 };
 
 void FetchSnapshotArchiveCallback(void *data,
