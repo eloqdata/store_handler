@@ -204,6 +204,7 @@ bool DataStoreServiceClient::PutAll(
             op_types.reserve(recs_cnt);
             for (auto idx : flush_recs)
             {
+                // TODO(lokax): encode bucket id
                 txservice::FlushRecord &ckpt_rec =
                     entries.at(idx.first)->data_sync_vec_->at(idx.second);
                 txservice::TxKey tx_key = ckpt_rec.Key();
@@ -1677,6 +1678,7 @@ std::string DataStoreServiceClient::CreateNewKVCatalogInfo(
 uint32_t DataStoreServiceClient::HashArchiveKey(
     const std::string &kv_table_name, const txservice::TxKey &tx_key)
 {
+    // TODO(lokax):
     std::string_view tablename_sv =
         std::string_view(kv_table_name.data(), kv_table_name.size());
     size_t kv_table_name_hash = std::hash<std::string_view>()(tablename_sv);
@@ -2069,6 +2071,7 @@ bool DataStoreServiceClient::CopyBaseToArchive(
 
             for (size_t base_idx = 0; base_idx < base_vec.size(); ++base_idx)
             {
+                // TODO(lokax): encode bucket id
                 txservice::TxKey &tx_key = base_vec[base_idx].first;
                 assert(tx_key.Data() != nullptr && tx_key.Size() > 0);
                 uint32_t partition_id = base_vec[base_idx].second;
@@ -2496,7 +2499,7 @@ DataStoreServiceClient::FetchRecord(
     {
         return FetchArchives(fetch_cc);
     }
-
+    //  TODO(lokax): encode bucket id
     Read(fetch_cc->kv_table_name_,
          KvPartitionIdOf(fetch_cc->partition_id_,
                          !fetch_cc->table_name_.IsHashPartitioned()),
@@ -2524,6 +2527,8 @@ DataStoreServiceClient::FetchSnapshot(txservice::FetchSnapshotCc *fetch_cc)
     {
         return FetchVisibleArchive(fetch_cc);
     }
+
+    // TODO(lokax): encode bucket id
 
     Read(fetch_cc->kv_table_name_,
          KvPartitionIdOf(fetch_cc->partition_id_,

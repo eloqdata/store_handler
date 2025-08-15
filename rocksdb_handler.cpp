@@ -425,6 +425,7 @@ bool RocksDBHandler::PutAll(
         {
             for (auto &flush_rec : *flush_task_entry->data_sync_vec_)
             {
+                // TODO(lokax): encode bucket id
                 txservice::TxKey key = flush_rec.Key();
                 const EloqKV::EloqKey *redis_key =
                     key.GetKey<EloqKV::EloqKey>();
@@ -1116,7 +1117,7 @@ RocksDBHandler::FetchRecord(txservice::FetchRecordCc *fetch_cc,
     assert(fetch_snapshot_cc == nullptr);
     LOG_IF(ERROR, fetch_snapshot_cc != nullptr)
         << "RocksDBHandler::FetchRecord with FetchSnapshotCc not implemented";
-
+    // TODO(lokax): encode bucket id
     const EloqKey *redis_key_ptr = fetch_cc->tx_key_.GetKey<EloqKV::EloqKey>();
     EloqKey redis_key_copy(*redis_key_ptr);
     if (metrics::enable_kv_metrics)
@@ -1550,6 +1551,7 @@ void RocksDBHandler::ParallelIterateTable(
         size_t cnt = 0;
         for (it->SeekToFirst(); it->Valid(); it->Next())
         {
+            // TODO(lokax): decode bucket id
             rocksdb::Slice key = it->key();
             std::string key_str = std::string(key.data(), key.size());
 

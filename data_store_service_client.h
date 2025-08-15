@@ -204,8 +204,7 @@ public:
      * @brief Only Fetch visible archive asynchronously. (This is called in
      * FetchSnapshot)
      */
-    DataStoreOpStatus
-    FetchVisibleArchive(txservice::FetchSnapshotCc *fetch_cc);
+    DataStoreOpStatus FetchVisibleArchive(txservice::FetchSnapshotCc *fetch_cc);
 
     std::unique_ptr<txservice::store::DataStoreScanner> ScanForward(
         const txservice::TableName &table_name,
@@ -442,6 +441,7 @@ public:
 private:
     int32_t MapKeyHashToPartitionId(const txservice::TxKey &key) const
     {
+        // TODO(lokax):
         return (key.Hash() >> 10) & 0x3FF;
     }
 
@@ -552,6 +552,7 @@ private:
 #ifdef USE_ONE_ELOQDSS_PARTITION
         return 0;
 #else
+        // TODO(lokax):
         std::string_view sv = table.StringView();
         return (std::hash<std::string_view>()(sv)) & 0x3FF;
 #endif
@@ -560,6 +561,7 @@ private:
     int32_t KvPartitionIdOf(int32_t key_partition,
                             bool is_range_partition = true)
     {
+        // TODO(lokax):
 #ifdef USE_ONE_ELOQDSS_PARTITION
         if (is_range_partition)
         {
@@ -649,8 +651,10 @@ private:
                                       DataStoreServiceClient &client,
                                       const remote::CommonResult &result);
     friend void FetchRecordArchivesCallback(
-        void *data, ::google::protobuf::Closure *closure,
-        DataStoreServiceClient &client, const remote::CommonResult &result);
+        void *data,
+        ::google::protobuf::Closure *closure,
+        DataStoreServiceClient &client,
+        const remote::CommonResult &result);
 };
 
 struct UpsertTableData
