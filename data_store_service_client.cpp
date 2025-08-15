@@ -27,8 +27,10 @@
 #include <boost/uuid/uuid.hpp>
 #include <boost/uuid/uuid_generators.hpp>
 #include <boost/uuid/uuid_io.hpp>
+#include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -125,6 +127,7 @@ bool DataStoreServiceClient::PutAll(
                        std::vector<std::unique_ptr<txservice::FlushTaskEntry>>>
         &flush_task)
 {
+    std::vector<std::string> kv_keys;
     std::vector<std::string_view> key_parts;
     std::vector<std::string_view> record_parts;
     std::vector<uint64_t> records_ts;
@@ -198,6 +201,7 @@ bool DataStoreServiceClient::PutAll(
             auto &flush_recs = part_it->second;
             size_t recs_cnt = partition_record_cnt[part_it->first];
             key_parts.reserve(recs_cnt * parts_cnt_per_key);
+            kv_keys.reserve(recs_cnt);
             record_parts.reserve(recs_cnt * parts_cnt_per_record);
             records_ts.reserve(recs_cnt);
             records_ttl.reserve(recs_cnt);
@@ -236,11 +240,13 @@ bool DataStoreServiceClient::PutAll(
                         return false;
                     }
                     key_parts.clear();
+                    kv_keys.clear();
                     record_parts.clear();
                     records_ts.clear();
                     records_ttl.clear();
                     op_types.clear();
                     key_parts.reserve(recs_cnt * parts_cnt_per_key);
+                    kv_keys.reserve(recs_cnt);
                     record_parts.reserve(recs_cnt * parts_cnt_per_record);
                     records_ts.reserve(recs_cnt);
                     records_ttl.reserve(recs_cnt);
@@ -266,9 +272,10 @@ bool DataStoreServiceClient::PutAll(
                         txservice::RecordStatus::Normal &&
                     (!ckpt_rec.Payload()->HasTTL() || ttl > now))
                 {
-                    key_parts.emplace_back(
-                        std::string_view(tx_key.Data(), tx_key.Size()));
-                    write_batch_size += tx_key.Size();
+                    kv_keys.push_back(EncodeKvKeyForHashPart(tx_key));
+                    key_parts.emplace_back(std::string_view(
+                        kv_keys.back().data(), kv_keys.back().size()));
+                    write_batch_size += kv_keys.back().size();
 
                     const txservice::TxRecord *rec = ckpt_rec.Payload();
                     // Upserts a key to the k-v store
@@ -287,9 +294,10 @@ bool DataStoreServiceClient::PutAll(
                 }
                 else
                 {
-                    key_parts.emplace_back(
-                        std::string_view(tx_key.Data(), tx_key.Size()));
-                    write_batch_size += tx_key.Size();
+                    kv_keys.push_back(EncodeKvKeyForHashPart(tx_key));
+                    key_parts.emplace_back(std::string_view(
+                        kv_keys.back().data(), kv_keys.back().size()));
+                    write_batch_size += kv_keys.back().size();
 
                     record_parts.emplace_back(std::string_view());
 
@@ -321,6 +329,7 @@ bool DataStoreServiceClient::PutAll(
                                   parts_cnt_per_record);
                 sync_putall.Wait();
                 key_parts.clear();
+                kv_keys.clear();
                 record_parts.clear();
                 records_ts.clear();
                 records_ttl.clear();
@@ -933,6 +942,7 @@ bool DataStoreServiceClient::Read(const txservice::TableName &table_name,
     return true;
 }
 
+// TODO(lokax): delete
 std::unique_ptr<txservice::store::DataStoreScanner>
 DataStoreServiceClient::ScanForward(
     const txservice::TableName &table_name,
@@ -1678,7 +1688,6 @@ std::string DataStoreServiceClient::CreateNewKVCatalogInfo(
 uint32_t DataStoreServiceClient::HashArchiveKey(
     const std::string &kv_table_name, const txservice::TxKey &tx_key)
 {
-    // TODO(lokax):
     std::string_view tablename_sv =
         std::string_view(kv_table_name.data(), kv_table_name.size());
     size_t kv_table_name_hash = std::hash<std::string_view>()(tablename_sv);
@@ -1687,6 +1696,30 @@ uint32_t DataStoreServiceClient::HashArchiveKey(
     uint32_t partition_id =
         (kv_table_name_hash ^ (key_hash << 1)) & 0x3FF;  // 1024 partitions
     return partition_id;
+}
+
+std::string DataStoreServiceClient::EncodeKvKeyForHashPart(
+    const txservice::TxKey &tx_key)
+{
+    std::string kv_key;
+    uint16_t bucket_id =
+        txservice::Sharder::Instance().MapKeyHashToBucketId(tx_key.Hash());
+    uint16_t be_bucket_id = EloqShare::host_to_big_endian(bucket_id);
+
+    kv_key.reserve(sizeof(uint16_t) + tx_key.Size());
+    kv_key.append(reinterpret_cast<const char *>(&be_bucket_id),
+                  sizeof(be_bucket_id));
+    kv_key.append(tx_key.Data(), tx_key.Size());
+    return kv_key;
+}
+
+std::string_view DataStoreServiceClient::DecodeKvKeyForHashPart(
+    const char *data, size_t size)
+{
+    assert(size >= sizeof(uint16_t));
+    const char *tx_key_start = data + sizeof(uint16_t);
+    size_t tx_key_len = size - sizeof(uint16_t);
+    return std::string_view(tx_key_start, tx_key_len);
 }
 
 std::string DataStoreServiceClient::EncodeArchiveKey(
@@ -2074,13 +2107,26 @@ bool DataStoreServiceClient::CopyBaseToArchive(
                 // TODO(lokax): encode bucket id
                 txservice::TxKey &tx_key = base_vec[base_idx].first;
                 assert(tx_key.Data() != nullptr && tx_key.Size() > 0);
+                std::string kv_key;
+                std::string_view kv_key_view;
+                if (table_name.IsHashPartitioned())
+                {
+                    kv_key = EncodeKvKeyForHashPart(tx_key);
+                    kv_key_view = kv_key;
+                }
+                else
+                {
+                    kv_key_view =
+                        std::string_view(tx_key.Data(), tx_key.Size());
+                }
+
                 uint32_t partition_id = base_vec[base_idx].second;
                 auto *callback_data = &callback_datas[base_idx];
                 callback_data->ResetResult();
                 size_t flying_cnt = callback_data->AddFlyingReadCount();
                 Read(base_kv_table_name,
                      KvPartitionIdOf(partition_id, true),
-                     std::string_view(tx_key.Data(), tx_key.Size()),
+                     kv_key_view,
                      callback_data,
                      &SyncBatchReadForArchiveCallback);
                 if (flying_cnt >= MAX_FLYING_READ_COUNT)
@@ -2107,10 +2153,17 @@ bool DataStoreServiceClient::CopyBaseToArchive(
             for (size_t i = 0; i < base_vec.size(); i++)
             {
                 auto &callback_data = callback_datas[i];
+                std::string_view tx_key_view = callback_data.key_str_;
+                if (table_name.IsHashPartitioned())
+                {
+                    tx_key_view = DecodeKvKeyForHashPart(tx_key_view.data(),
+                                                         tx_key_view.size());
+                }
+
                 txservice::TxKey tx_key = txservice::TxKeyFactory::CreateTxKey(
-                    callback_data.key_str_.data(),
-                    callback_data.key_str_.size());
-                batch_size += callback_data.key_str_.size();
+                    tx_key_view.data(), tx_key_view.size());
+
+                batch_size += tx_key_view.size();
                 batch_size += callback_data.value_str_.size();
                 std::string_view val = callback_data.value_str_;
                 size_t offset = 0;
@@ -2499,12 +2552,27 @@ DataStoreServiceClient::FetchRecord(
     {
         return FetchArchives(fetch_cc);
     }
+
+    std::string kv_key_view;
+    auto *callback_data = new FetchRecordCallbackData(fetch_cc);
+    if (fetch_cc->table_name_.IsHashPartitioned())
+    {
+        // owner
+        callback_data->kv_key_ = EncodeKvKeyForHashPart(fetch_cc->tx_key_);
+        kv_key_view = callback_data->kv_key_;
+    }
+    else
+    {
+        kv_key_view = std::string_view(fetch_cc->tx_key_.Data(),
+                                       fetch_cc->tx_key_.Size());
+    }
+
     //  TODO(lokax): encode bucket id
     Read(fetch_cc->kv_table_name_,
          KvPartitionIdOf(fetch_cc->partition_id_,
                          !fetch_cc->table_name_.IsHashPartitioned()),
-         std::string_view(fetch_cc->tx_key_.Data(), fetch_cc->tx_key_.Size()),
-         fetch_cc,
+         kv_key_view,
+         callback_data,
          &FetchRecordCallback);
 
     return txservice::store::DataStoreHandler::DataStoreOpStatus::Success;
@@ -2530,11 +2598,24 @@ DataStoreServiceClient::FetchSnapshot(txservice::FetchSnapshotCc *fetch_cc)
 
     // TODO(lokax): encode bucket id
 
+    auto *callback_data = new FetchSnapshotCallbackData(fetch_cc);
+    std::string kv_key_view;
+    if (fetch_cc->table_name_.IsHashPartitioned())
+    {
+        callback_data->kv_key_ = EncodeKvKeyForHashPart(fetch_cc->tx_key_);
+        kv_key_view = callback_data->kv_key_;
+    }
+    else
+    {
+        kv_key_view = std::string_view(fetch_cc->tx_key_.Data(),
+                                       fetch_cc->tx_key_.Size());
+    }
+
     Read(fetch_cc->kv_table_name_,
          KvPartitionIdOf(fetch_cc->partition_id_,
                          !fetch_cc->table_name_.IsHashPartitioned()),
-         std::string_view(fetch_cc->tx_key_.Data(), fetch_cc->tx_key_.Size()),
-         fetch_cc,
+         kv_key_view,
+         callback_data,
          &FetchSnapshotCallback);
 
     return txservice::store::DataStoreHandler::DataStoreOpStatus::Success;

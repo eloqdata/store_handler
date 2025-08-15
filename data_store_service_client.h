@@ -32,6 +32,7 @@
 #include "eloq_data_store_service/data_store_service.h"
 #include "eloq_data_store_service/ds_request.pb.h"
 #include "eloq_data_store_service/thread_worker_pool.h"
+#include "tx_key.h"
 #include "tx_service/include/cc/cc_shard.h"
 #include "tx_service/include/sequences/sequences.h"
 #include "tx_service/include/sharder.h"
@@ -392,6 +393,11 @@ public:
     static uint32_t HashArchiveKey(const std::string &kv_table_name,
                                    const txservice::TxKey &tx_key);
 
+    static std::string EncodeKvKeyForHashPart(const txservice::TxKey &tx_key);
+
+    static std::string_view DecodeKvKeyForHashPart(const char *data,
+                                                   size_t size);
+
     // NOTICE: be_commit_ts is the big endian encode value of commit_ts
     static std::string EncodeArchiveKey(std::string_view table_name,
                                         std::string_view key,
@@ -439,12 +445,6 @@ public:
                        uint64_t write_time);
 
 private:
-    int32_t MapKeyHashToPartitionId(const txservice::TxKey &key) const
-    {
-        // TODO(lokax):
-        return (key.Hash() >> 10) & 0x3FF;
-    }
-
     // =====================================================
     // Group: KV Interface
     // Functions that decide if the request is local or remote

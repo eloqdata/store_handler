@@ -427,27 +427,27 @@ bool RocksDBHandler::PutAll(
             {
                 // TODO(lokax): encode bucket id
                 txservice::TxKey key = flush_rec.Key();
-                const EloqKV::EloqKey *redis_key =
-                    key.GetKey<EloqKV::EloqKey>();
+                std::string rocksdb_key = EncodeToKvKey(key);
+
                 if (flush_rec.payload_status_ ==
                         txservice::RecordStatus::Normal &&
                     flush_rec.Payload()->GetTTL() > now)
                 {
                     std::vector<char> rec_buf;
                     SerializeFlushRecord(flush_rec, rec_buf);
-                    write_batch_size += redis_key->Length();
+                    write_batch_size += rocksdb_key.size();
                     write_batch_size += rec_buf.size();
                     write_batch.Put(
                         cfh,
-                        rocksdb::Slice(redis_key->Buf(), redis_key->Length()),
+                        rocksdb::Slice(rocksdb_key.data(), rocksdb_key.size()),
                         rocksdb::Slice(rec_buf.data(), rec_buf.size()));
                 }
                 else
                 {
-                    write_batch_size += redis_key->Length();
+                    write_batch_size += rocksdb_key.size();
                     write_batch.Delete(
                         cfh,
-                        rocksdb::Slice(redis_key->Buf(), redis_key->Length()));
+                        rocksdb::Slice(rocksdb_key.data(), rocksdb_key.size()));
                 }
 
                 if (write_batch_size >= batch_write_size_)
@@ -1117,9 +1117,10 @@ RocksDBHandler::FetchRecord(txservice::FetchRecordCc *fetch_cc,
     assert(fetch_snapshot_cc == nullptr);
     LOG_IF(ERROR, fetch_snapshot_cc != nullptr)
         << "RocksDBHandler::FetchRecord with FetchSnapshotCc not implemented";
+
     // TODO(lokax): encode bucket id
-    const EloqKey *redis_key_ptr = fetch_cc->tx_key_.GetKey<EloqKV::EloqKey>();
-    EloqKey redis_key_copy(*redis_key_ptr);
+    std::string rocksdb_key = EncodeToKvKey(fetch_cc->tx_key_);
+
     if (metrics::enable_kv_metrics)
     {
         fetch_cc->start_ = metrics::Clock::now();
@@ -1128,7 +1129,7 @@ RocksDBHandler::FetchRecord(txservice::FetchRecordCc *fetch_cc,
     query_worker_pool_->SubmitWork(
         [this,
          fetch_cc,
-         redis_key = std::move(redis_key_copy),
+         rocksdb_key = std::move(rocksdb_key),
          kv_cf_name =
              fetch_cc->table_schema_->GetKVCatalogInfo()->kv_table_name_]()
         {
@@ -1158,7 +1159,7 @@ RocksDBHandler::FetchRecord(txservice::FetchRecordCc *fetch_cc,
             rocksdb::Status status =
                 db->Get(rocksdb::ReadOptions(),
                         cfh,
-                        rocksdb::Slice(redis_key.Buf(), redis_key.Length()),
+                        rocksdb::Slice(rocksdb_key.data(), rocksdb_key.size()),
                         &value);
             if (metrics::enable_kv_metrics)
             {
@@ -1548,13 +1549,62 @@ void RocksDBHandler::ParallelIterateTable(
                   core_cnt,
                   cancel_data_loading_on_error.get());
 
+        std::optional<uint16_t> current_batch_bucket_id;
+        size_t current_batch_key_cnt = 0;
+
         size_t cnt = 0;
         for (it->SeekToFirst(); it->Valid(); it->Next())
         {
             // TODO(lokax): decode bucket id
-            rocksdb::Slice key = it->key();
-            std::string key_str = std::string(key.data(), key.size());
+            rocksdb::Slice rocksdb_key = it->key();
+            uint16_t bucket_id =
+                DecodeBucketIdFromKvKey(rocksdb_key.data(), rocksdb_key.size());
+            if (!current_batch_bucket_id.has_value())
+            {
+                // first key
+                current_batch_bucket_id = bucket_id;
+            }
 
+            // current bucket is drained
+            if (current_batch_bucket_id.value() != bucket_id)
+            {
+                // if we need to upload data to ccmap
+                if (current_batch_key_cnt > 0)
+                {
+                    if (cancel_data_loading_on_error->load(
+                            std::memory_order_acquire) !=
+                        txservice::CcErrorCode::NO_ERROR)
+                    {
+                        cc->Free();
+                        break;
+                    }
+                    for (uint16_t core = 0; core < core_cnt; core++)
+                    {
+                        local_cc_shards->EnqueueToCcShard(core, cc);
+                    }
+                    cc = cc_pool.NextRequest();
+                    while (cc == nullptr)
+                    {
+                        //  sleep 100u if on fly cc count reachs limit
+                        bthread_usleep(100);
+                        cc = cc_pool.NextRequest();
+                    }
+                    cc->Reset(&table_name,
+                              cc_ng_id,
+                              cc_ng_term,
+                              core_cnt,
+                              cancel_data_loading_on_error.get());
+                }
+
+                // update bucket id
+                current_batch_bucket_id = bucket_id;
+                current_batch_key_cnt = 0;
+            }
+
+            assert(current_batch_bucket_id == bucket_id);
+
+            std::string key_str =
+                DecodeTxKeyFromKvKey(rocksdb_key.data(), rocksdb_key.size());
             rocksdb::Slice val = it->value();
             std::string val_str = std::string(val.data(), val.size());
             size_t hash = EloqKey::Hash(key_str.data(), key_str.size());
@@ -1577,10 +1627,14 @@ void RocksDBHandler::ParallelIterateTable(
                                 std::move(rec_str),
                                 version_ts,
                                 is_deleted);
+                current_batch_key_cnt++;
                 cnt++;
             }
 
-            if (cnt % batch_size == 0)
+            assert(current_batch_key_cnt <= batch_size);
+
+            // TODO(lokax):
+            if (current_batch_key_cnt >= batch_size)
             {
                 if (cancel_data_loading_on_error->load(
                         std::memory_order_acquire) !=
@@ -1605,11 +1659,13 @@ void RocksDBHandler::ParallelIterateTable(
                           cc_ng_term,
                           core_cnt,
                           cancel_data_loading_on_error.get());
+
+                current_batch_key_cnt = 0;
             }
         }
 
         // submit remaining data item for processing
-        if (cnt % batch_size != 0)
+        if (current_batch_key_cnt > 0)
         {
             if (cancel_data_loading_on_error->load(std::memory_order_acquire) ==
                 txservice::CcErrorCode::NO_ERROR)
@@ -1885,6 +1941,37 @@ bool RocksDBHandler::OnLeaderStart(uint32_t *next_leader_node)
     }
 
     return succ;
+}
+
+std::string RocksDBHandler::EncodeToKvKey(const txservice::TxKey &tx_key)
+{
+    // TODO(lokax): use uint32_t to avoid overflow
+    std::string rocksdb_key;
+    uint16_t bucket_id =
+        txservice::Sharder::Instance().MapKeyHashToBucketId(tx_key.Hash());
+    uint16_t be_bucket_id = EloqShare::host_to_big_endian(bucket_id);
+
+    rocksdb_key.reserve(sizeof(uint16_t) + tx_key.Size());
+    rocksdb_key.append(reinterpret_cast<const char *>(&be_bucket_id),
+                       sizeof(be_bucket_id));
+    rocksdb_key.append(tx_key.Data(), tx_key.Size());
+    return rocksdb_key;
+}
+
+std::string RocksDBHandler::DecodeTxKeyFromKvKey(const char *data, size_t size)
+{
+    assert(size >= sizeof(uint16_t));
+    const char *tx_key_start = data + sizeof(uint16_t);
+    size_t tx_key_len = size - sizeof(uint16_t);
+    return std::string(tx_key_start, tx_key_len);
+}
+
+uint16_t RocksDBHandler::DecodeBucketIdFromKvKey(const char *data, size_t size)
+{
+    assert(size >= sizeof(uint16_t));
+    uint16_t be_bucket_id;
+    std::memcpy(&be_bucket_id, data, sizeof(be_bucket_id));
+    return EloqShare::big_endian_to_host(be_bucket_id);
 }
 
 void RocksDBHandler::OnStartFollowing()
