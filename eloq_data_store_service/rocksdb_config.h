@@ -90,7 +90,7 @@ struct RocksDBCloudConfig
     uint32_t db_file_deletion_delay_;
     std::string s3_endpoint_url_;
     size_t warm_up_thread_num_;
-    size_t purger_periodicity_millis_{30 * 1000};
+    size_t purger_periodicity_millis_{10 * 60 * 1000}; // 10 minutes
 };
 
 inline rocksdb::Status NewCloudFileSystem(

@@ -273,7 +273,7 @@ DEFINE_uint32(rocksdb_cloud_warm_up_thread_num,
               1,
               "Rocksdb cloud warm up thread number");
 DEFINE_uint32(rocksdb_cloud_purger_periodicity_secs,
-              30,
+              10 * 60, /*10 minutes*/
               "Rocksdb cloud purger periodicity seconds");
 DEFINE_string(aws_access_key_id, "", "AWS SDK access key id");
 DEFINE_string(aws_secret_key, "", "AWS SDK secret key");
