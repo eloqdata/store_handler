@@ -358,7 +358,6 @@ public:
               uint64_t &version_ts,
               const txservice::TableSchema *table_schema) override;
 
-#ifdef ON_KEY_OBJECT
     static void SerializeFlushRecord(const txservice::FlushRecord &flush_rec,
                                      std::vector<char> &buf);
     static void DeserializeRecord(const char *payload,
@@ -377,7 +376,6 @@ public:
         txservice::FetchSnapshotCc *fetch_snapshot_cc = nullptr) override;
     rocksdb::ColumnFamilyHandle *GetColumnFamilyHandler(const std::string &cf);
 
-#endif
 
     std::unique_ptr<txservice::store::DataStoreScanner> ScanForward(
         const txservice::TableName &table_name,

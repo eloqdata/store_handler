@@ -320,6 +320,7 @@ private:
     const txservice::KVCatalogInfo *kv_info_;
     const std::vector<txservice::store::DataStoreSearchCond>
         pushdown_condition_;
+    const bool is_object_key_schema_;
 
     // scanner state
     bool initialized_;

@@ -225,6 +225,8 @@ DataStoreServiceHashPartitionScanner<ScanForward>::
       rec_sch_(rec_sch),
       kv_info_(kv_info),
       pushdown_condition_(pushdown_cond),
+      is_object_key_schema_(table_name.Engine() ==
+                            txservice::TableEngine::EloqKv),
       initialized_(false)
 {
     assert(client_ != nullptr);
@@ -450,15 +452,18 @@ void DataStoreServiceHashPartitionScanner<ScanForward>::AddScanTuple(
                                   part_scan_tuple.key_.size());
 
     size_t offset = 0;
-#ifdef ON_KEY_OBJECT
-    txservice::TxObject *tx_obj =
-        static_cast<txservice::TxObject *>(scan_tuple.rec_.get());
-    txservice::TxRecord::Uptr obj_uptr =
-        tx_obj->DeserializeObject(part_scan_tuple.value_.data(), offset);
-    scan_tuple.rec_.reset(obj_uptr.release());
-#else
-    scan_tuple.rec_->Deserialize(part_scan_tuple.value_.data(), offset);
-#endif
+    if (is_object_key_schema_)
+    {
+        txservice::TxObject *tx_obj =
+            static_cast<txservice::TxObject *>(scan_tuple.rec_.get());
+        txservice::TxRecord::Uptr obj_uptr =
+            tx_obj->DeserializeObject(part_scan_tuple.value_.data(), offset);
+        scan_tuple.rec_.reset(obj_uptr.release());
+    }
+    else
+    {
+        scan_tuple.rec_->Deserialize(part_scan_tuple.value_.data(), offset);
+    }
 
     scan_tuple.version_ts_ = part_scan_tuple.ts_;
     scan_tuple.deleted_ = false;

@@ -1108,7 +1108,6 @@ bool RocksDBHandler::Read(const txservice::TableName &table_name,
     return true;
 }
 
-#ifdef ON_KEY_OBJECT
 txservice::store::DataStoreHandler::DataStoreOpStatus
 RocksDBHandler::FetchRecord(txservice::FetchRecordCc *fetch_cc,
                             txservice::FetchSnapshotCc *fetch_snapshot_cc)
@@ -1219,8 +1218,6 @@ rocksdb::ColumnFamilyHandle *RocksDBHandler::GetColumnFamilyHandler(
     }
     return nullptr;
 }
-
-#endif
 
 std::unique_ptr<txservice::store::DataStoreScanner> RocksDBHandler::ScanForward(
     const txservice::TableName &table_name,
