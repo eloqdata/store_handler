@@ -161,12 +161,64 @@ private:
 
 struct EloqStoreConfig
 {
+    // Number of shards (threads).
     uint16_t worker_count_{1};
+    // EloqStore storage path.
     std::string storage_path_{""};
+    // Max number of open files.
     uint32_t open_files_limit_{1024};
+    // Storage path on cloud service.
     std::string cloud_store_path_{""};
+    // Number of background file GC threads.
     uint16_t gc_threads_{1};
+    // Number of threads used by rclone to upload/download files.
     uint16_t cloud_worker_count_{1};
+    uint16_t data_page_restart_interval_{16};
+    uint16_t index_page_restart_interval_{16};
+    uint32_t init_page_count_{1 << 15};
+    // Skip checksum verification when reading pages.
+    bool skip_verify_checksum_{false};
+    // Max amount of cached index pages per shard.
+    uint32_t index_buffer_pool_size_{1 << 15};
+    // Limit manifest file size.
+    uint32_t manifest_limit_{8 << 20};
+    // Size of io-uring submission queue per shard.
+    uint32_t io_queue_size_{4096};
+    // Max amount of inflight write IO per shard.
+    uint32_t max_inflight_write_{64 << 10};
+    // The maximum number of pages per batch for the write task.
+    uint16_t max_write_batch_pages_{256};
+    // Size of io-uring selected buffer ring.
+    uint16_t buf_ring_size_{1 << 12};
+    // Size of coroutine stack.
+    uint32_t coroutine_stack_size_{32 * 1024};
+    // Limit number of retained archives.
+    uint16_t num_retained_archives_{0};
+    // Set the (minimum) archive time interval in seconds.
+    uint32_t archive_interval_secs_{86400};
+    // The maximum number of running archive tasks at the same time.
+    uint16_t max_archive_tasks_{256};
+    // Move pages in data file that space amplification factor
+    // bigger than this value.
+    uint8_t file_amplify_factor_{4};
+    // Limit total size of local files per shard. Only take effect when cloud
+    // store is enabled.
+    size_t local_space_limit_{1ULL << 40};
+    // Reserved space ratio for new created/download files. Only take effect
+    // when cloud store is enabled.
+    uint16_t reserve_space_ratio_{100};
+    // Size of B+Tree index/data node (page). Ensure that it is aligned to the
+    // system's page size.
+    uint16_t data_page_size_{1 << 12};
+    // Amount of pages per data file (1 << pages_per_file_shift).
+    uint8_t pages_per_file_shift_{11};
+    // Amount of pointers stored in overflow page. The maximum can be set to
+    // 128 (max_overflow_pointers).
+    uint8_t overflow_pointers_{16};
+    // Write data file pages in append only mode.
+    bool data_append_mode_{false};
+    const ::eloqstore::Comparator *comparator_{
+        ::eloqstore::Comparator::DefaultComparator()};
 };
 
 class EloqStoreDataStore : public DataStore

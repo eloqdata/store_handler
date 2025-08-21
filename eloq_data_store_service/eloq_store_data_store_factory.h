@@ -59,6 +59,43 @@ public:
         }
         store_config.num_gc_threads = eloq_store_configs_.gc_threads_;
         store_config.rclone_threads = eloq_store_configs_.cloud_worker_count_;
+        store_config.data_page_restart_interval =
+            eloq_store_configs_.data_page_restart_interval_;
+        store_config.index_page_restart_interval =
+            eloq_store_configs_.index_page_restart_interval_;
+        store_config.init_page_count = eloq_store_configs_.init_page_count_;
+        store_config.skip_verify_checksum =
+            eloq_store_configs_.skip_verify_checksum_;
+        store_config.index_buffer_pool_size =
+            eloq_store_configs_.index_buffer_pool_size_;
+        store_config.manifest_limit = eloq_store_configs_.manifest_limit_;
+        store_config.io_queue_size = eloq_store_configs_.io_queue_size_;
+        store_config.max_inflight_write =
+            eloq_store_configs_.max_inflight_write_;
+        store_config.max_write_batch_pages =
+            eloq_store_configs_.max_write_batch_pages_;
+        store_config.buf_ring_size = eloq_store_configs_.buf_ring_size_;
+        store_config.coroutine_stack_size =
+            eloq_store_configs_.coroutine_stack_size_;
+        store_config.num_retained_archives =
+            eloq_store_configs_.num_retained_archives_;
+        store_config.archive_interval_secs =
+            eloq_store_configs_.archive_interval_secs_;
+        store_config.max_archive_tasks = eloq_store_configs_.max_archive_tasks_;
+        store_config.file_amplify_factor =
+            eloq_store_configs_.file_amplify_factor_;
+        store_config.local_space_limit = eloq_store_configs_.local_space_limit_;
+        store_config.reserve_space_ratio =
+            eloq_store_configs_.reserve_space_ratio_;
+        store_config.data_page_size = eloq_store_configs_.data_page_size_;
+        store_config.pages_per_file_shift =
+            eloq_store_configs_.pages_per_file_shift_;
+        store_config.overflow_pointers = eloq_store_configs_.overflow_pointers_;
+        store_config.data_append_mode = eloq_store_configs_.data_append_mode_;
+        if (eloq_store_configs_.comparator_ != nullptr)
+        {
+            store_config.comparator_ = eloq_store_configs_.comparator_;
+        }
 
         DLOG(INFO) << "Create EloqStore storage with workers: "
                    << store_config.num_threads
@@ -66,7 +103,9 @@ public:
                    << ", open files limit: " << store_config.fd_limit
                    << ", cloud store path: " << store_config.cloud_store_path
                    << ", gc threads: " << store_config.num_gc_threads
-                   << ", cloud worker count: " << store_config.rclone_threads;
+                   << ", cloud worker count: " << store_config.rclone_threads
+                   << ", buffer pool size per shard: "
+                   << store_config.index_buffer_pool_size;
         auto ds = std::make_unique<EloqStoreDataStore>(
             shard_id, data_store_service, store_config);
         ds->Initialize();
