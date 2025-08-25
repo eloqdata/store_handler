@@ -32,6 +32,7 @@
 #include "eloq_data_store_service/data_store_service.h"
 #include "eloq_data_store_service/ds_request.pb.h"
 #include "eloq_data_store_service/thread_worker_pool.h"
+#include "tx_key.h"
 #include "tx_service/include/cc/cc_shard.h"
 #include "tx_service/include/sequences/sequences.h"
 #include "tx_service/include/sharder.h"
@@ -204,8 +205,7 @@ public:
      * @brief Only Fetch visible archive asynchronously. (This is called in
      * FetchSnapshot)
      */
-    DataStoreOpStatus
-    FetchVisibleArchive(txservice::FetchSnapshotCc *fetch_cc);
+    DataStoreOpStatus FetchVisibleArchive(txservice::FetchSnapshotCc *fetch_cc);
 
     std::unique_ptr<txservice::store::DataStoreScanner> ScanForward(
         const txservice::TableName &table_name,
@@ -393,6 +393,11 @@ public:
     static uint32_t HashArchiveKey(const std::string &kv_table_name,
                                    const txservice::TxKey &tx_key);
 
+    static std::string EncodeKvKeyForHashPart(const txservice::TxKey &tx_key);
+
+    static std::string_view DecodeKvKeyForHashPart(const char *data,
+                                                   size_t size);
+
     // NOTICE: be_commit_ts is the big endian encode value of commit_ts
     static std::string EncodeArchiveKey(std::string_view table_name,
                                         std::string_view key,
@@ -440,11 +445,6 @@ public:
                        uint64_t write_time);
 
 private:
-    int32_t MapKeyHashToPartitionId(const txservice::TxKey &key) const
-    {
-        return (key.Hash() >> 10) & 0x3FF;
-    }
-
     // =====================================================
     // Group: KV Interface
     // Functions that decide if the request is local or remote
@@ -552,6 +552,7 @@ private:
 #ifdef USE_ONE_ELOQDSS_PARTITION
         return 0;
 #else
+        // TODO(lokax):
         std::string_view sv = table.StringView();
         return (std::hash<std::string_view>()(sv)) & 0x3FF;
 #endif
@@ -560,6 +561,7 @@ private:
     int32_t KvPartitionIdOf(int32_t key_partition,
                             bool is_range_partition = true)
     {
+        // TODO(lokax):
 #ifdef USE_ONE_ELOQDSS_PARTITION
         if (is_range_partition)
         {
@@ -649,8 +651,10 @@ private:
                                       DataStoreServiceClient &client,
                                       const remote::CommonResult &result);
     friend void FetchRecordArchivesCallback(
-        void *data, ::google::protobuf::Closure *closure,
-        DataStoreServiceClient &client, const remote::CommonResult &result);
+        void *data,
+        ::google::protobuf::Closure *closure,
+        DataStoreServiceClient &client,
+        const remote::CommonResult &result);
 };
 
 struct UpsertTableData

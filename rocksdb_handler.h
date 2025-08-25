@@ -41,6 +41,7 @@
 #include "error_messages.h"
 #include "kv_store.h"
 #include "rocksdb/compaction_filter.h"
+#include "tx_key.h"
 #if (defined(ROCKSDB_CLOUD_FS_TYPE) &&                                         \
      (ROCKSDB_CLOUD_FS_TYPE == ROCKSDB_CLOUD_FS_TYPE_S3 ||                     \
       ROCKSDB_CLOUD_FS_TYPE == ROCKSDB_CLOUD_FS_TYPE_GCS))
@@ -230,7 +231,7 @@ public:
     {
     }
     RocksDBCatalogInfo(const std::string &kv_table_name,
-                       const std::string &kv_index_names){};
+                       const std::string &kv_index_names) {};
     ~RocksDBCatalogInfo()
     {
     }
@@ -268,9 +269,10 @@ public:
      * @param node_group
      * @return whether all entries are written to data store successfully
      */
-    bool PutAll(std::unordered_map<std::string_view,
-                       std::vector<std::unique_ptr<txservice::FlushTaskEntry>>>
-                       &batch) override;
+    bool PutAll(std::unordered_map<
+                std::string_view,
+                std::vector<std::unique_ptr<txservice::FlushTaskEntry>>> &batch)
+        override;
 
     /**
      * @brief indicate end of flush entries in a single ckpt for \@param
@@ -349,7 +351,6 @@ public:
         int32_t partition_id,
         const txservice::TxKey *start_key,
         const txservice::TableSchema *table_schema) override;
-
 
     bool Read(const txservice::TableName &table_name,
               const txservice::TxKey &key,
@@ -456,14 +457,15 @@ public:
     bool PutArchivesAll(std::unordered_map<
                         std::string_view,
                         std::vector<std::unique_ptr<txservice::FlushTaskEntry>>>
-                        &batch) override;
+                            &batch) override;
     /**
      * @brief Copy record from base/sk table to mvcc_archives.
      */
     bool CopyBaseToArchive(
-        std::unordered_map<std::string_view,
-                       std::vector<std::unique_ptr<txservice::FlushTaskEntry>>>
-                       &batch) override;
+        std::unordered_map<
+            std::string_view,
+            std::vector<std::unique_ptr<txservice::FlushTaskEntry>>> &batch)
+        override;
 
     /**
      * @brief  Get the latest visible(commit_ts <= upper_bound_ts)
@@ -514,6 +516,10 @@ public:
         std::shared_ptr<std::atomic<txservice::CcErrorCode>>
             cancel_data_loading_on_error,
         std::shared_ptr<std::atomic<uint16_t>> on_flying_count);
+
+    static std::string EncodeToKvKey(const txservice::TxKey &tx_key);
+    static std::string DecodeTxKeyFromKvKey(const char *data, size_t size);
+    static uint16_t DecodeBucketIdFromKvKey(const char *data, size_t size);
 
     bool OnLeaderStart(uint32_t *next_leader_node) override;
 
