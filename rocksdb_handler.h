@@ -26,6 +26,7 @@
 #include <unistd.h>
 
 #include <condition_variable>
+#include <cstdint>
 #include <deque>
 #include <fstream>
 #include <memory>
@@ -37,6 +38,7 @@
 
 #include "cc_map.h"
 #include "cc_req_base.h"
+#include "cc_req_misc.h"
 #include "cc_shard.h"
 #include "error_messages.h"
 #include "kv_store.h"
@@ -376,9 +378,13 @@ public:
     txservice::store::DataStoreHandler::DataStoreOpStatus FetchRecord(
         txservice::FetchRecordCc *fetch_cc,
         txservice::FetchSnapshotCc *fetch_snapshot_cc = nullptr) override;
+
     rocksdb::ColumnFamilyHandle *GetColumnFamilyHandler(const std::string &cf);
 
 #endif
+
+    txservice::store::DataStoreHandler::DataStoreOpStatus FetchBucketData(
+        txservice::FetchBucketDataCc *fetch_bucket_data_cc) override;
 
     std::unique_ptr<txservice::store::DataStoreScanner> ScanForward(
         const txservice::TableName &table_name,
@@ -517,6 +523,9 @@ public:
             cancel_data_loading_on_error,
         std::shared_ptr<std::atomic<uint16_t>> on_flying_count);
 
+    static std::string EncodeToKvKey(uint16_t bucket_id);
+    static std::string EncodeToKvKey(uint16_t bucket_id,
+                                     const txservice::TxKey &tx_key);
     static std::string EncodeToKvKey(const txservice::TxKey &tx_key);
     static std::string DecodeTxKeyFromKvKey(const char *data, size_t size);
     static uint16_t DecodeBucketIdFromKvKey(const char *data, size_t size);

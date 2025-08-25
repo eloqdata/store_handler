@@ -21,6 +21,7 @@
  */
 #pragma once
 
+#include <cstdint>
 #include <deque>
 #include <map>
 #include <memory>
@@ -187,6 +188,9 @@ public:
               bool &found,
               uint64_t &version_ts,
               const txservice::TableSchema *table_schema) override;
+
+    txservice::store::DataStoreHandler::DataStoreOpStatus FetchBucketData(
+        txservice::FetchBucketDataCc *fetch_bucket_data_cc) override;
 
     DataStoreOpStatus FetchRecord(
         txservice::FetchRecordCc *fetch_cc,
@@ -393,6 +397,9 @@ public:
     static uint32_t HashArchiveKey(const std::string &kv_table_name,
                                    const txservice::TxKey &tx_key);
 
+    static std::string EncodeKvKeyForHashPart(uint16_t bucket_id);
+    static std::string EncodeKvKeyForHashPart(uint16_t bucket_id,
+                                              const txservice::TxKey &tx_key);
     static std::string EncodeKvKeyForHashPart(const txservice::TxKey &tx_key);
 
     static std::string_view DecodeKvKeyForHashPart(const char *data,

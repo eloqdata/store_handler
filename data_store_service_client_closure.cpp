@@ -26,6 +26,7 @@
 #include <string>
 #include <utility>
 
+#include "error_messages.h"
 #include "store_util.h"  // host_to_big_endian
 #include "tx_service/include/cc/cc_request.h"
 #include "tx_service/include/cc/local_cc_shards.h"
@@ -210,6 +211,61 @@ void FetchRecordCallback(void *data,
         fetch_cc->SetFinish(
             static_cast<int>(txservice::CcErrorCode::DATA_STORE_ERR));
     }
+}
+
+void FetchBucketDataCallback(void *data,
+                             ::google::protobuf::Closure *closure,
+                             DataStoreServiceClient &client,
+                             const remote::CommonResult &result)
+{
+    assert(data != nullptr);
+    FetchBucketDataCallbackData *callback_data =
+        static_cast<FetchBucketDataCallbackData *>(data);
+    ScanNextClosure *scan_next_closure =
+        static_cast<ScanNextClosure *>(closure);
+    auto *fetch_bucket_data_cc = callback_data->fetch_bucket_data_cc_;
+
+    if (result.error_code() != EloqDS::remote::DataStoreError::NO_ERROR)
+    {
+        LOG(ERROR) << "DataStoreHandler: Failed to do FetchBucketData. "
+                   << result.error_msg();
+        fetch_bucket_data_cc->SetFinish(
+            static_cast<int32_t>(txservice::CcErrorCode::DATA_STORE_ERR));
+
+        delete callback_data;
+        return;
+    }
+
+    assert(fetch_bucket_data_cc->table_name_.IsHashPartitioned());
+
+    uint32_t items_size = scan_next_closure->ItemsSize();
+    std::string key_str;
+    std::string value_str;
+    uint64_t ts = UINT64_MAX;
+    uint64_t ttl = UINT64_MAX;
+    uint64_t now = txservice::LocalCcShards::ClockTsInMillseconds();
+    for (uint32_t item_idx = 0; item_idx < items_size; ++item_idx)
+    {
+        scan_next_closure->GetItem(item_idx, key_str, value_str, ts, ttl);
+
+        std::string tx_key(
+            client.DecodeKvKeyForHashPart(key_str.data(), key_str.size()));
+        if (ttl > 0 && ttl < now)
+        {
+            fetch_bucket_data_cc->AddDataItem(std::move(tx_key), "", 1, true);
+        }
+        else
+        {
+            fetch_bucket_data_cc->AddDataItem(
+                std::move(tx_key), std::move(value_str), ts, false);
+        }
+    }
+
+    callback_data->session_id_ = scan_next_closure->GetSessionId();
+    fetch_bucket_data_cc->SetFinish(
+        static_cast<int32_t>(txservice::CcErrorCode::NO_ERROR));
+
+    delete callback_data;
 }
 
 void FetchSnapshotCallback(void *data,

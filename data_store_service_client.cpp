@@ -35,6 +35,7 @@
 #include <utility>
 #include <vector>
 
+#include "cc_req_misc.h"
 #include "data_store_service_client_closure.h"
 #include "data_store_service_scanner.h"
 #include "eloq_data_store_service/object_pool.h"  // ObjectPool
@@ -1698,19 +1699,33 @@ uint32_t DataStoreServiceClient::HashArchiveKey(
     return partition_id;
 }
 
-std::string DataStoreServiceClient::EncodeKvKeyForHashPart(
-    const txservice::TxKey &tx_key)
+std::string DataStoreServiceClient::EncodeKvKeyForHashPart(uint16_t bucket_id)
 {
     std::string kv_key;
-    uint16_t bucket_id =
-        txservice::Sharder::Instance().MapKeyHashToBucketId(tx_key.Hash());
     uint16_t be_bucket_id = EloqShare::host_to_big_endian(bucket_id);
+    kv_key.append(reinterpret_cast<const char *>(&be_bucket_id),
+                  sizeof(be_bucket_id));
+    return kv_key;
+}
 
+std::string DataStoreServiceClient::EncodeKvKeyForHashPart(
+    uint16_t bucket_id, const txservice::TxKey &tx_key)
+{
+    std::string kv_key;
+    uint16_t be_bucket_id = EloqShare::host_to_big_endian(bucket_id);
     kv_key.reserve(sizeof(uint16_t) + tx_key.Size());
     kv_key.append(reinterpret_cast<const char *>(&be_bucket_id),
                   sizeof(be_bucket_id));
     kv_key.append(tx_key.Data(), tx_key.Size());
     return kv_key;
+}
+
+std::string DataStoreServiceClient::EncodeKvKeyForHashPart(
+    const txservice::TxKey &tx_key)
+{
+    uint16_t bucket_id =
+        txservice::Sharder::Instance().MapKeyHashToBucketId(tx_key.Hash());
+    return EncodeKvKeyForHashPart(bucket_id, tx_key);
 }
 
 std::string_view DataStoreServiceClient::DecodeKvKeyForHashPart(
@@ -2574,6 +2589,40 @@ DataStoreServiceClient::FetchRecord(
          kv_key_view,
          callback_data,
          &FetchRecordCallback);
+
+    return txservice::store::DataStoreHandler::DataStoreOpStatus::Success;
+}
+
+txservice::store::DataStoreHandler::DataStoreOpStatus
+DataStoreServiceClient::FetchBucketData(
+    txservice::FetchBucketDataCc *fetch_bucket_data_cc)
+{
+    assert(fetch_bucket_data_cc != nullptr);
+    assert(fetch_bucket_data_cc->table_name_.IsHashPartitioned());
+
+    int32_t kv_partition_id =
+        KvPartitionIdOf(txservice::Sharder::MapBucketIdToKvPartitionId(
+                            fetch_bucket_data_cc->bucket_id_),
+                        false);
+
+    auto *callback_data = new FetchBucketDataCallbackData(fetch_bucket_data_cc);
+    callback_data->bucket_kv_start_key_ = EncodeKvKeyForHashPart(
+        fetch_bucket_data_cc->bucket_id_, fetch_bucket_data_cc->start_key_);
+    callback_data->bucket_kv_end_key_ =
+        EncodeKvKeyForHashPart(fetch_bucket_data_cc->bucket_id_ + 1);
+
+    ScanNext(fetch_bucket_data_cc->kv_table_name_,
+             kv_partition_id,
+             callback_data->bucket_kv_start_key_,
+             callback_data->bucket_kv_end_key_,
+             callback_data->session_id_,
+             fetch_bucket_data_cc->start_key_inclusive_,
+             false,
+             true,
+             fetch_bucket_data_cc->batch_size_,
+             &callback_data->search_cond_,
+             callback_data,
+             &FetchBucketDataCallback);
 
     return txservice::store::DataStoreHandler::DataStoreOpStatus::Success;
 }

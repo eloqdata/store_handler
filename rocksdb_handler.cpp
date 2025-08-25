@@ -32,6 +32,7 @@
 #include <glog/logging.h>
 #include <rocksdb/convenience.h>
 #include <rocksdb/db.h>
+#include <rocksdb/iterator.h>
 #include <rocksdb/slice.h>
 #include <rocksdb/sst_file_reader.h>
 #include <rocksdb/trace_reader_writer.h>
@@ -1224,6 +1225,97 @@ rocksdb::ColumnFamilyHandle *RocksDBHandler::GetColumnFamilyHandler(
 
 #endif
 
+txservice::store::DataStoreHandler::DataStoreOpStatus
+RocksDBHandler::FetchBucketData(
+    txservice::FetchBucketDataCc *fetch_bucket_data_cc)
+{
+    assert(fetch_bucket_data_cc != nullptr);
+
+    query_worker_pool_->SubmitWork(
+        [this, fetch_bucket_data_cc]()
+        {
+            std::shared_lock<std::shared_mutex> db_lk(db_mux_);
+            auto db = GetDBPtr();
+            if (!db)
+            {
+                fetch_bucket_data_cc->SetFinish(static_cast<int32_t>(
+                    txservice::CcErrorCode::DATA_STORE_ERR));
+                return;
+            }
+
+            rocksdb::ColumnFamilyHandle *cfh =
+                GetColumnFamilyHandler(fetch_bucket_data_cc->kv_table_name_);
+            if (cfh == nullptr)
+            {
+                LOG(ERROR) << "Failed to get column family, cf name: "
+                           << fetch_bucket_data_cc->kv_table_name_;
+                fetch_bucket_data_cc->SetFinish(static_cast<int32_t>(
+                    txservice::CcErrorCode::DATA_STORE_ERR));
+                return;
+            }
+
+            assert(cfh != nullptr);
+
+            std::string kv_bucket_start_key =
+                EncodeToKvKey(fetch_bucket_data_cc->bucket_id_,
+                              fetch_bucket_data_cc->start_key_);
+            std::string kv_bucket_end_key =
+                EncodeToKvKey(fetch_bucket_data_cc->bucket_id_ + 1);
+
+            rocksdb::ReadOptions read_options;
+            // NOTICE: do not enable async_io if compiling rocksdbcloud
+            // without iouring.
+            read_options.async_io = false;
+            rocksdb::Iterator *iter = db->NewIterator(read_options);
+            rocksdb::Slice key(kv_bucket_start_key);
+            iter->Seek(key);
+            if (!fetch_bucket_data_cc->start_key_inclusive_ && iter->Valid())
+            {
+                rocksdb::Slice curr_key = iter->key();
+                if (curr_key == key)
+                {
+                    iter->Next();
+                }
+            }
+
+            size_t record_count = 0;
+            while (iter->Valid() &&
+                   record_count < fetch_bucket_data_cc->batch_size_)
+            {
+                if (iter->key().ToStringView() >= kv_bucket_end_key)
+                {
+                    break;
+                }
+
+                // TODO(lokax): support search condition pushdown
+
+                bool is_deleted = false;
+                int64_t version_ts = 0;
+                std::string rec_str;
+                std::string key_str = DecodeTxKeyFromKvKey(iter->key().data(),
+                                                           iter->key().size());
+                DeserializeRecord(iter->value().data(),
+                                  iter->value().size(),
+                                  rec_str,
+                                  is_deleted,
+                                  version_ts);
+
+                fetch_bucket_data_cc->AddDataItem(std::move(key_str),
+                                                  std::move(rec_str),
+                                                  version_ts,
+                                                  is_deleted);
+                iter->Next();
+                record_count++;
+            }
+
+            delete iter;
+            fetch_bucket_data_cc->SetFinish(
+                static_cast<int32_t>(txservice::CcErrorCode::NO_ERROR));
+        });
+
+    return DataStoreOpStatus::Success;
+}
+
 std::unique_ptr<txservice::store::DataStoreScanner> RocksDBHandler::ScanForward(
     const txservice::TableName &table_name,
     uint32_t ng_id,
@@ -1943,18 +2035,32 @@ bool RocksDBHandler::OnLeaderStart(uint32_t *next_leader_node)
     return succ;
 }
 
-std::string RocksDBHandler::EncodeToKvKey(const txservice::TxKey &tx_key)
+std::string RocksDBHandler::EncodeToKvKey(uint16_t bucket_id)
 {
     std::string rocksdb_key;
-    uint16_t bucket_id =
-        txservice::Sharder::Instance().MapKeyHashToBucketId(tx_key.Hash());
     uint16_t be_bucket_id = EloqShare::host_to_big_endian(bucket_id);
+    rocksdb_key.append(reinterpret_cast<const char *>(&be_bucket_id),
+                       sizeof(be_bucket_id));
+    return rocksdb_key;
+}
 
+std::string RocksDBHandler::EncodeToKvKey(uint16_t bucket_id,
+                                          const txservice::TxKey &tx_key)
+{
+    std::string rocksdb_key;
+    uint16_t be_bucket_id = EloqShare::host_to_big_endian(bucket_id);
     rocksdb_key.reserve(sizeof(uint16_t) + tx_key.Size());
     rocksdb_key.append(reinterpret_cast<const char *>(&be_bucket_id),
                        sizeof(be_bucket_id));
     rocksdb_key.append(tx_key.Data(), tx_key.Size());
     return rocksdb_key;
+}
+
+std::string RocksDBHandler::EncodeToKvKey(const txservice::TxKey &tx_key)
+{
+    uint16_t bucket_id =
+        txservice::Sharder::Instance().MapKeyHashToBucketId(tx_key.Hash());
+    return EncodeToKvKey(bucket_id, tx_key);
 }
 
 std::string RocksDBHandler::DecodeTxKeyFromKvKey(const char *data, size_t size)
