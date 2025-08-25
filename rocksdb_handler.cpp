@@ -1945,7 +1945,6 @@ bool RocksDBHandler::OnLeaderStart(uint32_t *next_leader_node)
 
 std::string RocksDBHandler::EncodeToKvKey(const txservice::TxKey &tx_key)
 {
-    // TODO(lokax): use uint32_t to avoid overflow
     std::string rocksdb_key;
     uint16_t bucket_id =
         txservice::Sharder::Instance().MapKeyHashToBucketId(tx_key.Hash());
