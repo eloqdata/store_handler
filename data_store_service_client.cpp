@@ -57,6 +57,10 @@ thread_local ObjectPool<DropTableClosure> drop_table_closure_pool_;
 thread_local ObjectPool<ScanNextClosure> scan_next_closure_pool_;
 thread_local ObjectPool<LoadRangeSliceCallbackData>
     load_range_slice_callback_data_pool_;
+thread_local ObjectPool<FetchRecordCallbackData>
+    fetch_record_callback_data_pool_;
+thread_local ObjectPool<FetchSnapshotCallbackData>
+    fetch_snapshot_callback_data_pool_;
 
 static const uint64_t MAX_WRITE_BATCH_SIZE = 64 * 1024 * 1024;  // 64MB
 
@@ -2578,7 +2582,10 @@ DataStoreServiceClient::FetchRecord(
     }
 
     std::string kv_key_view;
-    auto *callback_data = new FetchRecordCallbackData(fetch_cc);
+    auto *callback_data = fetch_record_callback_data_pool_.NextObject();
+
+    callback_data->Clear();
+    callback_data->fetch_cc_ = fetch_cc;
     if (fetch_cc->table_name_.IsHashPartitioned())
     {
         // owner
@@ -2657,7 +2664,8 @@ DataStoreServiceClient::FetchSnapshot(txservice::FetchSnapshotCc *fetch_cc)
 
     // TODO(lokax): encode bucket id
 
-    auto *callback_data = new FetchSnapshotCallbackData(fetch_cc);
+    auto *callback_data = fetch_snapshot_callback_data_pool_.NextObject();
+    callback_data->fetch_cc_ = fetch_cc;
     std::string kv_key_view;
     if (fetch_cc->table_name_.IsHashPartitioned())
     {

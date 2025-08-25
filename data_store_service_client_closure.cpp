@@ -106,6 +106,7 @@ void FetchRecordCallback(void *data,
 {
     auto *read_closure = static_cast<ReadClosure *>(closure);
     auto *callback_data = static_cast<FetchRecordCallbackData *>(data);
+    PoolableGuard guard(callback_data);
     auto *fetch_cc = callback_data->fetch_cc_;
     auto err_code = result.error_code();
 
@@ -223,6 +224,7 @@ void FetchBucketDataCallback(void *data,
         static_cast<FetchBucketDataCallbackData *>(data);
     ScanNextClosure *scan_next_closure =
         static_cast<ScanNextClosure *>(closure);
+    assert(!scan_next_closure->GenerateSessionId());
     auto *fetch_bucket_data_cc = callback_data->fetch_bucket_data_cc_;
 
     if (result.error_code() != EloqDS::remote::DataStoreError::NO_ERROR)
@@ -261,7 +263,7 @@ void FetchBucketDataCallback(void *data,
         }
     }
 
-    callback_data->session_id_ = scan_next_closure->GetSessionId();
+    // callback_data->session_id_ = scan_next_closure->GetSessionId();
     fetch_bucket_data_cc->SetFinish(
         static_cast<int32_t>(txservice::CcErrorCode::NO_ERROR));
 
@@ -275,6 +277,7 @@ void FetchSnapshotCallback(void *data,
 {
     auto *read_closure = static_cast<ReadClosure *>(closure);
     auto *callback_data = static_cast<FetchSnapshotCallbackData *>(data);
+    PoolableGuard guard(callback_data);
     auto *fetch_cc = callback_data->fetch_cc_;
     auto err_code = result.error_code();
 

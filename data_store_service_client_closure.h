@@ -2360,11 +2360,14 @@ void FetchArchivesCallback(void *data,
                            DataStoreServiceClient &client,
                            const remote::CommonResult &result);
 
-struct FetchRecordCallbackData
+struct FetchRecordCallbackData : Poolable
 {
-    FetchRecordCallbackData(txservice::FetchRecordCc *fetch_cc)
-        : fetch_cc_(fetch_cc)
+    FetchRecordCallbackData() = default;
+
+    void Clear()
     {
+        fetch_cc_ = nullptr;
+        kv_key_.clear();
     }
 
     txservice::FetchRecordCc *fetch_cc_;
@@ -2391,14 +2394,17 @@ struct FetchBucketDataCallbackData
     std::vector<remote::SearchCondition> search_cond_;
 };
 
-struct FetchSnapshotCallbackData
+struct FetchSnapshotCallbackData : Poolable
 {
-    FetchSnapshotCallbackData(txservice::FetchSnapshotCc *fetch_cc)
-        : fetch_cc_(fetch_cc)
+    FetchSnapshotCallbackData() = default;
+
+    void Clear() override
     {
+        fetch_cc_ = nullptr;
+        kv_key_.clear();
     }
 
-    txservice::FetchSnapshotCc *fetch_cc_;
+    txservice::FetchSnapshotCc *fetch_cc_{nullptr};
     std::string kv_key_;
 };
 
