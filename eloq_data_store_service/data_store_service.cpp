@@ -821,6 +821,7 @@ void DataStoreService::ScanNext(
     const std::vector<remote::SearchCondition> *search_conditions,
     std::vector<ScanTuple> *items,
     std::string *session_id,
+    bool generate_session_id,
     ::EloqDS::remote::CommonResult *result,
     ::google::protobuf::Closure *done)
 {
@@ -866,6 +867,7 @@ void DataStoreService::ScanNext(
                search_conditions,
                items,
                session_id,
+               generate_session_id,
                result,
                done);
 
@@ -994,7 +996,7 @@ void DataStoreService::ScanClose(const std::string_view table_name,
     }
 
     ScanLocalRequest *req = local_scan_request_pool_.NextObject();
-    req->Reset(this, table_name, partition_id, session_id, result, done);
+    req->Reset(this, table_name, partition_id, session_id, false, result, done);
 
     data_store_map_[shard_id]->ScanClose(req);
 }

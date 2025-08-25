@@ -605,6 +605,7 @@ void DataStoreServiceClient::FetchTableStatistics(
              callback_data->start_key_,
              callback_data->end_key_,
              callback_data->session_id_,
+             true,
              false,
              false,
              true,
@@ -850,6 +851,7 @@ void DataStoreServiceClient::FetchTableRanges(
              callback_data->end_key_,
              callback_data->session_id_,
              true,
+             true,
              false,
              true,
              callback_data->batch_size_,
@@ -1058,7 +1060,8 @@ DataStoreServiceClient::LoadRangeSlice(
              kv_partition_id,
              callback_data->last_key_,
              callback_data->end_key_,
-             "",                          // session_id
+             "",  // session_id
+             true,
              true,                        // include start_key
              false,                       // include end_key
              true,                        // scan forward
@@ -1372,6 +1375,7 @@ bool DataStoreServiceClient::DiscoverAllTableNames(
              callback_data.start_key_,
              callback_data.end_key_,
              callback_data.session_id_,
+             true,
              false,
              false,
              true,
@@ -1504,6 +1508,7 @@ bool DataStoreServiceClient::FetchAllDatabase(
              callback_data.start_key_,
              callback_data.end_key_,
              callback_data.session_id_,
+             true,
              false,
              false,
              true,
@@ -2294,6 +2299,7 @@ bool DataStoreServiceClient::FetchArchives(
              lower_bound_key,
              upper_bound_key,
              callback_data.session_id_,
+             true,
              true,                         // include start key
              false,                        // include end key
              callback_data.scan_forward_,  // scan forward: true
@@ -2378,6 +2384,7 @@ bool DataStoreServiceClient::FetchVisibleArchive(
              lower_bound_key,
              upper_bound_key,
              callback_data.session_id_,
+             true,
              true,                         // include start key
              false,                        // include end key
              callback_data.scan_forward_,  // scan forward: false
@@ -2457,6 +2464,7 @@ DataStoreServiceClient::FetchArchives(txservice::FetchRecordCc *fetch_cc)
              callback_data->start_key_,
              callback_data->end_key_,
              callback_data->session_id_,
+             true,
              true,   // include start key
              false,  // include end key
              false,  // scan forward: false
@@ -2495,6 +2503,7 @@ DataStoreServiceClient::FetchVisibleArchive(
              callback_data->start_key_,
              callback_data->end_key_,
              callback_data->session_id_,
+             true,
              true,   // include start key
              false,  // include end key
              false,  // scan forward: false
@@ -2616,6 +2625,7 @@ DataStoreServiceClient::FetchBucketData(
              callback_data->bucket_kv_start_key_,
              callback_data->bucket_kv_end_key_,
              callback_data->session_id_,
+             false,
              fetch_bucket_data_cc->start_key_inclusive_,
              false,
              true,
@@ -2903,6 +2913,7 @@ void DataStoreServiceClient::ScanNext(
     const std::string_view start_key,
     const std::string_view end_key,
     const std::string_view session_id,
+    bool generate_session_id,
     bool inclusive_start,
     bool inclusive_end,
     bool scan_forward,
@@ -2921,6 +2932,7 @@ void DataStoreServiceClient::ScanNext(
                    inclusive_end,
                    scan_forward,
                    session_id,
+                   generate_session_id,
                    batch_size,
                    search_conditions,
                    callback_data,
@@ -2946,6 +2958,7 @@ void DataStoreServiceClient::ScanNextInternal(
             scan_next_closure->LocalSearchConditionsPtr(),
             &scan_next_closure->LocalItemsRef(),
             &scan_next_closure->LocalSessionIdRef(),
+            scan_next_closure->GenerateSessionId(),
             &scan_next_closure->Result(),
             scan_next_closure);
     }
@@ -2990,6 +3003,7 @@ void DataStoreServiceClient::ScanClose(const std::string_view table_name,
                    false,  // inclusive_end
                    true,   // scan_forward
                    session_id,
+                   false,
                    0,  // batch_size 0 for close
                    nullptr,
                    callback_data,

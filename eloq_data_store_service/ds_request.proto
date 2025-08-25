@@ -306,6 +306,7 @@ message ScanRequest {
   bool scan_forward = 8;     // Scan direction
   uint32 batch_size = 9;     // Number of items to return in scan
   repeated SearchCondition search_conditions = 10;
+  bool generate_session_id = 11;
 }
 
 // Response message for scan operations

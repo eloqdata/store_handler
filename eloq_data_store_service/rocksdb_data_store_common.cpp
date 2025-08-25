@@ -1,7 +1,8 @@
+#include "rocksdb_data_store_common.h"
+
 #include <filesystem>
 
 #include "internal_request.h"
-#include "rocksdb_data_store_common.h"
 
 namespace EloqDS
 {
@@ -966,7 +967,7 @@ void RocksDBDataStoreCommon::ScanNext(ScanRequest *scan_req)
                     // Set session id carry over to the response
                     scan_req->SetSessionId(session_id);
                 }
-                else
+                else if (scan_req->GenerateSessionId())
                 {
                     // Otherwise, save the iterator in the session map
                     auto iter_wrapper =
@@ -978,6 +979,10 @@ void RocksDBDataStoreCommon::ScanNext(ScanRequest *scan_req)
                     // Save the iterator in the session map
                     data_store_service_->EmplaceScanIter(
                         shard_id_, session_id, std::move(iter_wrapper));
+                }
+                else
+                {
+                    delete iter;
                 }
             }
 

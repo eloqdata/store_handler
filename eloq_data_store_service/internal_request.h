@@ -1050,6 +1050,8 @@ public:
 
     virtual void SetSessionId(const std::string &session_id) = 0;
 
+    virtual bool GenerateSessionId() const = 0;
+
     virtual void ClearSessionId() = 0;
 
     virtual const std::string &GetSessionId() = 0;
@@ -1169,6 +1171,11 @@ public:
         return req_->session_id();
     }
 
+    bool GenerateSessionId() const override
+    {
+        return req_->generate_session_id();
+    }
+
     void SetFinish(const ::EloqDS::remote::DataStoreError error_code,
                    const std::string error_message) override
     {
@@ -1212,6 +1219,7 @@ public:
                const std::vector<remote::SearchCondition> *search_conditions,
                std::vector<ScanTuple> *items,
                std::string *session_id,
+               bool generate_session_id,
                ::EloqDS::remote::CommonResult *result,
                google::protobuf::Closure *done)
     {
@@ -1227,6 +1235,7 @@ public:
         search_conditions_ = search_conditions;
         items_ = items;
         session_id_ = session_id;
+        generate_session_id_ = generate_session_id;
         result_ = result;
         done_ = done;
     }
@@ -1235,6 +1244,7 @@ public:
                const std::string_view table_name,
                const uint32_t partition_id,
                std::string *session_id,
+               bool generate_session_id,
                ::EloqDS::remote::CommonResult *result,
                google::protobuf::Closure *done)
     {
@@ -1242,6 +1252,7 @@ public:
         table_name_ = table_name;
         partition_id_ = partition_id;
         session_id_ = session_id;
+        generate_session_id_ = generate_session_id;
         result_ = result;
         done_ = done;
     }
@@ -1260,6 +1271,7 @@ public:
         search_conditions_ = nullptr;
         items_ = nullptr;
         session_id_ = nullptr;
+        generate_session_id_ = true;
         result_ = nullptr;
         done_ = nullptr;
     }
@@ -1341,6 +1353,11 @@ public:
         return *session_id_;
     }
 
+    bool GenerateSessionId() const override
+    {
+        return generate_session_id_;
+    }
+
     void SetFinish(const ::EloqDS::remote::DataStoreError error_code,
                    const std::string error_message) override
     {
@@ -1367,6 +1384,7 @@ private:
     const std::vector<remote::SearchCondition> *search_conditions_{nullptr};
     std::vector<ScanTuple> *items_{nullptr};
     std::string *session_id_{nullptr};
+    bool generate_session_id_{true};
     EloqDS::remote::CommonResult *result_{nullptr};
     google::protobuf::Closure *done_{nullptr};
 };

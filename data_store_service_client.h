@@ -511,6 +511,7 @@ private:
                   const std::string_view start_key,
                   const std::string_view end_key,
                   const std::string_view session_id,
+                  bool generate_session,
                   bool inclusive_start,
                   bool inclusive_end,
                   bool scan_forward,

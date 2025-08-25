@@ -1637,6 +1637,7 @@ public:
         inclusive_end_ = false;
         scan_forward_ = true;
         session_id_ = "";
+        generate_session_id_ = true;
         batch_size_ = 0;
         search_conditions_ = nullptr;
         result_.Clear();
@@ -1656,6 +1657,7 @@ public:
                bool inclusive_end,
                bool scan_forward,
                const std::string_view session_id,
+               bool generate_session_id,
                const uint32_t batch_size,
                const std::vector<remote::SearchCondition> *search_conditions,
                void *callback_data,
@@ -1673,6 +1675,7 @@ public:
         inclusive_end_ = inclusive_end;
         scan_forward_ = scan_forward;
         session_id_ = session_id;
+        generate_session_id_ = generate_session_id;
         batch_size_ = batch_size;
         search_conditions_ = search_conditions;
         callback_data_ = callback_data;
@@ -1709,6 +1712,7 @@ public:
             request_.set_end_key(end_key_.data(), end_key_.size());
             request_.set_scan_forward(scan_forward_);
             request_.set_session_id(session_id_);
+            request_.set_generate_session_id(generate_session_id_);
             request_.set_batch_size(batch_size_);
             if (search_conditions_)
             {
@@ -1867,6 +1871,11 @@ public:
         return session_id_;
     }
 
+    bool GenerateSessionId() const
+    {
+        return generate_session_id_;
+    }
+
     const std::string &SessionId() const
     {
         if (is_local_request_)
@@ -1971,6 +1980,7 @@ private:
     bool inclusive_end_{false};
     bool scan_forward_{true};
     std::string session_id_;
+    bool generate_session_id_{true};
     uint32_t batch_size_;
     const std::vector<remote::SearchCondition> *search_conditions_;
 
