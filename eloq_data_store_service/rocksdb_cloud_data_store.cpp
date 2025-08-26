@@ -619,6 +619,31 @@ bool RocksDBCloudDataStore::OpenCloudDB(
     return true;
 }
 
+void RocksDBCloudDataStore::CreateSnapshot(CreateSnapshotRequest *req)
+{
+    std::unique_lock<std::shared_mutex> db_lk(db_mux_);
+
+    if (db_ == nullptr)
+    {
+        req->SetFinish(::EloqDS::remote::DataStoreError::DB_NOT_OPEN,
+                       "DB not open");
+        return;
+    }
+
+    // stop memtable flush
+    // stop background compaction
+    db_->PauseBackgroundWork();
+
+
+    // resume background work
+    db_->ContinueBackgroundWork();
+}
+
+void RocksDBCloudDataStore::CreateBranch(CreateBranchRequest *req)
+{
+    std::unique_lock<std::shared_mutex> db_lk(db_mux_);
+}
+
 rocksdb::DBCloud *RocksDBCloudDataStore::GetDBPtr()
 {
     return db_;

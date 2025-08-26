@@ -37,6 +37,8 @@ class ReadRequest;
 class CreateTableRequest;
 class DropTableRequest;
 class ScanRequest;
+class CreateSnapshotRequest;
+class CreateBranchRequest;
 
 class DataStore
 {
@@ -120,6 +122,18 @@ public:
      * @param req_shard_id Requested shard id.
      */
     virtual void ScanClose(ScanRequest *scan_req) = 0;
+
+    /**
+     * @brief Create a snapshot of the data store.
+     * @param req The pointer of the request.
+     */
+    virtual void CreateSnapshot(CreateSnapshotRequest *req) = 0;
+
+    /**
+     * @brief Create a branch of the data store.
+     * @param req The pointer of the request.
+     */
+    virtual void CreateBranch(CreateBranchRequest *req) = 0;
 
     /**
      * @brief Switch the data store to read only mode.

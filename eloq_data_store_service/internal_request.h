@@ -1371,4 +1371,112 @@ private:
     google::protobuf::Closure *done_{nullptr};
 };
 
+class CreateSnapshotRequest : public Poolable
+{
+public:
+    CreateSnapshotRequest() = default;
+    CreateSnapshotRequest(const CreateSnapshotRequest &other) = delete;
+    CreateSnapshotRequest &operator=(const CreateSnapshotRequest &other) =
+        delete;
+
+    virtual ~CreateSnapshotRequest() = default;
+
+    virtual void SetSnapshotPath(const std::string &path) = 0;
+
+    // finish
+    virtual void SetFinish(const ::EloqDS::remote::DataStoreError error_code,
+                           const std::string error_message = "") = 0;
+};
+
+class CreateSnapshotRpcRequest : public CreateSnapshotRequest
+{
+public:
+    CreateSnapshotRpcRequest() = default;
+    CreateSnapshotRpcRequest(const CreateSnapshotRpcRequest &other) = delete;
+    CreateSnapshotRpcRequest &operator=(const CreateSnapshotRpcRequest &other) =
+        delete;
+
+    void Reset(DataStoreService *ds_service,
+               remote::CreateSnapshotResponse *resp,
+               google::protobuf::Closure *done)
+    {
+        ds_service_ = ds_service;
+        resp_ = resp;
+        done_ = done;
+    }
+
+    void Clear() override
+    {
+        ds_service_ = nullptr;
+        resp_ = nullptr;
+        done_ = nullptr;
+    }
+
+    void SetSnapshotPath(const std::string &path)
+    {
+        resp_->set_snapshot_path(path);
+    }
+
+    void SetFinish(const ::EloqDS::remote::DataStoreError error_code,
+                   const std::string error_message) override
+    {
+        brpc::ClosureGuard done_guard(done_);
+        ::EloqDS::remote::CommonResult *result = resp_->mutable_result();
+        result->set_error_code(error_code);
+        result->set_error_msg(error_message);
+    }
+
+private:
+    DataStoreService *ds_service_{nullptr};
+    remote::CreateSnapshotResponse *resp_{nullptr};
+    google::protobuf::Closure *done_{nullptr};
+};
+
+class CreateSnapshotLocalRequest : public CreateSnapshotRequest
+{
+public:
+    CreateSnapshotLocalRequest() = default;
+    CreateSnapshotLocalRequest(const CreateSnapshotLocalRequest &other) =
+        delete;
+    CreateSnapshotLocalRequest &operator=(
+        const CreateSnapshotLocalRequest &other) = delete;
+
+    void Reset(DataStoreService *ds_service,
+               std::string *snapshot_path,
+               ::EloqDS::remote::CommonResult *result,
+               google::protobuf::Closure *done)
+    {
+        ds_service_ = ds_service;
+        snapshot_path_ = snapshot_path;
+        result_ = result;
+        done_ = done;
+    }
+
+    void Clear() override
+    {
+        ds_service_ = nullptr;
+        result_ = nullptr;
+        done_ = nullptr;
+    }
+
+    void SetSnapshotPath(const std::string &path) override
+    {
+        *snapshot_path_ = path;
+    }
+
+    void SetFinish(const ::EloqDS::remote::DataStoreError error_code,
+                   const std::string error_message) override
+    {
+        brpc::ClosureGuard done_guard(done_);
+        result_->set_error_code(error_code);
+        result_->set_error_msg(error_message);
+    }
+
+private:
+    DataStoreService *ds_service_{nullptr};
+    EloqDS::remote::CommonResult *result_{nullptr};
+    std::string *snapshot_path_{nullptr};
+    google::protobuf::Closure *done_{nullptr};
+};
+
 }  // namespace EloqDS

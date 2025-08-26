@@ -19,8 +19,6 @@
  *    <http://www.gnu.org/licenses/>.
  *
  */
-#include "data_store_service.h"
-
 #include <brpc/closure_guard.h>
 #include <brpc/server.h>
 
@@ -36,6 +34,7 @@
 #include <vector>
 
 #include "data_store_fault_inject.h"  // ACTION_FAULT_INJECTOR
+#include "data_store_service.h"
 #include "internal_request.h"
 #include "object_pool.h"
 
@@ -1470,6 +1469,36 @@ void DataStoreService::FaultInjectForTest(
     FaultInject::Instance().InjectFault(fault_name, fault_paras);
 
     response->set_finished(true);
+}
+
+void DataStoreService::CreateSnapshot(
+    ::google::protobuf::RpcController *controller,
+    const ::google::protobuf::Empty *request,
+    ::EloqDS::remote::CreateSnapshotResponse *response,
+    ::google::protobuf::Closure *done)
+{
+}
+
+void DataStoreService::CreateSnapshot(remote::CommonResult *result,
+                                      std::string *snapshot_path,
+                                      ::google::protobuf::Closure *done)
+{
+}
+
+void DataStoreService::CreateBranch(
+    ::google::protobuf::RpcController *controller,
+    const ::EloqDS::remote::CreateBranchRequest *request,
+    ::EloqDS::remote::CreateBranchResponse *response,
+    ::google::protobuf::Closure *done)
+{
+}
+
+void DataStoreService::CreateBranch(const std::string_view branch_name,
+                                    const std::string_view base_path,
+                                    remote::CommonResult *result,
+                                    std::string *branch_path,
+                                    ::google::protobuf::Closure *done)
+{
 }
 
 //-------DataShard Migrate-------

@@ -548,6 +548,26 @@ public:
                             ::EloqDS::remote::FaultInjectResponse *response,
                             ::google::protobuf::Closure *done) override;
 
+    void CreateSnapshot(::google::protobuf::RpcController *controller,
+                        const ::google::protobuf::Empty *request,
+                        ::EloqDS::remote::CreateSnapshotResponse *response,
+                        ::google::protobuf::Closure *done) override;
+
+    void CreateSnapshot(remote::CommonResult *result,
+                        std::string *snapshot_path,
+                        ::google::protobuf::Closure *done);
+
+    void CreateBranch(::google::protobuf::RpcController *controller,
+                      const ::EloqDS::remote::CreateBranchRequest *request,
+                      ::EloqDS::remote::CreateBranchResponse *response,
+                      ::google::protobuf::Closure *done) override;
+
+    void CreateBranch(const std::string_view branch_name,
+                      const std::string_view base_path,
+                      remote::CommonResult *result,
+                      std::string *branch_path,
+                      ::google::protobuf::Closure *done);
+
     static bool FetchConfigFromPeer(const std::string &peer_addr,
                                     DataStoreServiceClusterManager &config);
 

@@ -35,6 +35,11 @@ service DataStoreRpcService {
 
   //-----FaultInject for tests
   rpc FaultInjectForTest(FaultInjectRequest) returns (FaultInjectResponse);
+
+  //-----Snapshot and branch
+  rpc CreateSnapshot(google.protobuf.Empty) returns (CreateSnapshotResponse);
+  rpc CreateBranch(CreateBranchRequest) returns (CreateBranchResponse);
+
 };
 
 enum DataStoreError {
@@ -323,15 +328,15 @@ message ScanResponse {
   string session_id = 3;
 }
 
-message CreateSnapshotRequest {
-  uint32 req_shard_id = 1;
-  string backup_name = 2;
-}
-
-message CreateSnapshotResponse {
-  repeated string snapshot_files = 1;
-  CommonResult result = 2;
-}
+// message CreateSnapshotRequest {
+//   uint32 req_shard_id = 1;
+//   string backup_name = 2;
+// }
+//
+// message CreateSnapshotResponse {
+//   repeated string snapshot_files = 1;
+//   CommonResult result = 2;
+// }
 
 //-----FaultInject for test
 message FaultInjectRequest {
@@ -341,4 +346,20 @@ message FaultInjectRequest {
 }
 message FaultInjectResponse {
   bool finished = 1;
+}
+
+//-----Snapshot and branch
+message CreateSnapshotResponse{
+    CommonResult result = 1;
+    string snapshot_path = 2;
+}
+
+message CreateBranchRequest{
+    string branch_name = 1;
+    string base_path = 2; //optional
+}
+
+message CreateBranchResponse{
+    CommonResult result = 1;
+    string branch_path = 2;
 }

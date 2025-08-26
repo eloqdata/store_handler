@@ -64,6 +64,18 @@ public:
                  std::string prev_cookie = "") override;
 
     /**
+     * @brief Create a snapshot of the data store.
+     * @param req The pointer of the request.
+     */
+    void CreateSnapshot(CreateSnapshotRequest *req) override;
+
+    /**
+     * @brief Create a branch of the data store.
+     * @param req The pointer of the request.
+     */
+    void CreateBranch(CreateBranchRequest *req) override;
+
+    /**
      * @brief Close the cloud database.
      */
     void Shutdown() override;

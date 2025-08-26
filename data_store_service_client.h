@@ -204,8 +204,7 @@ public:
      * @brief Only Fetch visible archive asynchronously. (This is called in
      * FetchSnapshot)
      */
-    DataStoreOpStatus
-    FetchVisibleArchive(txservice::FetchSnapshotCc *fetch_cc);
+    DataStoreOpStatus FetchVisibleArchive(txservice::FetchSnapshotCc *fetch_cc);
 
     std::unique_ptr<txservice::store::DataStoreScanner> ScanForward(
         const txservice::TableName &table_name,
@@ -328,6 +327,13 @@ public:
 
     void RestoreTxCache(txservice::NodeGroupId cc_ng_id,
                         int64_t cc_ng_term) override;
+
+    void CreateSnapshot(
+        txservice::remote::CreateSnapshotResponse *response) override;
+
+    void CreateBranch(
+        const txservice::remote::CreateBranchRequest *request,
+        txservice::remote::CreateBranchResponse *response) override;
 
     bool OnLeaderStart(uint32_t *next_leader_node) override;
 
@@ -649,8 +655,10 @@ private:
                                       DataStoreServiceClient &client,
                                       const remote::CommonResult &result);
     friend void FetchRecordArchivesCallback(
-        void *data, ::google::protobuf::Closure *closure,
-        DataStoreServiceClient &client, const remote::CommonResult &result);
+        void *data,
+        ::google::protobuf::Closure *closure,
+        DataStoreServiceClient &client,
+        const remote::CommonResult &result);
 };
 
 struct UpsertTableData
