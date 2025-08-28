@@ -28,6 +28,10 @@
 #include <rocksdb/statistics.h>
 
 #include <algorithm>
+#include <boost/lexical_cast.hpp>
+#include <boost/uuid/uuid.hpp>
+#include <boost/uuid/uuid_generators.hpp>
+#include <boost/uuid/uuid_io.hpp>
 #include <chrono>
 #include <filesystem>
 #include <memory>
@@ -619,7 +623,8 @@ bool RocksDBCloudDataStore::OpenCloudDB(
     return true;
 }
 
-void RocksDBCloudDataStore::CreateSnapshot(CreateSnapshotRequest *req)
+void RocksDBCloudDataStore::CreateSnapshotForBackup(
+    CreateSnapshotForBackupRequest *req)
 {
     std::unique_lock<std::shared_mutex> db_lk(db_mux_);
 
@@ -630,18 +635,44 @@ void RocksDBCloudDataStore::CreateSnapshot(CreateSnapshotRequest *req)
         return;
     }
 
-    // stop memtable flush
-    // stop background compaction
+    // A successful checkpoint must be guaranteed before creating snapshot.
+    // So, it is not necessary to flush memtable here.
+
+    // Waiting and stop background work - memtable flush and compaction
     db_->PauseBackgroundWork();
 
+    rocksdb::CloudFileSystem *cfs =
+        dynamic_cast<rocksdb::CloudFileSystem *>(cloud_fs_.get());
 
-    // resume background work
+    if (cfs == nullptr)
+    {
+        req->SetFinish(::EloqDS::remote::DataStoreError::DB_NOT_OPEN,
+                       "cloud file system is not available");
+    }
+    else
+    {
+        std::string snapshot_cookie;
+        snapshot_cookie.append(req->GetBackupName());
+        snapshot_cookie.append("-");
+        snapshot_cookie.append(std::to_string(shard_id_));
+        snapshot_cookie.append("-");
+        snapshot_cookie.append(std::to_string(req->GetBackupTs()));
+        rocksdb::Status status = cfs->RollNewBranch(db_path_, snapshot_cookie);
+        if (!status.ok())
+        {
+            req->SetFinish(
+                ::EloqDS::remote::DataStoreError::CREATE_BRANCH_ERROR,
+                "Fail to create snapshot, error: " + status.ToString());
+        }
+        else
+        {
+            req->AddBackupFile(snapshot_cookie);
+            req->SetFinish(::EloqDS::remote::DataStoreError::NO_ERROR, "");
+        }
+    }
+
+    // Resume background work
     db_->ContinueBackgroundWork();
-}
-
-void RocksDBCloudDataStore::CreateBranch(CreateBranchRequest *req)
-{
-    std::unique_lock<std::shared_mutex> db_lk(db_mux_);
 }
 
 rocksdb::DBCloud *RocksDBCloudDataStore::GetDBPtr()

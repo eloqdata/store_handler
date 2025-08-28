@@ -63,6 +63,11 @@ thread_local ObjectPool<DropTableLocalRequest> local_drop_table_req_pool_;
 thread_local ObjectPool<ScanLocalRequest> local_scan_request_pool_;
 thread_local ObjectPool<ScanRpcRequest> rpc_scan_request_pool_;
 
+thread_local ObjectPool<CreateSnapshotForBackupRpcRequest>
+    rpc_create_snapshot_req_pool_;
+thread_local ObjectPool<CreateSnapshotForBackupLocalRequest>
+    local_create_snapshot_req_pool_;
+
 TTLWrapperCache::TTLWrapperCache()
 {
     ttl_check_running_ = true;
@@ -1137,6 +1142,73 @@ void DataStoreService::BatchWriteRecords(
     data_store_map_[shard_id]->BatchWriteRecords(batch_write_req);
 }
 
+void DataStoreService::CreateSnapshotForBackup(
+    ::google::protobuf::RpcController *controller,
+    const ::EloqDS::remote::CreateSnapshotForBackupRequest *request,
+    ::EloqDS::remote::CreateSnapshotForBackupResponse *response,
+    ::google::protobuf::Closure *done)
+{
+    auto *result = response->mutable_result();
+    uint32_t shard_id = request->shard_id();
+
+    if (!cluster_manager_.IsOwnerOfShard(shard_id))
+    {
+        cluster_manager_.PrepareShardingError(shard_id, result);
+        return;
+    }
+
+    std::shared_lock<std::shared_mutex> lk(serv_mux_);
+    if (!data_store_map_[shard_id])
+    {
+        brpc::ClosureGuard done_guard(done);
+        result->set_error_code(::EloqDS::remote::DataStoreError::DB_NOT_OPEN);
+        result->set_error_msg("KV store not opened yet.");
+        return;
+    }
+
+    CreateSnapshotForBackupRpcRequest *req =
+        rpc_create_snapshot_req_pool_.NextObject();
+
+    req->Reset(this, request, response, done);
+    data_store_map_[shard_id]->CreateSnapshotForBackup(req);
+}
+
+void DataStoreService::CreateSnapshotForBackup(
+    std::string_view backup_name,
+    uint64_t backup_ts,
+    std::vector<std::string> *backup_files,
+    remote::CommonResult *result,
+    ::google::protobuf::Closure *done)
+{
+    brpc::ClosureGuard done_guard(done);
+
+    // Get shard id from request
+    uint32_t shard_id =
+        0;  // Need to determine which shard to create snapshot for
+
+    if (!cluster_manager_.IsOwnerOfShard(shard_id))
+    {
+        cluster_manager_.PrepareShardingError(shard_id, result);
+        return;
+    }
+
+    std::shared_lock<std::shared_mutex> lk(serv_mux_);
+    if (!data_store_map_[shard_id])
+    {
+        result->set_error_code(::EloqDS::remote::DataStoreError::DB_NOT_OPEN);
+        result->set_error_msg("KV store not opened yet.");
+        return;
+    }
+
+    CreateSnapshotForBackupLocalRequest *req =
+        local_create_snapshot_req_pool_.NextObject();
+
+    req->Reset(this, backup_name, backup_ts, backup_files, result, done);
+
+    // Process request async
+    data_store_map_[shard_id]->CreateSnapshotForBackup(req);
+}
+
 void DataStoreService::FetchDSSClusterConfig(
     ::google::protobuf::RpcController *controller,
     const ::google::protobuf::Empty *request,
@@ -1469,36 +1541,6 @@ void DataStoreService::FaultInjectForTest(
     FaultInject::Instance().InjectFault(fault_name, fault_paras);
 
     response->set_finished(true);
-}
-
-void DataStoreService::CreateSnapshot(
-    ::google::protobuf::RpcController *controller,
-    const ::google::protobuf::Empty *request,
-    ::EloqDS::remote::CreateSnapshotResponse *response,
-    ::google::protobuf::Closure *done)
-{
-}
-
-void DataStoreService::CreateSnapshot(remote::CommonResult *result,
-                                      std::string *snapshot_path,
-                                      ::google::protobuf::Closure *done)
-{
-}
-
-void DataStoreService::CreateBranch(
-    ::google::protobuf::RpcController *controller,
-    const ::EloqDS::remote::CreateBranchRequest *request,
-    ::EloqDS::remote::CreateBranchResponse *response,
-    ::google::protobuf::Closure *done)
-{
-}
-
-void DataStoreService::CreateBranch(const std::string_view branch_name,
-                                    const std::string_view base_path,
-                                    remote::CommonResult *result,
-                                    std::string *branch_path,
-                                    ::google::protobuf::Closure *done)
-{
 }
 
 //-------DataShard Migrate-------

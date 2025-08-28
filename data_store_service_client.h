@@ -47,6 +47,7 @@ class FlushDataClosure;
 class DropTableClosure;
 struct UpsertTableData;
 class ScanNextClosure;
+class CreateSnapshotForBackupClosure;
 class SinglePartitionScanner;
 
 typedef void (*DataStoreCallback)(void *data,
@@ -323,17 +324,20 @@ public:
                        std::vector<txservice::VersionTxRecord> &archives,
                        uint64_t from_ts) override;
 
+    /**
+     * @brief Create a snapshot for backup.
+     * @param snapshot_files The output snapshot files.
+     * @return True if create successfully, otherwise false.
+     */
+    bool CreateSnapshotForBackup(
+        const std::string &backup_name,
+        std::vector<std::string> &backup_files,
+        uint64_t backup_ts = 0) override;
+
     bool NeedCopyRange() const override;
 
     void RestoreTxCache(txservice::NodeGroupId cc_ng_id,
                         int64_t cc_ng_term) override;
-
-    void CreateSnapshot(
-        txservice::remote::CreateSnapshotResponse *response) override;
-
-    void CreateBranch(
-        const txservice::remote::CreateBranchRequest *request,
-        txservice::remote::CreateBranchResponse *response) override;
 
     bool OnLeaderStart(uint32_t *next_leader_node) override;
 
@@ -537,6 +541,9 @@ private:
 
     void DropTableInternal(DropTableClosure *flush_data_closure);
 
+    void CreateSnapshotForBackupInternal(
+        CreateSnapshotForBackupClosure *closure);
+
     bool CreateKvTable(const std::string &kv_table_name)
     {
         return true;
@@ -624,6 +631,7 @@ private:
     friend class DeleteRangeClosure;
     friend class DropTableClosure;
     friend class ScanNextClosure;
+    friend class CreateSnapshotForBackupClosure;
     friend class SinglePartitionScanner;
     friend void FetchAllDatabaseCallback(void *data,
                                          ::google::protobuf::Closure *closure,

@@ -1371,36 +1371,42 @@ private:
     google::protobuf::Closure *done_{nullptr};
 };
 
-class CreateSnapshotRequest : public Poolable
+class CreateSnapshotForBackupRequest : public Poolable
 {
 public:
-    CreateSnapshotRequest() = default;
-    CreateSnapshotRequest(const CreateSnapshotRequest &other) = delete;
-    CreateSnapshotRequest &operator=(const CreateSnapshotRequest &other) =
-        delete;
+    CreateSnapshotForBackupRequest() = default;
+    CreateSnapshotForBackupRequest(
+        const CreateSnapshotForBackupRequest &other) = delete;
+    CreateSnapshotForBackupRequest &operator=(
+        const CreateSnapshotForBackupRequest &other) = delete;
 
-    virtual ~CreateSnapshotRequest() = default;
+    virtual ~CreateSnapshotForBackupRequest() = default;
 
-    virtual void SetSnapshotPath(const std::string &path) = 0;
+    virtual std::string_view GetBackupName() const = 0;
+    virtual uint64_t GetBackupTs() const = 0;
+    virtual void AddBackupFile(const std::string &file) = 0;
 
     // finish
     virtual void SetFinish(const ::EloqDS::remote::DataStoreError error_code,
                            const std::string error_message = "") = 0;
 };
 
-class CreateSnapshotRpcRequest : public CreateSnapshotRequest
+class CreateSnapshotForBackupRpcRequest : public CreateSnapshotForBackupRequest
 {
 public:
-    CreateSnapshotRpcRequest() = default;
-    CreateSnapshotRpcRequest(const CreateSnapshotRpcRequest &other) = delete;
-    CreateSnapshotRpcRequest &operator=(const CreateSnapshotRpcRequest &other) =
-        delete;
+    CreateSnapshotForBackupRpcRequest() = default;
+    CreateSnapshotForBackupRpcRequest(
+        const CreateSnapshotForBackupRpcRequest &other) = delete;
+    CreateSnapshotForBackupRpcRequest &operator=(
+        const CreateSnapshotForBackupRpcRequest &other) = delete;
 
     void Reset(DataStoreService *ds_service,
-               remote::CreateSnapshotResponse *resp,
+               const remote::CreateSnapshotForBackupRequest *req,
+               remote::CreateSnapshotForBackupResponse *resp,
                google::protobuf::Closure *done)
     {
         ds_service_ = ds_service;
+        req_ = req;
         resp_ = resp;
         done_ = done;
     }
@@ -1408,13 +1414,24 @@ public:
     void Clear() override
     {
         ds_service_ = nullptr;
+        req_ = nullptr;
         resp_ = nullptr;
         done_ = nullptr;
     }
 
-    void SetSnapshotPath(const std::string &path)
+    std::string_view GetBackupName() const override
     {
-        resp_->set_snapshot_path(path);
+        return req_->backup_name();
+    }
+
+    uint64_t GetBackupTs() const override
+    {
+        return req_->backup_ts();
+    }
+
+    void AddBackupFile(const std::string &file) override
+    {
+        resp_->add_backup_files(file);
     }
 
     void SetFinish(const ::EloqDS::remote::DataStoreError error_code,
@@ -1428,26 +1445,32 @@ public:
 
 private:
     DataStoreService *ds_service_{nullptr};
-    remote::CreateSnapshotResponse *resp_{nullptr};
+    const remote::CreateSnapshotForBackupRequest *req_{nullptr};
+    remote::CreateSnapshotForBackupResponse *resp_{nullptr};
     google::protobuf::Closure *done_{nullptr};
 };
 
-class CreateSnapshotLocalRequest : public CreateSnapshotRequest
+class CreateSnapshotForBackupLocalRequest
+    : public CreateSnapshotForBackupRequest
 {
 public:
-    CreateSnapshotLocalRequest() = default;
-    CreateSnapshotLocalRequest(const CreateSnapshotLocalRequest &other) =
-        delete;
-    CreateSnapshotLocalRequest &operator=(
-        const CreateSnapshotLocalRequest &other) = delete;
+    CreateSnapshotForBackupLocalRequest() = default;
+    CreateSnapshotForBackupLocalRequest(
+        const CreateSnapshotForBackupLocalRequest &other) = delete;
+    CreateSnapshotForBackupLocalRequest &operator=(
+        const CreateSnapshotForBackupLocalRequest &other) = delete;
 
     void Reset(DataStoreService *ds_service,
-               std::string *snapshot_path,
+               std::string_view backup_name,
+               const uint64_t backup_ts,
+               std::vector<std::string> *backup_files,
                ::EloqDS::remote::CommonResult *result,
                google::protobuf::Closure *done)
     {
         ds_service_ = ds_service;
-        snapshot_path_ = snapshot_path;
+        backup_name_ = backup_name;
+        backup_files_ = backup_files;
+        backup_ts_ = backup_ts;
         result_ = result;
         done_ = done;
     }
@@ -1455,13 +1478,25 @@ public:
     void Clear() override
     {
         ds_service_ = nullptr;
+        backup_files_ = nullptr;
+        backup_ts_ = 0;
         result_ = nullptr;
         done_ = nullptr;
     }
 
-    void SetSnapshotPath(const std::string &path) override
+    std::string_view GetBackupName() const override
     {
-        *snapshot_path_ = path;
+        return "";
+    }
+
+    void AddBackupFile(const std::string &file) override
+    {
+        backup_files_->emplace_back(file);
+    }
+
+    uint64_t GetBackupTs() const override
+    {
+        return backup_ts_;
     }
 
     void SetFinish(const ::EloqDS::remote::DataStoreError error_code,
@@ -1475,7 +1510,9 @@ public:
 private:
     DataStoreService *ds_service_{nullptr};
     EloqDS::remote::CommonResult *result_{nullptr};
-    std::string *snapshot_path_{nullptr};
+    std::string_view backup_name_{""};
+    std::vector<std::string> *backup_files_{nullptr};
+    uint64_t backup_ts_{0};
     google::protobuf::Closure *done_{nullptr};
 };
 

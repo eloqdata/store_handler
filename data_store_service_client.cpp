@@ -19,8 +19,6 @@
  *    <http://www.gnu.org/licenses/>.
  *
  */
-#include "data_store_service_client.h"
-
 #include <glog/logging.h>
 
 #include <boost/lexical_cast.hpp>
@@ -33,6 +31,7 @@
 #include <utility>
 #include <vector>
 
+#include "data_store_service_client.h"
 #include "data_store_service_client_closure.h"
 #include "data_store_service_scanner.h"
 #include "eloq_data_store_service/object_pool.h"  // ObjectPool
@@ -54,6 +53,8 @@ thread_local ObjectPool<DropTableClosure> drop_table_closure_pool_;
 thread_local ObjectPool<ScanNextClosure> scan_next_closure_pool_;
 thread_local ObjectPool<LoadRangeSliceCallbackData>
     load_range_slice_callback_data_pool_;
+thread_local ObjectPool<CreateSnapshotForBackupClosure>
+    create_snapshot_for_backup_closure_pool_;
 
 static const uint64_t MAX_WRITE_BATCH_SIZE = 64 * 1024 * 1024;  // 64MB
 
@@ -2432,6 +2433,68 @@ DataStoreServiceClient::FetchVisibleArchive(
              callback_data,
              &FetchSnapshotArchiveCallback);
     return txservice::store::DataStoreHandler::DataStoreOpStatus::Success;
+}
+
+bool DataStoreServiceClient::CreateSnapshotForBackup(
+    const std::string &backup_name,
+    std::vector<std::string> &backup_files,
+    uint64_t backup_ts)
+{
+    CreateSnapshotForBackupClosure *closure =
+        create_snapshot_for_backup_closure_pool_.NextObject();
+    auto shards = cluster_manager_.GetAllShards();
+    std::vector<uint32_t> shard_ids;
+    shard_ids.reserve(shards.size());
+    for (auto &[s_id, _] : shards)
+    {
+        shard_ids.push_back(s_id);
+    }
+    closure->Reset(
+        this, std::move(shard_ids), backup_name, backup_files, backup_ts);
+    CreateSnapshotForBackupInternal(closure);
+}
+
+void DataStoreServiceClient::CreateSnapshotForBackupInternal(
+    CreateSnapshotForBackupClosure *closure)
+{
+    if (closure->UnfinishedShards().empty()) {
+        // All shards have been processed, complete the operation
+        closure->Run();
+        return;
+    }
+    
+    uint32_t shard_id = closure->UnfinishedShards().back();
+    closure->UnfinishedShards().pop_back();
+    
+    if (IsLocalShard(shard_id)) {
+        // Handle local shard
+        closure->PrepareLocalRequest();
+        data_store_service_->CreateSnapshotForBackup(
+            closure->BackupName(),
+            shard_id,
+            closure->BackupTs(),
+            &closure->LocalBackupFilesRef(),
+            &closure->LocalResultRef(),
+            closure);
+    } else {
+        // Handle remote shard
+        closure->PrepareRemoteRequest();
+        auto channel = GetDataStoreServiceChannelByShardId(shard_id);
+        if (!channel) {
+            LOG(WARNING) << "Failed to get channel for shard " << shard_id;
+            // Continue with next shard
+            CreateSnapshotForBackupInternal(closure);
+            return;
+        }
+        
+        closure->SetChannel(channel);
+        EloqDS::remote::DataStoreRpcService_Stub stub(channel.get());
+        brpc::Controller &cntl = *closure->Controller();
+        cntl.set_timeout_ms(30000); // Longer timeout for backup operations
+        auto *req = closure->CreateSnapshotRequest();
+        auto *resp = closure->CreateSnapshotResponse();
+        stub.CreateSnapshotForBackup(&cntl, req, resp, closure);
+    }
 }
 
 bool DataStoreServiceClient::NeedCopyRange() const

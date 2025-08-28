@@ -55,12 +55,7 @@ public:
      */
     void Shutdown() override;
 
-    void CreateSnapshot(CreateSnapshotRequest *req) override
-    {
-        assert(false);
-    }
-
-    void CreateBranch(CreateBranchRequest *req) override
+    void CreateSnapshotForBackup(CreateSnapshotForBackupRequest *req) override
     {
         assert(false);
     }
