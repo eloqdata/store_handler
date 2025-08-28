@@ -21,6 +21,7 @@
  */
 #pragma once
 
+#include <cstdint>
 #include <deque>
 #include <map>
 #include <memory>
@@ -32,6 +33,8 @@
 #include "eloq_data_store_service/data_store_service.h"
 #include "eloq_data_store_service/ds_request.pb.h"
 #include "eloq_data_store_service/thread_worker_pool.h"
+#include "store_util.h"
+#include "tx_key.h"
 #include "tx_service/include/cc/cc_shard.h"
 #include "tx_service/include/sequences/sequences.h"
 #include "tx_service/include/sharder.h"
@@ -80,6 +83,15 @@ public:
                    << txservice::Sequences::table_name_sv_;
 
         AppendPreBuiltTable(txservice::Sequences::table_name_);
+
+        be_bucket_ids_.reserve(txservice::Sharder::ToTalRangeBuckets());
+        for (size_t bucket_id = 0;
+             bucket_id < txservice::Sharder::ToTalRangeBuckets();
+             ++bucket_id)
+        {
+            uint16_t be_bucket_id = EloqShare::host_to_big_endian(bucket_id);
+            be_bucket_ids_.push_back(be_bucket_id);
+        }
     }
 
     // The maximum number of retries for RPC requests.
@@ -187,6 +199,9 @@ public:
               uint64_t &version_ts,
               const txservice::TableSchema *table_schema) override;
 
+    txservice::store::DataStoreHandler::DataStoreOpStatus FetchBucketData(
+        txservice::FetchBucketDataCc *fetch_bucket_data_cc) override;
+
     DataStoreOpStatus FetchRecord(
         txservice::FetchRecordCc *fetch_cc,
         txservice::FetchSnapshotCc *fetch_snapshot_cc = nullptr) override;
@@ -204,8 +219,7 @@ public:
      * @brief Only Fetch visible archive asynchronously. (This is called in
      * FetchSnapshot)
      */
-    DataStoreOpStatus
-    FetchVisibleArchive(txservice::FetchSnapshotCc *fetch_cc);
+    DataStoreOpStatus FetchVisibleArchive(txservice::FetchSnapshotCc *fetch_cc);
 
     std::unique_ptr<txservice::store::DataStoreScanner> ScanForward(
         const txservice::TableName &table_name,
@@ -393,6 +407,15 @@ public:
     static uint32_t HashArchiveKey(const std::string &kv_table_name,
                                    const txservice::TxKey &tx_key);
 
+    static std::string EncodeKvKeyForHashPart(uint16_t bucket_id);
+    static std::string EncodeKvKeyForHashPart(uint16_t bucket_id,
+                                              const txservice::TxKey &tx_key);
+    // static std::string EncodeKvKeyForHashPart(const txservice::TxKey
+    // &tx_key);
+
+    static std::string_view DecodeKvKeyForHashPart(const char *data,
+                                                   size_t size);
+
     // NOTICE: be_commit_ts is the big endian encode value of commit_ts
     static std::string EncodeArchiveKey(std::string_view table_name,
                                         std::string_view key,
@@ -440,15 +463,17 @@ public:
                        uint64_t write_time);
 
 private:
-    int32_t MapKeyHashToPartitionId(const txservice::TxKey &key) const
-    {
-        return (key.Hash() >> 10) & 0x3FF;
-    }
-
     // =====================================================
     // Group: KV Interface
     // Functions that decide if the request is local or remote
     // =====================================================
+
+    void ReadForHashPart(const std::string_view kv_table_name,
+                         const uint32_t partition_id,
+                         uint16_t bucket_id,
+                         std::string_view key,
+                         void *callback_data,
+                         DataStoreCallback callback);
 
     void Read(const std::string_view kv_table_name,
               const uint32_t partition_id,
@@ -504,6 +529,7 @@ private:
                   const std::string_view start_key,
                   const std::string_view end_key,
                   const std::string_view session_id,
+                  bool generate_session,
                   bool inclusive_start,
                   bool inclusive_end,
                   bool scan_forward,
@@ -552,6 +578,7 @@ private:
 #ifdef USE_ONE_ELOQDSS_PARTITION
         return 0;
 #else
+        // TODO(lokax):
         std::string_view sv = table.StringView();
         return (std::hash<std::string_view>()(sv)) & 0x3FF;
 #endif
@@ -560,6 +587,7 @@ private:
     int32_t KvPartitionIdOf(int32_t key_partition,
                             bool is_range_partition = true)
     {
+        // TODO(lokax):
 #ifdef USE_ONE_ELOQDSS_PARTITION
         if (is_range_partition)
         {
@@ -593,6 +621,13 @@ private:
      */
     bool IsLocalPartition(int32_t partition_id);
 
+    std::string_view EncodeBucketId(uint16_t bucket_id)
+    {
+        uint16_t &be_bucket_id = be_bucket_ids_[bucket_id];
+        return std::string_view(reinterpret_cast<const char *>(&be_bucket_id),
+                                sizeof(uint16_t));
+    }
+
     bthread::Mutex ds_service_mutex_;
     bthread::ConditionVariable ds_service_cv_;
     std::atomic<bool> ds_serv_shutdown_indicator_;
@@ -611,6 +646,8 @@ private:
     std::unordered_map<txservice::TableName, std::string>
         pre_built_table_names_;
     ThreadWorkerPool upsert_table_worker_{1};
+
+    std::vector<uint16_t> be_bucket_ids_;
 
     friend class ReadClosure;
     friend class BatchWriteRecordsClosure;
@@ -649,8 +686,10 @@ private:
                                       DataStoreServiceClient &client,
                                       const remote::CommonResult &result);
     friend void FetchRecordArchivesCallback(
-        void *data, ::google::protobuf::Closure *closure,
-        DataStoreServiceClient &client, const remote::CommonResult &result);
+        void *data,
+        ::google::protobuf::Closure *closure,
+        DataStoreServiceClient &client,
+        const remote::CommonResult &result);
 };
 
 struct UpsertTableData
