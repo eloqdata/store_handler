@@ -1174,6 +1174,7 @@ void DataStoreService::CreateSnapshotForBackup(
 }
 
 void DataStoreService::CreateSnapshotForBackup(
+    uint32_t shard_id,
     std::string_view backup_name,
     uint64_t backup_ts,
     std::vector<std::string> *backup_files,
@@ -1181,10 +1182,6 @@ void DataStoreService::CreateSnapshotForBackup(
     ::google::protobuf::Closure *done)
 {
     brpc::ClosureGuard done_guard(done);
-
-    // Get shard id from request
-    uint32_t shard_id =
-        0;  // Need to determine which shard to create snapshot for
 
     if (!cluster_manager_.IsOwnerOfShard(shard_id))
     {

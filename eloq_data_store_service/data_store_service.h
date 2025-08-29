@@ -464,6 +464,7 @@ public:
      * @param done Callback function
      */
     void CreateSnapshotForBackup(
+                        uint32_t shard_id,
                         std::string_view backup_name,
                         uint64_t backup_ts,
                         std::vector<std::string> *backup_files,

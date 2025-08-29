@@ -20,13 +20,12 @@
  *
  */
 
-#include "data_store_service_client_closure.h"
-
 #include <memory>
 #include <string>
 #include <utility>
 
-#include "store_util.h" // host_to_big_endian
+#include "data_store_service_client_closure.h"
+#include "store_util.h"  // host_to_big_endian
 #include "tx_service/include/cc/cc_request.h"
 #include "tx_service/include/cc/local_cc_shards.h"
 
@@ -174,128 +173,130 @@ void FetchRecordCallback(void *data,
             if (is_deleted)
             {
                 fetch_cc->rec_status_ = txservice::RecordStatus::Deleted;
-                fetch_cc->rec_ts_= read_closure->Ts();
+                fetch_cc->rec_ts_ = read_closure->Ts();
             }
             else
             {
-              fetch_cc->rec_status_= txservice::RecordStatus::Normal;
-              fetch_cc->rec_ts_= read_closure->Ts();
-              fetch_cc->rec_str_.assign(val.data() + offset,
-                                        val.size() - offset);
+                fetch_cc->rec_status_ = txservice::RecordStatus::Normal;
+                fetch_cc->rec_ts_ = read_closure->Ts();
+                fetch_cc->rec_str_.assign(val.data() + offset,
+                                          val.size() - offset);
             }
 
             if (fetch_cc->snapshot_read_ts_ > 0 &&
                 fetch_cc->snapshot_read_ts_ < fetch_cc->rec_ts_)
             {
-              auto op_st= client.FetchArchives(fetch_cc);
+                auto op_st = client.FetchArchives(fetch_cc);
 
-              if (op_st != txservice::store::DataStoreHandler::
-                               DataStoreOpStatus::Success)
-              {
-                LOG(ERROR) << "FetchArchives failed, key: "
-                           << fetch_cc->tx_key_.ToString();
-                // Through fetch archive failed, we can also backfill the
-                // base version.
-                fetch_cc->SetFinish(0);
-              }
+                if (op_st != txservice::store::DataStoreHandler::
+                                 DataStoreOpStatus::Success)
+                {
+                    LOG(ERROR) << "FetchArchives failed, key: "
+                               << fetch_cc->tx_key_.ToString();
+                    // Through fetch archive failed, we can also backfill the
+                    // base version.
+                    fetch_cc->SetFinish(0);
+                }
             }
             else
             {
-              fetch_cc->SetFinish(0);
+                fetch_cc->SetFinish(0);
             }
         }
     }
     else
     {
-      fetch_cc->SetFinish(
-          static_cast<int>(txservice::CcErrorCode::DATA_STORE_ERR));
-    }
-}
-
-void FetchSnapshotCallback(void *data, ::google::protobuf::Closure *closure,
-                           DataStoreServiceClient &client,
-                           const remote::CommonResult &result)
-{
-  auto *read_closure= static_cast<ReadClosure *>(closure);
-
-  auto *fetch_cc= static_cast<txservice::FetchSnapshotCc *>(data);
-  auto err_code= result.error_code();
-
-  if (metrics::enable_kv_metrics)
-  {
-    metrics::kv_meter->CollectDuration(metrics::NAME_KV_READ_DURATION,
-                                       fetch_cc->start_);
-    metrics::kv_meter->Collect(metrics::NAME_KV_READ_TOTAL, 1);
-  }
-
-  if (err_code == remote::DataStoreError::KEY_NOT_FOUND)
-  {
-    fetch_cc->rec_status_= txservice::RecordStatus::Deleted;
-    fetch_cc->rec_ts_= 1U;
-
-    fetch_cc->SetFinish(0);
-  }
-  else if (err_code == remote::DataStoreError::NO_ERROR)
-  {
-    std::string_view val= read_closure->Value();
-
-    if (fetch_cc->table_name_.IsHashPartitioned())
-    {
-        LOG(WARNING) << "FetchSnapshot on hash partition not supported";
-        assert(false);
         fetch_cc->SetFinish(
             static_cast<int>(txservice::CcErrorCode::DATA_STORE_ERR));
     }
-    else
-    {
-      // Range partition
-      if (fetch_cc->snapshot_read_ts_ >= read_closure->Ts())
-      {
-        bool is_deleted= false;
-        size_t offset= 0;
-        if (!DataStoreServiceClient::DeserializeTxRecordStr(val, is_deleted,
-                                                            offset))
-        {
-          LOG(ERROR) << "====fetch snapshot===decode error=="
-                     << " key: " << read_closure->Key()
-                     << " status: " << (int) fetch_cc->rec_status_;
-          std::abort();
-        }
+}
 
-        if (is_deleted)
+void FetchSnapshotCallback(void *data,
+                           ::google::protobuf::Closure *closure,
+                           DataStoreServiceClient &client,
+                           const remote::CommonResult &result)
+{
+    auto *read_closure = static_cast<ReadClosure *>(closure);
+
+    auto *fetch_cc = static_cast<txservice::FetchSnapshotCc *>(data);
+    auto err_code = result.error_code();
+
+    if (metrics::enable_kv_metrics)
+    {
+        metrics::kv_meter->CollectDuration(metrics::NAME_KV_READ_DURATION,
+                                           fetch_cc->start_);
+        metrics::kv_meter->Collect(metrics::NAME_KV_READ_TOTAL, 1);
+    }
+
+    if (err_code == remote::DataStoreError::KEY_NOT_FOUND)
+    {
+        fetch_cc->rec_status_ = txservice::RecordStatus::Deleted;
+        fetch_cc->rec_ts_ = 1U;
+
+        fetch_cc->SetFinish(0);
+    }
+    else if (err_code == remote::DataStoreError::NO_ERROR)
+    {
+        std::string_view val = read_closure->Value();
+
+        if (fetch_cc->table_name_.IsHashPartitioned())
         {
-          fetch_cc->rec_status_= txservice::RecordStatus::Deleted;
-          fetch_cc->rec_ts_= read_closure->Ts();
+            LOG(WARNING) << "FetchSnapshot on hash partition not supported";
+            assert(false);
+            fetch_cc->SetFinish(
+                static_cast<int>(txservice::CcErrorCode::DATA_STORE_ERR));
         }
         else
         {
-          fetch_cc->rec_status_= txservice::RecordStatus::Normal;
-          fetch_cc->rec_ts_= read_closure->Ts();
-          fetch_cc->rec_str_.assign(val.data() + offset, val.size() - offset);
+            // Range partition
+            if (fetch_cc->snapshot_read_ts_ >= read_closure->Ts())
+            {
+                bool is_deleted = false;
+                size_t offset = 0;
+                if (!DataStoreServiceClient::DeserializeTxRecordStr(
+                        val, is_deleted, offset))
+                {
+                    LOG(ERROR) << "====fetch snapshot===decode error=="
+                               << " key: " << read_closure->Key()
+                               << " status: " << (int) fetch_cc->rec_status_;
+                    std::abort();
+                }
+
+                if (is_deleted)
+                {
+                    fetch_cc->rec_status_ = txservice::RecordStatus::Deleted;
+                    fetch_cc->rec_ts_ = read_closure->Ts();
+                }
+                else
+                {
+                    fetch_cc->rec_status_ = txservice::RecordStatus::Normal;
+                    fetch_cc->rec_ts_ = read_closure->Ts();
+                    fetch_cc->rec_str_.assign(val.data() + offset,
+                                              val.size() - offset);
+                }
+                fetch_cc->SetFinish(0);
+            }
+            else
+            {
+                auto op_st = client.FetchVisibleArchive(fetch_cc);
+                assert(op_st == txservice::store::DataStoreHandler::
+                                    DataStoreOpStatus::Success);
+                if (op_st != txservice::store::DataStoreHandler::
+                                 DataStoreOpStatus::Success)
+                {
+                    LOG(ERROR) << "FetchSnapshot failed on FetchArchive, key: "
+                               << fetch_cc->tx_key_.ToString();
+                    fetch_cc->SetFinish(static_cast<int>(
+                        txservice::CcErrorCode::DATA_STORE_ERR));
+                }
+            }
         }
-        fetch_cc->SetFinish(0);
-      }
-      else
-      {
-        auto op_st= client.FetchVisibleArchive(fetch_cc);
-        assert(op_st ==
-               txservice::store::DataStoreHandler::DataStoreOpStatus::Success);
-        if (op_st !=
-            txservice::store::DataStoreHandler::DataStoreOpStatus::Success)
-        {
-          LOG(ERROR) << "FetchSnapshot failed on FetchArchive, key: "
-                     << fetch_cc->tx_key_.ToString();
-          fetch_cc->SetFinish(
-              static_cast<int>(txservice::CcErrorCode::DATA_STORE_ERR));
-        }
-      }
     }
-  }
-  else
-  {
-    fetch_cc->SetFinish(
-        static_cast<int>(txservice::CcErrorCode::DATA_STORE_ERR));
-  }
+    else
+    {
+        fetch_cc->SetFinish(
+            static_cast<int>(txservice::CcErrorCode::DATA_STORE_ERR));
+    }
 }
 
 void AsyncDropTableCallback(void *data,
@@ -1180,106 +1181,129 @@ void FetchRecordArchivesCallback(void *data,
                                  DataStoreServiceClient &client,
                                  const remote::CommonResult &result)
 {
-  FetchRecordArchivesCallbackData *fetch_data=
-      static_cast<FetchRecordArchivesCallbackData *>(data);
-  txservice::FetchRecordCc *fetch_cc= fetch_data->fetch_cc_;
+    FetchRecordArchivesCallbackData *fetch_data =
+        static_cast<FetchRecordArchivesCallbackData *>(data);
+    txservice::FetchRecordCc *fetch_cc = fetch_data->fetch_cc_;
 
-  ScanNextClosure *scan_next_closure= static_cast<ScanNextClosure *>(closure);
-  auto err_code= result.error_code();
+    ScanNextClosure *scan_next_closure =
+        static_cast<ScanNextClosure *>(closure);
+    auto err_code = result.error_code();
 
-  if (err_code != remote::DataStoreError::NO_ERROR)
-  {
-    assert(err_code != remote::DataStoreError::KEY_NOT_FOUND);
-    DLOG(INFO) << "FetchRecordArchivesCallback, error_code:" << err_code
-               << ", error_msg: " << result.error_msg();
-    fetch_cc->SetFinish(
-        static_cast<int>(txservice::CcErrorCode::DATA_STORE_ERR));
-    delete fetch_data;
-    return;
-  }
-
-  uint32_t items_size= scan_next_closure->ItemsSize();
-  DLOG(INFO) << "FetchRecordArchivesCallback, items_size:" << items_size;
-  std::string archive_key;
-  std::string archive_value;
-  uint64_t commit_ts;
-  uint64_t ttl;
-
-  if (fetch_cc->archive_records_ == nullptr)
-  {
-    fetch_cc->archive_records_= std::make_unique<std::vector<
-        std::tuple<uint64_t, txservice::RecordStatus, std::string>>>();
-  }
-  auto &archive_records= *fetch_cc->archive_records_;
-
-  archive_records.reserve(archive_records.size() + items_size);
-  for (uint32_t i= 0; i < items_size; i++)
-  {
-    scan_next_closure->GetItem(i, archive_key, archive_value, commit_ts, ttl);
-    // parse archive_value
-    bool is_deleted= false;
-    size_t value_offset= 0;
-    client.DecodeArchiveValue(archive_value, is_deleted, value_offset);
-    if (is_deleted)
+    if (err_code != remote::DataStoreError::NO_ERROR)
     {
-      archive_records.emplace_back(commit_ts, txservice::RecordStatus::Deleted,
-                                   "");
+        assert(err_code != remote::DataStoreError::KEY_NOT_FOUND);
+        DLOG(INFO) << "FetchRecordArchivesCallback, error_code:" << err_code
+                   << ", error_msg: " << result.error_msg();
+        fetch_cc->SetFinish(
+            static_cast<int>(txservice::CcErrorCode::DATA_STORE_ERR));
+        delete fetch_data;
+        return;
+    }
+
+    uint32_t items_size = scan_next_closure->ItemsSize();
+    DLOG(INFO) << "FetchRecordArchivesCallback, items_size:" << items_size;
+    std::string archive_key;
+    std::string archive_value;
+    uint64_t commit_ts;
+    uint64_t ttl;
+
+    if (fetch_cc->archive_records_ == nullptr)
+    {
+        fetch_cc->archive_records_ = std::make_unique<std::vector<
+            std::tuple<uint64_t, txservice::RecordStatus, std::string>>>();
+    }
+    auto &archive_records = *fetch_cc->archive_records_;
+
+    archive_records.reserve(archive_records.size() + items_size);
+    for (uint32_t i = 0; i < items_size; i++)
+    {
+        scan_next_closure->GetItem(
+            i, archive_key, archive_value, commit_ts, ttl);
+        // parse archive_value
+        bool is_deleted = false;
+        size_t value_offset = 0;
+        client.DecodeArchiveValue(archive_value, is_deleted, value_offset);
+        if (is_deleted)
+        {
+            archive_records.emplace_back(
+                commit_ts, txservice::RecordStatus::Deleted, "");
+        }
+        else
+        {
+            std::string record_str(archive_value.data() + value_offset,
+                                   archive_value.size() - value_offset);
+            assert(record_str.size() > 0);
+            archive_records.emplace_back(commit_ts,
+                                         txservice::RecordStatus::Normal,
+                                         std::move(record_str));
+        }
+    }
+
+    if (scan_next_closure->BatchSize() == 1 &&
+        !scan_next_closure->ScanForward())
+    {
+        if (items_size == 0)
+        {
+            // Not found the visible archive version in the archives table.
+            assert(archive_records.size() == 0);
+            archive_records.emplace_back(
+                1U, txservice::RecordStatus::Deleted, "");
+
+            fetch_data->start_key_ = client.EncodeArchiveKey(
+                fetch_cc->kv_table_name_,
+                std::string_view(fetch_cc->tx_key_.Data(),
+                                 fetch_cc->tx_key_.Size()),
+                EloqShare::host_to_big_endian(1U));
+        }
+        else
+        {
+            fetch_data->start_key_ = std::move(archive_key);
+        }
+
+        // Fetched the visible version, next scan is fetching all the
+        // archives whose commit_ts is bigger than the visible version.
+        fetch_data->end_key_ =
+            client.EncodeArchiveKey(fetch_cc->kv_table_name_,
+                                    std::string_view(fetch_cc->tx_key_.Data(),
+                                                     fetch_cc->tx_key_.Size()),
+                                    EloqShare::host_to_big_endian(UINT64_MAX));
+
+        client.ScanNext(fetch_data->kv_table_name_,
+                        fetch_data->partition_id_,
+                        fetch_data->start_key_,
+                        fetch_data->end_key_,
+                        scan_next_closure->SessionId(),
+                        false,
+                        false,
+                        true,
+                        100,
+                        nullptr,
+                        fetch_data,
+                        &FetchRecordArchivesCallback);
+    }
+    else if (items_size < scan_next_closure->BatchSize())
+    {
+        assert(archive_records.size() > 0);
+        fetch_cc->SetFinish(0);
+        delete fetch_data;
     }
     else
     {
-      std::string record_str(archive_value.data() + value_offset,
-                             archive_value.size() - value_offset);
-      assert(record_str.size() > 0);
-      archive_records.emplace_back(commit_ts, txservice::RecordStatus::Normal,
-                                   std::move(record_str));
+        // set the start key of next scan batch
+        fetch_data->start_key_ = std::move(archive_key);
+        client.ScanNext(fetch_data->kv_table_name_,
+                        fetch_data->partition_id_,
+                        fetch_data->start_key_,
+                        fetch_data->end_key_,
+                        scan_next_closure->SessionId(),
+                        false,
+                        false,
+                        true,
+                        100,
+                        nullptr,
+                        fetch_data,
+                        &FetchRecordArchivesCallback);
     }
-  }
-
-  if (scan_next_closure->BatchSize() == 1 && !scan_next_closure->ScanForward())
-  {
-    if (items_size == 0)
-    {
-      // Not found the visible archive version in the archives table.
-      assert(archive_records.size() == 0);
-      archive_records.emplace_back(1U, txservice::RecordStatus::Deleted, "");
-
-      fetch_data->start_key_= client.EncodeArchiveKey(
-          fetch_cc->kv_table_name_,
-          std::string_view(fetch_cc->tx_key_.Data(), fetch_cc->tx_key_.Size()),
-          EloqShare::host_to_big_endian(1U));
-    }
-    else
-    {
-      fetch_data->start_key_= std::move(archive_key);
-    }
-
-    // Fetched the visible version, next scan is fetching all the
-    // archives whose commit_ts is bigger than the visible version.
-    fetch_data->end_key_= client.EncodeArchiveKey(
-        fetch_cc->kv_table_name_,
-        std::string_view(fetch_cc->tx_key_.Data(), fetch_cc->tx_key_.Size()),
-        EloqShare::host_to_big_endian(UINT64_MAX));
-
-    client.ScanNext(fetch_data->kv_table_name_, fetch_data->partition_id_,
-                    fetch_data->start_key_, fetch_data->end_key_,
-                    scan_next_closure->SessionId(), false, false, true, 100,
-                    nullptr, fetch_data, &FetchRecordArchivesCallback);
-  }
-  else if (items_size < scan_next_closure->BatchSize())
-  {
-    assert(archive_records.size() > 0);
-    fetch_cc->SetFinish(0);
-    delete fetch_data;
-  }
-  else
-  {
-    // set the start key of next scan batch
-    fetch_data->start_key_= std::move(archive_key);
-    client.ScanNext(fetch_data->kv_table_name_, fetch_data->partition_id_,
-                    fetch_data->start_key_, fetch_data->end_key_,
-                    scan_next_closure->SessionId(), false, false, true, 100,
-                    nullptr, fetch_data, &FetchRecordArchivesCallback);
-  }
 }
 
 void FetchSnapshotArchiveCallback(void *data,
@@ -1287,62 +1311,95 @@ void FetchSnapshotArchiveCallback(void *data,
                                   DataStoreServiceClient &client,
                                   const remote::CommonResult &result)
 {
-  FetchSnapshotArchiveCallbackData *fetch_data=
-      static_cast<FetchSnapshotArchiveCallbackData *>(data);
-  txservice::FetchSnapshotCc *fetch_cc= fetch_data->fetch_cc_;
+    FetchSnapshotArchiveCallbackData *fetch_data =
+        static_cast<FetchSnapshotArchiveCallbackData *>(data);
+    txservice::FetchSnapshotCc *fetch_cc = fetch_data->fetch_cc_;
 
-  ScanNextClosure *scan_next_closure= static_cast<ScanNextClosure *>(closure);
-  auto err_code= result.error_code();
+    ScanNextClosure *scan_next_closure =
+        static_cast<ScanNextClosure *>(closure);
+    auto err_code = result.error_code();
 
-  if (err_code != remote::DataStoreError::NO_ERROR)
-  {
-    assert(err_code != remote::DataStoreError::KEY_NOT_FOUND);
-    DLOG(INFO) << "FetchSnapshotArchiveCallback, error_code:" << err_code
-               << ", error_msg: " << result.error_msg();
-    fetch_cc->SetFinish(
-        static_cast<int>(txservice::CcErrorCode::DATA_STORE_ERR));
-    delete fetch_data;
-    return;
-  }
-
-  uint32_t items_size= scan_next_closure->ItemsSize();
-  DLOG(INFO) << "FetchSnapshotArchiveCallback, items_size:" << items_size;
-
-  if (items_size == 1)
-  {
-    std::string archive_key;
-    std::string archive_value;
-    uint64_t commit_ts;
-    uint64_t ttl;
-    assert(items_size <= 1);
-
-    scan_next_closure->GetItem(0, archive_key, archive_value, commit_ts, ttl);
-
-    // parse archive_value
-    bool is_deleted= false;
-    size_t value_offset= 0;
-    client.DecodeArchiveValue(archive_value, is_deleted, value_offset);
-    if (is_deleted)
+    if (err_code != remote::DataStoreError::NO_ERROR)
     {
-      fetch_cc->rec_ts_= commit_ts;
-      fetch_cc->rec_status_= txservice::RecordStatus::Deleted;
+        assert(err_code != remote::DataStoreError::KEY_NOT_FOUND);
+        DLOG(INFO) << "FetchSnapshotArchiveCallback, error_code:" << err_code
+                   << ", error_msg: " << result.error_msg();
+        fetch_cc->SetFinish(
+            static_cast<int>(txservice::CcErrorCode::DATA_STORE_ERR));
+        delete fetch_data;
+        return;
+    }
+
+    uint32_t items_size = scan_next_closure->ItemsSize();
+    DLOG(INFO) << "FetchSnapshotArchiveCallback, items_size:" << items_size;
+
+    if (items_size == 1)
+    {
+        std::string archive_key;
+        std::string archive_value;
+        uint64_t commit_ts;
+        uint64_t ttl;
+        assert(items_size <= 1);
+
+        scan_next_closure->GetItem(
+            0, archive_key, archive_value, commit_ts, ttl);
+
+        // parse archive_value
+        bool is_deleted = false;
+        size_t value_offset = 0;
+        client.DecodeArchiveValue(archive_value, is_deleted, value_offset);
+        if (is_deleted)
+        {
+            fetch_cc->rec_ts_ = commit_ts;
+            fetch_cc->rec_status_ = txservice::RecordStatus::Deleted;
+        }
+        else
+        {
+            fetch_cc->rec_str_.assign(archive_value.data() + value_offset,
+                                      archive_value.size() - value_offset);
+            fetch_cc->rec_ts_ = commit_ts;
+            fetch_cc->rec_status_ = txservice::RecordStatus::Normal;
+        }
     }
     else
     {
-      fetch_cc->rec_str_.assign(archive_value.data() + value_offset,
-                                archive_value.size() - value_offset);
-      fetch_cc->rec_ts_= commit_ts;
-      fetch_cc->rec_status_= txservice::RecordStatus::Normal;
+        // Not found the visible archive version in the archives table.
+        fetch_cc->rec_ts_ = 1U;
+        fetch_cc->rec_status_ = txservice::RecordStatus::Deleted;
     }
-  }
-  else
-  {
-    // Not found the visible archive version in the archives table.
-    fetch_cc->rec_ts_= 1U;
-    fetch_cc->rec_status_= txservice::RecordStatus::Deleted;
-  }
 
-  fetch_cc->SetFinish(0);
+    fetch_cc->SetFinish(0);
 }
 
+void CreateSnapshotForBackupCallback(void *data,
+                                     ::google::protobuf::Closure *closure,
+                                     DataStoreServiceClient &client,
+                                     const remote::CommonResult &result)
+{
+    auto *backup_callback_data =
+        static_cast<CreateSnapshotForBackupCallbackData *>(data);
+    auto *backup_closure =
+        static_cast<CreateSnapshotForBackupClosure *>(closure);
+
+    backup_callback_data->Result().set_error_code(result.error_code());
+    backup_callback_data->Result().set_error_msg(result.error_msg());
+
+    bool is_local_request = backup_closure->IsLocalRequest();
+
+    if (result.error_code() != remote::DataStoreError::NO_ERROR)
+    {
+        LOG(ERROR) << "DataStoreHandler: Failed to do CreateSnapshotForBackup. "
+                   << result.error_msg();
+    }
+    else
+    {
+        if (!is_local_request)
+        {
+            backup_callback_data->backup_files_->swap(
+                *backup_closure->BackupFiles());
+        }
+    }
+
+    backup_callback_data->Notify();
+}
 }  // namespace EloqDS
