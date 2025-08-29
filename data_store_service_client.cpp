@@ -58,10 +58,6 @@ thread_local ObjectPool<DropTableClosure> drop_table_closure_pool_;
 thread_local ObjectPool<ScanNextClosure> scan_next_closure_pool_;
 thread_local ObjectPool<LoadRangeSliceCallbackData>
     load_range_slice_callback_data_pool_;
-// thread_local ObjectPool<FetchRecordCallbackData>
-//    fetch_record_callback_data_pool_;
-// thread_local ObjectPool<FetchSnapshotCallbackData>
-//    fetch_snapshot_callback_data_pool_;
 
 static const uint64_t MAX_WRITE_BATCH_SIZE = 64 * 1024 * 1024;  // 64MB
 
@@ -133,7 +129,6 @@ bool DataStoreServiceClient::PutAll(
                        std::vector<std::unique_ptr<txservice::FlushTaskEntry>>>
         &flush_task)
 {
-    // std::vector<std::string> kv_keys;
     std::vector<std::string_view> key_parts;
     std::vector<std::string_view> record_parts;
     std::vector<uint64_t> records_ts;
@@ -149,7 +144,6 @@ bool DataStoreServiceClient::PutAll(
             hash_partitions_map;
         std::unordered_map<uint32_t, std::vector<size_t>> range_partitions_map;
         std::unordered_map<uint32_t, size_t> partition_record_cnt;
-        std::unordered_map<uint16_t, uint16_t> be_bucket_ids;
         size_t write_batch_size = 0;
         size_t flush_task_entry_idx = 0;
         for (auto &entry : entries)
@@ -208,7 +202,6 @@ bool DataStoreServiceClient::PutAll(
             auto &flush_recs = part_it->second;
             size_t recs_cnt = partition_record_cnt[part_it->first];
             key_parts.reserve(recs_cnt * parts_cnt_per_key);
-            // kv_keys.reserve(recs_cnt);
             record_parts.reserve(recs_cnt * parts_cnt_per_record);
             records_ts.reserve(recs_cnt);
             records_ttl.reserve(recs_cnt);
@@ -247,13 +240,11 @@ bool DataStoreServiceClient::PutAll(
                         return false;
                     }
                     key_parts.clear();
-                    // kv_keys.clear();
                     record_parts.clear();
                     records_ts.clear();
                     records_ttl.clear();
                     op_types.clear();
                     key_parts.reserve(recs_cnt * parts_cnt_per_key);
-                    // kv_keys.reserve(recs_cnt);
                     record_parts.reserve(recs_cnt * parts_cnt_per_record);
                     records_ts.reserve(recs_cnt);
                     records_ttl.reserve(recs_cnt);
@@ -342,7 +333,6 @@ bool DataStoreServiceClient::PutAll(
                                   parts_cnt_per_record);
                 sync_putall.Wait();
                 key_parts.clear();
-                // kv_keys.clear();
                 record_parts.clear();
                 records_ts.clear();
                 records_ttl.clear();
@@ -1739,16 +1729,6 @@ std::string DataStoreServiceClient::EncodeKvKeyForHashPart(
     }
     return kv_key;
 }
-
-/*
-std::string DataStoreServiceClient::EncodeKvKeyForHashPart(
-    const txservice::TxKey &tx_key)
-{
-    uint16_t bucket_id =
-        txservice::Sharder::Instance().MapKeyHashToBucketId(tx_key.Hash());
-    return EncodeKvKeyForHashPart(bucket_id, tx_key);
-}
-    */
 
 std::string_view DataStoreServiceClient::DecodeKvKeyForHashPart(
     const char *data, size_t size)
