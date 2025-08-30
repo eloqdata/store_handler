@@ -21,41 +21,22 @@
  */
 #pragma once
 
-#include <memory>
-#include <vector>
-
-#include "data_store_factory.h"
-#include "eloq_store_data_store.h"
+#include "INIReader.h"
+#include "kv_options.h"
 
 namespace EloqDS
 {
-class EloqStoreDataStoreFactory : public DataStoreFactory
+
+struct EloqStoreConfig
 {
 public:
-    explicit EloqStoreDataStoreFactory(EloqStoreConfig &&configs)
-        : eloq_store_configs_(std::move(configs))
-    {
-    }
+    EloqStoreConfig() = default;
+    EloqStoreConfig(const INIReader &config_reader,
+                    const std::string_view base_data_path);
 
-    std::unique_ptr<DataStore> CreateDataStore(
-        bool create_if_missing,
-        uint32_t shard_id,
-        DataStoreService *data_store_service,
-        bool start_db = true) override
-    {
-        auto ds =
-            std::make_unique<EloqStoreDataStore>(shard_id, data_store_service);
-        ds->Initialize();
-        if (start_db)
-        {
-            ds->StartDB();
-        }
-        return ds;
-    }
+    EloqStoreConfig(const EloqStoreConfig &rhs) = delete;
+    EloqStoreConfig(EloqStoreConfig &&rhs) = default;
 
-private:
-    const EloqStoreConfig eloq_store_configs_;
-
-    friend class EloqStoreDataStore;
+    ::eloqstore::KvOptions eloqstore_configs_{};
 };
 }  // namespace EloqDS
