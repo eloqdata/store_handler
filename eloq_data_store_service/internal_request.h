@@ -1478,6 +1478,7 @@ public:
     void Clear() override
     {
         ds_service_ = nullptr;
+        backup_name_ = "";
         backup_files_ = nullptr;
         backup_ts_ = 0;
         result_ = nullptr;

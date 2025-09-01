@@ -1997,7 +1997,6 @@ public:
         cntl_.Reset();
         request_.Clear();
         response_.Clear();
-        cntl_.Reset();
         channel_ = nullptr;
         ds_service_client_ = nullptr;
         retry_count_ = 0;
