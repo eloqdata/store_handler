@@ -37,6 +37,9 @@ public:
     EloqStoreConfig(const EloqStoreConfig &rhs) = delete;
     EloqStoreConfig(EloqStoreConfig &&rhs) = default;
 
+    static void ParseStoragePath(const std::string_view storage_path_list,
+                                 std::vector<std::string> &storage_path_vector);
+
     ::eloqstore::KvOptions eloqstore_configs_{};
 };
 }  // namespace EloqDS

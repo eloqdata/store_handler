@@ -116,19 +116,6 @@ inline bool CheckCommandLineFlagIsDefault(const char *name)
     return flag_info.is_default;
 }
 
-inline void ParseStoragePath(const std::string_view storage_path_list,
-                             std::vector<std::string> &storage_path_vector)
-{
-    storage_path_vector.clear();
-    const char path_delimiter = ',';
-    std::string token;
-    std::istringstream tokenStream(storage_path_list.data());
-    while (std::getline(tokenStream, token, path_delimiter))
-    {
-        storage_path_vector.emplace_back(token);
-    }
-}
-
 EloqStoreConfig::EloqStoreConfig(const INIReader &config_reader,
                                  const std::string_view base_data_path)
 {
@@ -324,6 +311,20 @@ EloqStoreConfig::EloqStoreConfig(const INIReader &config_reader,
             : config_reader.GetBoolean("store",
                                        "eloq_store_data_append_mode",
                                        FLAGS_eloq_store_data_append_mode);
+}
+
+void EloqStoreConfig::ParseStoragePath(
+    const std::string_view storage_path_list,
+    std::vector<std::string> &storage_path_vector)
+{
+    storage_path_vector.clear();
+    const char path_delimiter = ',';
+    std::string token;
+    std::istringstream tokenStream(storage_path_list.data());
+    while (std::getline(tokenStream, token, path_delimiter))
+    {
+        storage_path_vector.emplace_back(token);
+    }
 }
 
 }  // namespace EloqDS
