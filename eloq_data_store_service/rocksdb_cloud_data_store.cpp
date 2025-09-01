@@ -626,53 +626,69 @@ bool RocksDBCloudDataStore::OpenCloudDB(
 void RocksDBCloudDataStore::CreateSnapshotForBackup(
     CreateSnapshotForBackupRequest *req)
 {
-    std::unique_lock<std::shared_mutex> db_lk(db_mux_);
-
-    if (db_ == nullptr)
-    {
-        req->SetFinish(::EloqDS::remote::DataStoreError::DB_NOT_OPEN,
-                       "DB not open");
-        return;
-    }
-
-    // A successful checkpoint must be guaranteed before creating snapshot.
-    // So, it is not necessary to flush memtable here.
-
-    // Waiting and stop background work - memtable flush and compaction
-    db_->PauseBackgroundWork();
-
-    rocksdb::CloudFileSystem *cfs =
-        dynamic_cast<rocksdb::CloudFileSystem *>(cloud_fs_.get());
-
-    if (cfs == nullptr)
-    {
-        req->SetFinish(::EloqDS::remote::DataStoreError::DB_NOT_OPEN,
-                       "cloud file system is not available");
-    }
-    else
-    {
-        std::string snapshot_cookie;
-        snapshot_cookie.append(req->GetBackupName());
-        snapshot_cookie.append("-");
-        snapshot_cookie.append(std::to_string(shard_id_));
-        snapshot_cookie.append("-");
-        snapshot_cookie.append(std::to_string(req->GetBackupTs()));
-        rocksdb::Status status = cfs->RollNewBranch(db_path_, snapshot_cookie);
-        if (!status.ok())
+    query_worker_pool_->SubmitWork(
+        [this, req]()
         {
-            req->SetFinish(
-                ::EloqDS::remote::DataStoreError::CREATE_BRANCH_ERROR,
-                "Fail to create snapshot, error: " + status.ToString());
-        }
-        else
-        {
-            req->AddBackupFile(snapshot_cookie);
-            req->SetFinish(::EloqDS::remote::DataStoreError::NO_ERROR, "");
-        }
-    }
+            // Create a guard to ensure the poolable object is released to pool
+            std::unique_ptr<PoolableGuard> poolable_guard =
+                std::make_unique<PoolableGuard>(req);
 
-    // Resume background work
-    db_->ContinueBackgroundWork();
+            // Increase write counter at the start of the operation
+            IncreaseWriteCounter();
+
+            std::unique_lock<std::shared_mutex> db_lk(db_mux_);
+
+            if (db_ == nullptr)
+            {
+                req->SetFinish(::EloqDS::remote::DataStoreError::DB_NOT_OPEN,
+                               "DB not open");
+                return;
+            }
+
+            // A successful checkpoint must be guaranteed before creating
+            // snapshot. So, it is not necessary to flush memtable here.
+
+            // Waiting and stop background work - memtable flush and compaction
+            db_->PauseBackgroundWork();
+
+            rocksdb::CloudFileSystem *cfs =
+                dynamic_cast<rocksdb::CloudFileSystem *>(cloud_fs_.get());
+
+            if (cfs == nullptr)
+            {
+                req->SetFinish(::EloqDS::remote::DataStoreError::DB_NOT_OPEN,
+                               "cloud file system is not available");
+            }
+            else
+            {
+                std::string snapshot_cookie;
+                snapshot_cookie.append(req->GetBackupName());
+                snapshot_cookie.append("-");
+                snapshot_cookie.append(std::to_string(shard_id_));
+                snapshot_cookie.append("-");
+                snapshot_cookie.append(std::to_string(req->GetBackupTs()));
+                rocksdb::Status status =
+                    cfs->RollNewBranch(db_path_, snapshot_cookie);
+                if (!status.ok())
+                {
+                    req->SetFinish(
+                        ::EloqDS::remote::DataStoreError::CREATE_BRANCH_ERROR,
+                        "Fail to create snapshot, error: " + status.ToString());
+                }
+                else
+                {
+                    req->AddBackupFile(snapshot_cookie);
+                    req->SetFinish(::EloqDS::remote::DataStoreError::NO_ERROR,
+                                   "");
+                }
+            }
+
+            // Resume background work
+            db_->ContinueBackgroundWork();
+
+            // Decrease counter before return
+            DecreaseWriteCounter();
+        });
 }
 
 rocksdb::DBCloud *RocksDBCloudDataStore::GetDBPtr()

@@ -1181,8 +1181,6 @@ void DataStoreService::CreateSnapshotForBackup(
     remote::CommonResult *result,
     ::google::protobuf::Closure *done)
 {
-    brpc::ClosureGuard done_guard(done);
-
     if (!cluster_manager_.IsOwnerOfShard(shard_id))
     {
         cluster_manager_.PrepareShardingError(shard_id, result);

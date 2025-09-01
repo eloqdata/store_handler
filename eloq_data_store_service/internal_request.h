@@ -1486,7 +1486,7 @@ public:
 
     std::string_view GetBackupName() const override
     {
-        return "";
+        return backup_name_;
     }
 
     void AddBackupFile(const std::string &file) override
