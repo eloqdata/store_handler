@@ -2454,6 +2454,7 @@ bool DataStoreServiceClient::CreateSnapshotForBackup(
 
     CreateSnapshotForBackupCallbackData *callback_data =
         create_snapshot_for_backup_callback_data_pool_.NextObject();
+    PoolableGuard guard(callback_data);
 
     closure->Reset(*this,
                    std::move(shard_ids),
