@@ -394,6 +394,7 @@ elseif (WITH_DATA_STORE STREQUAL "ELOQDSS_ROCKSDB")
     )
 elseif (WITH_DATA_STORE STREQUAL "ELOQDSS_ELOQSTORE")
     SET(RESELOQ_SOURCES ${RESELOQ_SOURCES}
+        eloq_store_config.cpp
         eloq_store_data_store.cpp
     )
 endif ()

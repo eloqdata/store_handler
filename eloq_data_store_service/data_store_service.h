@@ -565,6 +565,11 @@ public:
         update_config_listener_ = listener;
     }
 
+    const DataStoreFactory *GetDataStoreFactory() const
+    {
+        return data_store_factory_.get();
+    }
+
 private:
     uint32_t GetShardIdByPartitionId(int32_t partition_id)
     {

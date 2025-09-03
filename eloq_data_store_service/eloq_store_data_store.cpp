@@ -21,6 +21,7 @@
  */
 #include "eloq_store_data_store.h"
 
+#include "eloq_store_data_store_factory.h"
 #include "internal_request.h"
 
 namespace EloqDS
@@ -64,10 +65,34 @@ inline void BuildValue(const WriteRecordsRequest &write_req,
 }
 
 EloqStoreDataStore::EloqStoreDataStore(uint32_t shard_id,
-                                       DataStoreService *data_store_service,
-                                       const ::eloqstore::KvOptions &configs)
-    : DataStore(shard_id, data_store_service), eloq_store_service_(configs)
+                                       DataStoreService *data_store_service)
+    : DataStore(shard_id, data_store_service)
 {
+    const EloqStoreDataStoreFactory *factory =
+        dynamic_cast<const EloqStoreDataStoreFactory *>(
+            data_store_service->GetDataStoreFactory());
+    assert(factory != nullptr);
+    ::eloqstore::KvOptions opts =
+        factory->eloq_store_configs_.eloqstore_configs_;
+    // Fix storage path
+    for (auto &path : opts.store_path)
+    {
+        path.append("/ds_").append(std::to_string(shard_id));
+    }
+    if (!opts.cloud_store_path.empty())
+    {
+        opts.cloud_store_path.append("/ds_").append(std::to_string(shard_id));
+    }
+
+    DLOG(INFO) << "Create EloqStore storage with workers: " << opts.num_threads
+               << ", store path: " << opts.store_path.front()
+               << ", open files limit: " << opts.fd_limit
+               << ", cloud store path: " << opts.cloud_store_path
+               << ", gc threads: " << opts.num_gc_threads
+               << ", cloud worker count: " << opts.rclone_threads
+               << ", buffer pool size per shard: "
+               << opts.index_buffer_pool_size;
+    eloq_store_service_ = std::make_unique<::eloqstore::EloqStore>(opts);
 }
 
 void EloqStoreDataStore::Read(ReadRequest *read_req)
@@ -89,7 +114,7 @@ void EloqStoreDataStore::Read(ReadRequest *read_req)
     kv_read_req.SetArgs(eloq_store_table_id, key);
 
     uint64_t user_data = reinterpret_cast<uint64_t>(read_op);
-    if (!eloq_store_service_.ExecAsyn(&kv_read_req, user_data, OnRead))
+    if (!eloq_store_service_->ExecAsyn(&kv_read_req, user_data, OnRead))
     {
         LOG(ERROR) << "Send read request to EloqStore failed for table: "
                    << kv_read_req.TableId();
@@ -191,7 +216,7 @@ void EloqStoreDataStore::BatchWriteRecords(WriteRecordsRequest *write_req)
     kv_write_req.SetArgs(eloq_store_table_id, std::move(entries));
 
     uint64_t user_data = reinterpret_cast<uint64_t>(write_op);
-    if (!eloq_store_service_.ExecAsyn(&kv_write_req, user_data, OnBatchWrite))
+    if (!eloq_store_service_->ExecAsyn(&kv_write_req, user_data, OnBatchWrite))
     {
         LOG(ERROR) << "Send write request to EloqStore failed for table: "
                    << kv_write_req.TableId();
@@ -276,7 +301,7 @@ void EloqStoreDataStore::DeleteRange(DeleteRangeRequest *delete_range_req)
     kv_truncate_req.SetArgs(eloq_store_table_id, start_key);
 
     uint64_t user_data = reinterpret_cast<uint64_t>(truncate_op);
-    if (!eloq_store_service_.ExecAsyn(
+    if (!eloq_store_service_->ExecAsyn(
             &kv_truncate_req, user_data, OnDeleteRange))
     {
         LOG(ERROR) << "Send truncate request to EloqStore failed for table: "
@@ -374,7 +399,7 @@ void EloqStoreDataStore::ScanNext(ScanRequest *scan_req)
     kv_scan_req.SetPagination(batch_size, 0);
 
     uint64_t user_data = reinterpret_cast<uint64_t>(scan_op);
-    if (!eloq_store_service_.ExecAsyn(&kv_scan_req, user_data, OnScanNext))
+    if (!eloq_store_service_->ExecAsyn(&kv_scan_req, user_data, OnScanNext))
     {
         LOG(ERROR) << "Send scan request to EloqStore failed for table: "
                    << kv_scan_req.TableId();
@@ -482,7 +507,7 @@ void EloqStoreDataStore::ScanDelete(DeleteRangeRequest *delete_range_req)
     // Delete records from eloqstore async
     ScanDeleteOperationData *scan_del_op =
         eloq_store_scan_del_op_pool_.NextObject();
-    scan_del_op->Reset(delete_range_req, &eloq_store_service_);
+    scan_del_op->Reset(delete_range_req, eloq_store_service_.get());
 
     PoolableGuard op_guard(scan_del_op);
 
@@ -491,7 +516,7 @@ void EloqStoreDataStore::ScanDelete(DeleteRangeRequest *delete_range_req)
     kv_scan_req.SetPagination(1024, 0);
 
     uint64_t user_data = reinterpret_cast<uint64_t>(scan_del_op);
-    if (!eloq_store_service_.ExecAsyn(&kv_scan_req, user_data, OnScanDelete))
+    if (!eloq_store_service_->ExecAsyn(&kv_scan_req, user_data, OnScanDelete))
     {
         LOG(ERROR) << "Send scan request to EloqStore failed for table: "
                    << kv_scan_req.TableId();
@@ -686,7 +711,7 @@ void EloqStoreDataStore::Floor(ScanRequest *scan_req)
     kv_floor_req.SetArgs(eloq_store_table_id, start_key);
 
     uint64_t user_data = reinterpret_cast<uint64_t>(floor_op);
-    if (!eloq_store_service_.ExecAsyn(&kv_floor_req, user_data, OnFloor))
+    if (!eloq_store_service_->ExecAsyn(&kv_floor_req, user_data, OnFloor))
     {
         LOG(ERROR) << "Floor request to EloqStore failed for table: "
                    << kv_floor_req.TableId();
