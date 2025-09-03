@@ -187,21 +187,10 @@ public:
 
     ~DataStoreService();
 
-    bool StartService();
-
-    void ConnectDataStore(
-        std::unordered_map<uint32_t, std::unique_ptr<DataStore>>
-            &&data_store_map);
-
-    void DisconnectDataStore();
-
-    bool ConnectAndStartDataStore(uint32_t data_shard_id,
-                                  DSShardStatus open_mode,
-                                  bool create_db_if_missing = false);
+    bool StartService(bool create_db_if_missing);
 
     brpc::Server *GetBrpcServer()
     {
-        std::shared_lock<std::shared_mutex> lk(serv_mux_);
         return server_.get();
     }
 
@@ -556,7 +545,11 @@ public:
     // =======================================================================
     DSShardStatus FetchDSShardStatus(uint32_t shard_id)
     {
-        return cluster_manager_.FetchDSShardStatus(shard_id);
+        if (shard_id_ == shard_id)
+        {
+            return shard_status_;
+        }
+        return DSShardStatus::Closed;
     }
 
     void AddListenerForUpdateConfig(
@@ -570,17 +563,58 @@ public:
         return data_store_factory_.get();
     }
 
+    void IncreaseReadReqCount()
+    {
+        read_req_cnt_++;
+    }
+
+    void DecreaseReadReqCount()
+    {
+        read_req_cnt_--;
+    }
+
+    void IncreaseWriteReqCount()
+    {
+        write_req_cnt_++;
+    }
+
+    void DecreaseWriteReqCount()
+    {
+        write_req_cnt_--;
+    }
+
 private:
     uint32_t GetShardIdByPartitionId(int32_t partition_id)
     {
-        return cluster_manager_.GetShardIdByPartitionId(partition_id);
+        // Now only support single data shard
+        return 0;
+        // return cluster_manager_.GetShardIdByPartitionId(partition_id);
     }
 
-    bool SwitchToReadOnly(uint32_t shard_id, DSShardStatus expected);
+    bool IsOwnerOfShard(uint32_t shard_id)
+    {
+        return shard_id_ == shard_id;
+    }
 
-    bool SwitchToReadWrite(uint32_t shard_id, DSShardStatus expected);
+    DataStore *GetDataStore(uint32_t shard_id)
+    {
+        if (shard_id_ == shard_id)
+        {
+            return data_store_.get();
+        }
+        else
+        {
+            return nullptr;
+        }
+    }
 
-    bool SwitchToClosed(uint32_t shard_id, DSShardStatus expected);
+    bool ConnectAndStartDataStore(uint32_t data_shard_id,
+                                  DSShardStatus open_mode,
+                                  bool create_db_if_missing = false);
+
+    bool SwitchReadWriteToReadOnly(uint32_t shard_id);
+    bool SwitchReadOnlyToClosed(uint32_t shard_id);
+    bool SwitchReadOnlyToReadWrite(uint32_t shard_id);
 
     bool WriteMigrationLog(uint32_t shard_id,
                            const std::string &event_id,
@@ -596,7 +630,7 @@ private:
                           uint32_t &migration_status,
                           uint64_t &shard_next_version);
 
-    std::shared_mutex serv_mux_;
+    // std::shared_mutex serv_mux_;
     int32_t service_port_;
     std::unique_ptr<brpc::Server> server_;
 
@@ -604,13 +638,22 @@ private:
     std::string config_file_path_;
     std::string migration_log_path_;
 
-    // shard id to data store
-    std::unordered_map<uint32_t, std::unique_ptr<DataStore>> data_store_map_;
+    // Now, there is only one data store shard in a DataStoreService.
+    // To avoid using mutex in read or write APIs, we use three atomic variables
+    // to control concurrency conflicts.
+    // - During migraion, we change the shard_status_ firstly, then change the
+    // data_store_ after all read/write requests are finished.
+    // - In r/w functions, we increase the read_req_cnt_ or write_req_cnt_
+    // firstly and then check the shard_status_. After the request is executed
+    // or if shard_status_ is not required, decrease them.
+    uint32_t shard_id_{UINT32_MAX};
+    std::unique_ptr<DataStore> data_store_{nullptr};
+    std::atomic<DSShardStatus> shard_status_{DSShardStatus::Closed};
+    std::atomic<uint64_t> read_req_cnt_{0};
+    std::atomic<uint64_t> write_req_cnt_{0};
 
     // scan iterator cache
-    std::shared_mutex scan_iter_cache_map_mux_;
-    std::unordered_map<uint32_t, std::unique_ptr<TTLWrapperCache>>
-        scan_iter_cache_map_;
+    TTLWrapperCache scan_iter_cache_;
 
     std::unique_ptr<DataStoreFactory> data_store_factory_;
 
