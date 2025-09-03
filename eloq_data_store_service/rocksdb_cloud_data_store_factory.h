@@ -52,6 +52,7 @@ public:
         bool start_db = true) override
     {
         auto ds = std::make_unique<RocksDBCloudDataStore>(
+            "",
             cloud_config_,
             config_,
             create_if_missing,

@@ -59,8 +59,7 @@ public:
      * @brief Start the data store.
      * @return True if start successfully, otherwise false.
      */
-    virtual bool StartDB(std::string cookie = "",
-                         std::string prev_cookie = "") = 0;
+    virtual bool StartDB() = 0;
 
     /**
      * @brief Close the data store.

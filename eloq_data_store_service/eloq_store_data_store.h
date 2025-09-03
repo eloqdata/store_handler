@@ -171,7 +171,7 @@ public:
         return true;
     }
 
-    bool StartDB(std::string cookie = "", std::string prev_cookie = "") override
+    bool StartDB() override
     {
         ::eloqstore::KvError res = eloq_store_service_->Start();
         if (res != ::eloqstore::KvError::NoError)

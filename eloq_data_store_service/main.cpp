@@ -325,6 +325,7 @@ int main(int argc, char *argv[])
     defined(DATA_STORE_TYPE_ELOQDSS_ROCKSDB_CLOUD_GCS)
         // TODO(lzx): move setup datastore to data_store_service
         auto ds = std::make_unique<EloqDS::RocksDBCloudDataStore>(
+            "",
             rocksdb_cloud_config,
             rocksdb_config,
             (FLAGS_bootstrap || is_single_node),
