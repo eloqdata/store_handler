@@ -80,10 +80,12 @@ public:
         done_ = nullptr;
     }
 
-    void Reset(const remote::BatchWriteRecordsRequest *req,
+    void Reset(DataStoreService *ds_service,
+               const remote::BatchWriteRecordsRequest *req,
                remote::BatchWriteRecordsResponse *resp,
                google::protobuf::Closure *done)
     {
+        data_store_service_ = ds_service;
         req_ = req;
         resp_ = resp;
         done_ = done;
@@ -155,6 +157,7 @@ public:
 
     void SetFinish(const remote::CommonResult &result) override
     {
+        data_store_service_->DecreaseWriteReqCount();
         brpc::ClosureGuard done_guard(done_);
         // Set error code and error message
         resp_->mutable_result()->set_error_code(result.error_code());
@@ -162,6 +165,7 @@ public:
     }
 
 private:
+    DataStoreService *data_store_service_{nullptr};
     const remote::BatchWriteRecordsRequest *req_{nullptr};
     remote::BatchWriteRecordsResponse *resp_{nullptr};
     google::protobuf::Closure *done_{nullptr};
@@ -191,7 +195,8 @@ public:
         parts_cnt_per_record_ = 1;
     }
 
-    void Reset(std::string_view table_name,
+    void Reset(DataStoreService *ds_service,
+               std::string_view table_name,
                int32_t partition_id,
                const std::vector<std::string_view> &key_parts,
                const std::vector<std::string_view> &record_parts,
@@ -204,6 +209,7 @@ public:
                const uint16_t parts_cnt_per_key,
                const uint16_t parts_cnt_per_record)
     {
+        data_store_service_ = ds_service;
         table_name_ = table_name;
         partition_id_ = partition_id;
         key_parts_ = &key_parts;
@@ -281,6 +287,7 @@ public:
 
     void SetFinish(const remote::CommonResult &result) override
     {
+        data_store_service_->DecreaseWriteReqCount();
         brpc::ClosureGuard done_guard(done_);
         // Set error code and error message
         result_->set_error_code(result.error_code());
@@ -288,6 +295,7 @@ public:
     }
 
 private:
+    DataStoreService *data_store_service_{nullptr};
     std::string_view table_name_;
     int32_t partition_id_;
     const std::vector<std::string_view> *key_parts_{nullptr};
@@ -333,10 +341,12 @@ public:
         done_ = nullptr;
     }
 
-    void Reset(const remote::FlushDataRequest *req,
+    void Reset(DataStoreService *ds_service,
+               const remote::FlushDataRequest *req,
                remote::FlushDataResponse *resp,
                google::protobuf::Closure *done)
     {
+        data_store_service_ = ds_service;
         for (int idx = 0; idx < req->kv_table_name_size(); ++idx)
         {
             kv_table_names_.push_back(req->kv_table_name(idx));
@@ -354,6 +364,7 @@ public:
 
     void SetFinish(const remote::CommonResult &result) override
     {
+        data_store_service_->DecreaseWriteReqCount();
         brpc::ClosureGuard done_guard(done_);
 
         ::EloqDS::remote::CommonResult *res = resp_->mutable_result();
@@ -372,6 +383,7 @@ public:
     }
 
 private:
+    DataStoreService *data_store_service_{nullptr};
     std::vector<std::string> kv_table_names_;
     const remote::FlushDataRequest *req_{nullptr};
     remote::FlushDataResponse *resp_{nullptr};
@@ -393,10 +405,12 @@ public:
         done_ = nullptr;
     }
 
-    void Reset(const std::vector<std::string> *kv_table_names,
+    void Reset(DataStoreService *ds_service,
+               const std::vector<std::string> *kv_table_names,
                remote::CommonResult &result,
                google::protobuf::Closure *done)
     {
+        data_store_service_ = ds_service;
         kv_table_names_ = kv_table_names;
         result_ = &result;
         done_ = done;
@@ -409,12 +423,14 @@ public:
 
     void SetFinish(const remote::CommonResult &result) override
     {
+        data_store_service_->DecreaseWriteReqCount();
         brpc::ClosureGuard done_guard(done_);
         result_->set_error_code(result.error_code());
         result_->set_error_msg(result.error_msg());
     }
 
 private:
+    DataStoreService *data_store_service_{nullptr};
     const std::vector<std::string> *kv_table_names_{nullptr};
     remote::CommonResult *result_{nullptr};
     google::protobuf::Closure *done_{nullptr};
@@ -455,10 +471,12 @@ public:
         done_ = nullptr;
     }
 
-    void Reset(const remote::DeleteRangeRequest *req,
+    void Reset(DataStoreService *ds_service,
+               const remote::DeleteRangeRequest *req,
                remote::DeleteRangeResponse *resp,
                google::protobuf::Closure *done)
     {
+        data_store_service_ = ds_service;
         req_ = req;
         resp_ = resp;
         done_ = done;
@@ -491,6 +509,7 @@ public:
 
     void SetFinish(const remote::CommonResult &result) override
     {
+        data_store_service_->DecreaseWriteReqCount();
         brpc::ClosureGuard done_guard(done_);
 
         ::EloqDS::remote::CommonResult *res = resp_->mutable_result();
@@ -499,6 +518,7 @@ public:
     }
 
 private:
+    DataStoreService *data_store_service_{nullptr};
     const remote::DeleteRangeRequest *req_{nullptr};
     remote::DeleteRangeResponse *resp_{nullptr};
     google::protobuf::Closure *done_{nullptr};
@@ -523,7 +543,8 @@ public:
         done_ = nullptr;
     }
 
-    void Reset(const std::string_view table_name,
+    void Reset(DataStoreService *ds_service,
+               const std::string_view table_name,
                const uint32_t partition_id,
                const std::string_view start_key,
                const std::string_view end_key,
@@ -531,6 +552,7 @@ public:
                remote::CommonResult &result,
                google::protobuf::Closure *done)
     {
+        data_store_service_ = ds_service;
         table_name_ = table_name;
         partition_id_ = partition_id;
         start_key_ = start_key;
@@ -567,12 +589,14 @@ public:
 
     void SetFinish(const remote::CommonResult &result) override
     {
+        data_store_service_->DecreaseWriteReqCount();
         brpc::ClosureGuard done_guard(done_);
         result_->set_error_code(result.error_code());
         result_->set_error_msg(result.error_msg());
     }
 
 private:
+    DataStoreService *data_store_service_{nullptr};
     std::string_view table_name_{""};
     uint32_t partition_id_{0};
     std::string_view start_key_{""};
@@ -819,10 +843,12 @@ public:
         done_ = nullptr;
     }
 
-    void Reset(const remote::CreateTableRequest *req,
+    void Reset(DataStoreService *ds_service,
+               const remote::CreateTableRequest *req,
                remote::CreateTableResponse *resp,
                google::protobuf::Closure *done)
     {
+        ds_service_ = ds_service;
         req_ = req;
         resp_ = resp;
         done_ = done;
@@ -835,6 +861,7 @@ public:
 
     void SetFinish(const remote::CommonResult &result) override
     {
+        ds_service_->DecreaseWriteReqCount();
         brpc::ClosureGuard done_guard(done_);
 
         ::EloqDS::remote::CommonResult *res = resp_->mutable_result();
@@ -853,6 +880,7 @@ public:
     }
 
 private:
+    DataStoreService *ds_service_{nullptr};
     const remote::CreateTableRequest *req_{nullptr};
     remote::CreateTableResponse *resp_{nullptr};
     google::protobuf::Closure *done_{nullptr};
@@ -873,10 +901,12 @@ public:
         done_ = nullptr;
     }
 
-    void Reset(const std::string_view table_name,
+    void Reset(DataStoreService *ds_service,
+               const std::string_view table_name,
                remote::CommonResult &result,
                google::protobuf::Closure *done)
     {
+        ds_service_ = ds_service;
         table_name_ = table_name;
         result_ = &result;
         done_ = done;
@@ -889,12 +919,14 @@ public:
 
     void SetFinish(const remote::CommonResult &result) override
     {
+        ds_service_->DecreaseWriteReqCount();
         brpc::ClosureGuard done_guard(done_);
         result_->set_error_code(result.error_code());
         result_->set_error_msg(result.error_msg());
     }
 
 private:
+    DataStoreService *ds_service_{nullptr};
     std::string_view table_name_{""};
     remote::CommonResult *result_{nullptr};
     google::protobuf::Closure *done_{nullptr};
@@ -930,10 +962,12 @@ public:
         done_ = nullptr;
     }
 
-    void Reset(const remote::DropTableRequest *req,
+    void Reset(DataStoreService *ds_service,
+               const remote::DropTableRequest *req,
                remote::DropTableResponse *resp,
                google::protobuf::Closure *done)
     {
+        ds_service_ = ds_service;
         req_ = req;
         resp_ = resp;
         done_ = done;
@@ -946,6 +980,7 @@ public:
 
     void SetFinish(const remote::CommonResult &result) override
     {
+        ds_service_->DecreaseWriteReqCount();
         brpc::ClosureGuard done_guard(done_);
 
         ::EloqDS::remote::CommonResult *res = resp_->mutable_result();
@@ -964,6 +999,7 @@ public:
     }
 
 private:
+    DataStoreService *ds_service_{nullptr};
     const remote::DropTableRequest *req_{nullptr};
     remote::DropTableResponse *resp_{nullptr};
     google::protobuf::Closure *done_{nullptr};
@@ -984,10 +1020,12 @@ public:
         done_ = nullptr;
     }
 
-    void Reset(const std::string_view table_name,
+    void Reset(DataStoreService *ds_service,
+               const std::string_view table_name,
                remote::CommonResult &result,
                google::protobuf::Closure *done)
     {
+        ds_service_ = ds_service;
         table_name_ = table_name;
         result_ = &result;
         done_ = done;
@@ -1000,12 +1038,14 @@ public:
 
     void SetFinish(const remote::CommonResult &result) override
     {
+        ds_service_->DecreaseWriteReqCount();
         brpc::ClosureGuard done_guard(done_);
         result_->set_error_code(result.error_code());
         result_->set_error_msg(result.error_msg());
     }
 
 private:
+    DataStoreService *ds_service_{nullptr};
     std::string_view table_name_{""};
     remote::CommonResult *result_{nullptr};
     google::protobuf::Closure *done_{nullptr};
@@ -1437,6 +1477,7 @@ public:
     void SetFinish(const ::EloqDS::remote::DataStoreError error_code,
                    const std::string error_message) override
     {
+        ds_service_->DecreaseWriteReqCount();
         brpc::ClosureGuard done_guard(done_);
         ::EloqDS::remote::CommonResult *result = resp_->mutable_result();
         result->set_error_code(error_code);
@@ -1503,6 +1544,7 @@ public:
     void SetFinish(const ::EloqDS::remote::DataStoreError error_code,
                    const std::string error_message) override
     {
+        ds_service_->DecreaseWriteReqCount();
         brpc::ClosureGuard done_guard(done_);
         result_->set_error_code(error_code);
         result_->set_error_msg(error_message);

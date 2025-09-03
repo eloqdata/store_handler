@@ -705,15 +705,12 @@ bool RocksDBCloudDataStore::OpenCloudDB(
 void RocksDBCloudDataStore::CreateSnapshotForBackup(
     CreateSnapshotForBackupRequest *req)
 {
-    query_worker_pool_->SubmitWork(
+    bool res = query_worker_pool_->SubmitWork(
         [this, req]()
         {
             // Create a guard to ensure the poolable object is released to pool
             std::unique_ptr<PoolableGuard> poolable_guard =
                 std::make_unique<PoolableGuard>(req);
-
-            // Increase write counter at the start of the operation
-            IncreaseWriteCounter();
 
             std::unique_lock<std::shared_mutex> db_lk(db_mux_);
 
@@ -764,10 +761,16 @@ void RocksDBCloudDataStore::CreateSnapshotForBackup(
 
             // Resume background work
             db_->ContinueBackgroundWork();
-
-            // Decrease counter before return
-            DecreaseWriteCounter();
         });
+
+    if (!res)
+    {
+        LOG(ERROR) << "Failed to submit switch to create snapshot work to "
+                      "query worker pool";
+        req->SetFinish(::EloqDS::remote::DataStoreError::CREATE_SNAPSHOT_ERROR,
+                       "Fail to create snapshot, error: Fail to submit work to "
+                       "query worker pool");
+    }
 }
 
 rocksdb::DBCloud *RocksDBCloudDataStore::GetDBPtr()

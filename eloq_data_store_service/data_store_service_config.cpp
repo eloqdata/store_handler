@@ -195,7 +195,7 @@ DSShardStatus Topology::FetchDSShardStatus(uint32_t shard_id) const
     {
         return it->second.status_;
     }
-    return DSShardStatus::Unknown;
+    return DSShardStatus::Closed;
 }
 
 void Topology::UpdateDSShardStatus(uint32_t shard_id, DSShardStatus status)
