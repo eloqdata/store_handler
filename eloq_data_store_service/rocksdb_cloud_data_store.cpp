@@ -737,7 +737,7 @@ inline std::string RocksDBCloudDataStore::MakeCloudManifestFile(
 
     assert(cc_ng_id >= 0 && term >= 0);
 
-    return dbname + "/CLOUDMANIFEST-" + branch_name_ + "-" +
+    return dbname + "/CLOUDMANIFEST-" + branch_name + "-" +
            std::to_string(cc_ng_id) + "-" + std::to_string(term);
 }
 
@@ -767,7 +767,7 @@ inline bool RocksDBCloudDataStore::GetCookieFromCloudManifestFile(
     int64_t &cc_ng_id,
     int64_t &term)
 {
-    static std::string prefix = "CLOUDMANIFEST";
+    const std::string prefix = "CLOUDMANIFEST";
     auto pos = filename.rfind('/');
     std::string manifest_part =
         (pos != std::string::npos) ? filename.substr(pos + 1) : filename;
@@ -853,7 +853,7 @@ inline bool RocksDBCloudDataStore::GetCookieFromCloudManifestFile(
         cc_ng_id = -1;
         term = -1;
         branch_name = suffix.substr(0, last_hyphen_pos);
-        assert(false);
+        LOG(ERROR) << "Unexpected manifest filename format in " << filename;
         return false;
     }
 
@@ -923,8 +923,8 @@ inline bool RocksDBCloudDataStore::FindMaxTermFromCloudManifestFiles(
             }
         }
     }
-    LOG(INFO) << "FindMaxTermFromCloudManifestFiles, branch_name" << branch_name
-              << " cc_ng_id: " << cc_ng_id_in_cookie
+    LOG(INFO) << "FindMaxTermFromCloudManifestFiles, branch_name: "
+              << branch_name << " cc_ng_id: " << cc_ng_id_in_cookie
               << " max_term: " << max_term;
     auto end = std::chrono::system_clock::now();
     auto duration =
