@@ -330,29 +330,10 @@ public:
     ReadClosure(const ReadClosure &rhs) = delete;
     ReadClosure(ReadClosure &&rhs) = delete;
 
-    void ResetForHashPart(DataStoreServiceClient *client,
-                          const std::string_view table_name,
-                          const uint32_t partition_id,
-                          std::string_view bucket_id_str,
-                          std::string_view tx_key,
-                          void *callback_data,
-                          DataStoreCallback callback)
-    {
-        is_local_request_ = true;
-        rpc_request_prepare_ = false;
-        retry_count_ = 0;
-        table_name_ = table_name;
-        partition_id_ = partition_id;
-        key_parts_.emplace_back(bucket_id_str);
-        key_parts_.emplace_back(tx_key);
-        ds_service_client_ = client;
-        callback_data_ = callback_data;
-        callback_ = callback;
-    }
-
     void Reset(DataStoreServiceClient *client,
                const std::string_view table_name,
                const uint32_t partition_id,
+               std::string_view be_bucket_id,
                std::string_view key,
                void *callback_data,
                DataStoreCallback callback)
@@ -362,6 +343,10 @@ public:
         retry_count_ = 0;
         table_name_ = table_name;
         partition_id_ = partition_id;
+        if (!be_bucket_id.empty())
+        {
+            key_parts_.emplace_back(be_bucket_id);
+        }
         key_parts_.emplace_back(key);
         ds_service_client_ = client;
         callback_data_ = callback_data;

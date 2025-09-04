@@ -466,15 +466,9 @@ private:
     // Functions that decide if the request is local or remote
     // =====================================================
 
-    void ReadForHashPart(const std::string_view kv_table_name,
-                         const uint32_t partition_id,
-                         uint16_t bucket_id,
-                         std::string_view key,
-                         void *callback_data,
-                         DataStoreCallback callback);
-
     void Read(const std::string_view kv_table_name,
               const uint32_t partition_id,
+              const std::string_view be_bucket_id,
               const std::string_view key,
               void *callback_data,
               DataStoreCallback callback);

@@ -41,6 +41,7 @@
 #include "eloq_data_store_service/object_pool.h"  // ObjectPool
 #include "eloq_data_store_service/thread_worker_pool.h"
 #include "metrics.h"
+#include "sharder.h"
 #include "store_util.h"  // host_to_big_endian
 #include "tx_key.h"
 #include "tx_service/include/cc/local_cc_shards.h"
@@ -559,6 +560,7 @@ void DataStoreServiceClient::FetchTableCatalog(
     std::string_view key = fetch_cc->CatalogName().StringView();
     Read(kv_table_catalogs_name,
          kv_partition_id,
+         "",
          key,
          fetch_cc,
          &FetchTableCatalogCallback);
@@ -574,6 +576,7 @@ void DataStoreServiceClient::FetchCurrentTableStatistics(
     fetch_cc->SetStoreHandler(this);
     Read(kv_table_statistics_version_name,
          kv_partition_id,
+         "",
          sv,
          fetch_cc,
          &FetchCurrentTableStatsCallback);
@@ -888,6 +891,7 @@ void DataStoreServiceClient::FetchRangeSlices(
 
     Read(callback_data->kv_range_table_name_,
          callback_data->kv_partition_id_,
+         "",
          callback_data->key_,
          callback_data,
          &FetchRangeSlicesCallback);
@@ -1344,6 +1348,7 @@ bool DataStoreServiceClient::FetchTable(const txservice::TableName &table_name,
     FetchTableCallbackData callback_data(schema_image, found, version_ts);
     Read(kv_table_catalogs_name,
          0,
+         "",
          table_name.StringView(),
          &callback_data,
          &FetchTableCallback);
@@ -1489,6 +1494,7 @@ bool DataStoreServiceClient::FetchDatabase(
 
     Read(kv_database_catalogs_name,
          0,
+         "",
          db,
          &callback_data,
          &FetchDatabaseCallback);
@@ -2129,24 +2135,19 @@ bool DataStoreServiceClient::CopyBaseToArchive(
                 callback_data->ResetResult();
                 size_t flying_cnt = callback_data->AddFlyingReadCount();
 
-                if (table_name.IsHashPartitioned())
-                {
-                    ReadForHashPart(
-                        base_kv_table_name,
-                        KvPartitionIdOf(partition_id, true),
-                        txservice::Sharder::MapKeyHashToBucketId(tx_key.Hash()),
-                        std::string_view(tx_key.Data(), tx_key.Size()),
-                        callback_data,
-                        &SyncBatchReadForArchiveCallback);
-                }
-                else
-                {
-                    Read(base_kv_table_name,
-                         KvPartitionIdOf(partition_id, true),
-                         std::string_view(tx_key.Data(), tx_key.Size()),
-                         callback_data,
-                         &SyncBatchReadForArchiveCallback);
-                }
+                std::string_view be_bucket_id =
+                    table_name.IsHashPartitioned()
+                        ? EncodeBucketId(
+                              txservice::Sharder::MapKeyHashToBucketId(
+                                  tx_key.Hash()))
+                        : std::string_view();
+
+                Read(base_kv_table_name,
+                     KvPartitionIdOf(partition_id, true),
+                     be_bucket_id,
+                     std::string_view(tx_key.Data(), tx_key.Size()),
+                     callback_data,
+                     &SyncBatchReadForArchiveCallback);
 
                 if (flying_cnt >= MAX_FLYING_READ_COUNT)
                 {
@@ -2576,28 +2577,19 @@ DataStoreServiceClient::FetchRecord(
         return FetchArchives(fetch_cc);
     }
 
-    if (fetch_cc->table_name_.IsHashPartitioned())
-    {
-        ReadForHashPart(
-            fetch_cc->kv_table_name_,
-            KvPartitionIdOf(fetch_cc->partition_id_,
-                            !fetch_cc->table_name_.IsHashPartitioned()),
-            txservice::Sharder::MapKeyHashToBucketId(fetch_cc->tx_key_.Hash()),
-            std::string_view(fetch_cc->tx_key_.Data(),
-                             fetch_cc->tx_key_.Size()),
-            fetch_cc,
-            &FetchRecordCallback);
-    }
-    else
-    {
-        Read(fetch_cc->kv_table_name_,
-             KvPartitionIdOf(fetch_cc->partition_id_,
-                             !fetch_cc->table_name_.IsHashPartitioned()),
-             std::string_view(fetch_cc->tx_key_.Data(),
-                              fetch_cc->tx_key_.Size()),
-             fetch_cc,
-             &FetchRecordCallback);
-    }
+    std::string_view be_bucket_id =
+        fetch_cc->table_name_.IsHashPartitioned()
+            ? EncodeBucketId(txservice::Sharder::MapKeyHashToBucketId(
+                  fetch_cc->tx_key_.Hash()))
+            : std::string_view();
+
+    Read(fetch_cc->kv_table_name_,
+         KvPartitionIdOf(fetch_cc->partition_id_,
+                         !fetch_cc->table_name_.IsHashPartitioned()),
+         be_bucket_id,
+         std::string_view(fetch_cc->tx_key_.Data(), fetch_cc->tx_key_.Size()),
+         fetch_cc,
+         &FetchRecordCallback);
 
     return txservice::store::DataStoreHandler::DataStoreOpStatus::Success;
 }
@@ -2655,61 +2647,38 @@ DataStoreServiceClient::FetchSnapshot(txservice::FetchSnapshotCc *fetch_cc)
         return FetchVisibleArchive(fetch_cc);
     }
 
-    if (fetch_cc->table_name_.IsHashPartitioned())
-    {
-        ReadForHashPart(
-            fetch_cc->kv_table_name_,
-            KvPartitionIdOf(fetch_cc->partition_id_,
-                            !fetch_cc->table_name_.IsHashPartitioned()),
-            txservice::Sharder::MapKeyHashToBucketId(fetch_cc->tx_key_.Hash()),
-            std::string_view(fetch_cc->tx_key_.Data(),
-                             fetch_cc->tx_key_.Size()),
-            fetch_cc,
-            &FetchSnapshotCallback);
-    }
-    else
-    {
-        Read(fetch_cc->kv_table_name_,
-             KvPartitionIdOf(fetch_cc->partition_id_,
-                             !fetch_cc->table_name_.IsHashPartitioned()),
-             std::string_view(fetch_cc->tx_key_.Data(),
-                              fetch_cc->tx_key_.Size()),
-             fetch_cc,
-             &FetchSnapshotCallback);
-    }
+    std::string_view be_bucket_id =
+        fetch_cc->table_name_.IsHashPartitioned()
+            ? EncodeBucketId(txservice::Sharder::MapKeyHashToBucketId(
+                  fetch_cc->tx_key_.Hash()))
+            : std::string_view();
+
+    Read(fetch_cc->kv_table_name_,
+         KvPartitionIdOf(fetch_cc->partition_id_,
+                         !fetch_cc->table_name_.IsHashPartitioned()),
+         be_bucket_id,
+         std::string_view(fetch_cc->tx_key_.Data(), fetch_cc->tx_key_.Size()),
+         fetch_cc,
+         &FetchSnapshotCallback);
 
     return txservice::store::DataStoreHandler::DataStoreOpStatus::Success;
 }
 
 void DataStoreServiceClient::Read(const std::string_view kv_table_name,
                                   const uint32_t partition_id,
+                                  std::string_view be_bucket_id,
                                   const std::string_view key,
                                   void *callback_data,
                                   DataStoreCallback callback)
 {
     ReadClosure *read_clouse = read_closure_pool_.NextObject();
-    read_clouse->Reset(
-        this, kv_table_name, partition_id, key, callback_data, callback);
-    ReadInternal(read_clouse);
-}
-
-void DataStoreServiceClient::ReadForHashPart(
-    const std::string_view kv_table_name,
-    const uint32_t partition_id,
-    uint16_t bucket_id,
-    std::string_view key,
-    void *callback_data,
-    DataStoreCallback callback)
-{
-    ReadClosure *read_clouse = read_closure_pool_.NextObject();
-    std::string_view be_bucket_id_str = EncodeBucketId(bucket_id);
-    read_clouse->ResetForHashPart(this,
-                                  kv_table_name,
-                                  partition_id,
-                                  be_bucket_id_str,
-                                  key,
-                                  callback_data,
-                                  callback);
+    read_clouse->Reset(this,
+                       kv_table_name,
+                       partition_id,
+                       be_bucket_id,
+                       key,
+                       callback_data,
+                       callback);
     ReadInternal(read_clouse);
 }
 

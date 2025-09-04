@@ -847,6 +847,7 @@ void FetchRangeSlicesCallback(void *data,
                                                fetch_req->CurrentSegmentId());
                 client.Read(fetch_data->kv_range_slices_table_name_,
                             fetch_data->kv_partition_id_,
+                            "",
                             fetch_data->key_,
                             fetch_data,
                             &FetchRangeSlicesCallback);
@@ -945,6 +946,7 @@ void FetchRangeSlicesCallback(void *data,
                                            fetch_req->CurrentSegmentId());
             client.Read(fetch_data->kv_range_slices_table_name_,
                         fetch_data->kv_partition_id_,
+                        "",
                         fetch_data->key_,
                         fetch_data,
                         &FetchRangeSlicesCallback);
