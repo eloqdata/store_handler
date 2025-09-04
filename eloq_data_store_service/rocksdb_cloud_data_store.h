@@ -126,7 +126,7 @@ private:
         const std::string &bucket_name,
         const std::string &object_path,
         const std::string &branch_name,
-        const int64_t cc_ng_id_in_cookie,
+        const int64_t dss_shard_id_in_cookie,
         std::string &cloud_manifest_prefix,
         int64_t &max_term);
 

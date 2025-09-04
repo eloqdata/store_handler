@@ -872,7 +872,7 @@ inline bool RocksDBCloudDataStore::FindMaxTermFromCloudManifestFiles(
     const std::string &bucket_name,
     const std::string &object_path,
     const std::string &branch_name,
-    const int64_t cc_ng_id_in_cookie,
+    const int64_t dss_shard_id_in_cookie,
     std::string &cloud_manifest_prefix,
     int64_t &max_term)
 {
@@ -918,7 +918,7 @@ inline bool RocksDBCloudDataStore::FindMaxTermFromCloudManifestFiles(
             bool res = GetCookieFromCloudManifestFile(
                 object, object_branch_name, shard_id, term);
             if (res && branch_name == object_branch_name &&
-                cc_ng_id_in_cookie == shard_id)
+                dss_shard_id_in_cookie == shard_id)
             {
                 if (term > max_term)
                 {
@@ -928,7 +928,7 @@ inline bool RocksDBCloudDataStore::FindMaxTermFromCloudManifestFiles(
         }
     }
     LOG(INFO) << "FindMaxTermFromCloudManifestFiles, branch_name: "
-              << branch_name << " cc_ng_id: " << cc_ng_id_in_cookie
+              << branch_name << " cc_ng_id: " << dss_shard_id_in_cookie
               << " max_term: " << max_term;
     auto end = std::chrono::system_clock::now();
     auto duration =
