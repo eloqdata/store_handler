@@ -83,11 +83,11 @@ protected:
 private:
     /// Helper functions for cloud manifest files and cookies
     inline std::string MakeCloudManifestCookie(const std::string &branch_name,
-                                               int64_t cc_ng_id,
+                                               int64_t dss_shard_id,
                                                int64_t term);
     inline std::string MakeCloudManifestFile(const std::string &dbname,
                                              const std::string &branch_name,
-                                             int64_t cc_ng_id,
+                                             int64_t dss_shard_id,
                                              int64_t term);
     inline bool IsCloudManifestFile(const std::string &filename);
     inline std::vector<std::string> SplitString(const std::string &str,
@@ -104,7 +104,7 @@ private:
      */
     inline bool GetCookieFromCloudManifestFile(const std::string &filename,
                                                std::string &branch_name,
-                                               int64_t &cc_ng_id,
+                                               int64_t &dss_shard_id,
                                                int64_t &term);
 
     /**
