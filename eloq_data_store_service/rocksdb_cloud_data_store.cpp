@@ -672,7 +672,7 @@ void RocksDBCloudDataStore::CreateSnapshotForBackup(
                 if (!status.ok())
                 {
                     req->SetFinish(
-                        ::EloqDS::remote::DataStoreError::CREATE_BRANCH_ERROR,
+                        ::EloqDS::remote::DataStoreError::CREATE_SNAPSHOT_ERROR,
                         "Fail to create snapshot, error: " + status.ToString());
                 }
                 else
