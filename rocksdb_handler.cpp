@@ -1243,6 +1243,7 @@ RocksDBHandler::FetchBucketData(
 
             rocksdb::ColumnFamilyHandle *cfh =
                 GetColumnFamilyHandler(fetch_bucket_data_cc->kv_table_name_);
+
             if (cfh == nullptr)
             {
                 LOG(ERROR) << "Failed to get column family, cf name: "
@@ -1264,7 +1265,7 @@ RocksDBHandler::FetchBucketData(
             // NOTICE: do not enable async_io if compiling rocksdbcloud
             // without iouring.
             read_options.async_io = false;
-            rocksdb::Iterator *iter = db->NewIterator(read_options);
+            rocksdb::Iterator *iter = db->NewIterator(read_options, cfh);
             rocksdb::Slice key(kv_bucket_start_key);
             iter->Seek(key);
             if (!fetch_bucket_data_cc->start_key_inclusive_ && iter->Valid())
