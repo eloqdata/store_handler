@@ -445,6 +445,33 @@ public:
                    ::google::protobuf::Closure *done);
 
     /**
+     * @brief RPC handler for create snapshot for backup operation
+     * @param controller RPC controller
+     * @param request Create snapshot for backup request
+     * @param response Create snapshot for backup response
+     * @param done Callback function
+     */
+    void CreateSnapshotForBackup(::google::protobuf::RpcController *controller,
+                        const ::EloqDS::remote::CreateSnapshotForBackupRequest *request,
+                        ::EloqDS::remote::CreateSnapshotForBackupResponse *response,
+                        ::google::protobuf::Closure *done) override;
+
+    /**
+     * @brief Create snapshot for backup operation
+     * @param result Result (output)
+     * @param backup_files Backup files (output)
+     * @param backup_ts Backup timestamp
+     * @param done Callback function
+     */
+    void CreateSnapshotForBackup(
+                        uint32_t shard_id,
+                        std::string_view backup_name,
+                        uint64_t backup_ts,
+                        std::vector<std::string> *backup_files,
+                        remote::CommonResult *result,
+                        ::google::protobuf::Closure *done);
+
+    /**
      * @brief Append the key string of this node to the specified string stream.
      */
     void AppendThisNodeKey(std::stringstream &ss);
