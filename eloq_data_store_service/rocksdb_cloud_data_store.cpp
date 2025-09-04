@@ -385,7 +385,6 @@ bool RocksDBCloudDataStore::StartDB()
         LOG(ERROR) << "Failed to find max term from cloud manifest file for "
                       "branch: "
                    << branch_name_;
-        return false;
     }
 
     if (max_term != -1)
@@ -396,6 +395,7 @@ bool RocksDBCloudDataStore::StartDB()
     }
     else
     {
+        // this is a new db
         cookie_on_open = "";
         new_cookie_on_open = MakeCloudManifestCookie(branch_name_, ng_id, 0);
     }
