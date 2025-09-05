@@ -245,6 +245,9 @@ public:
     std::string EncodeRangeSliceKey(const txservice::TableName &table_name,
                                     int32_t range_id,
                                     uint32_t segment_id);
+    // Replace the segment_id part in range_slice_key with new segment_id
+    void UpdateEncodedRangeSliceKey(std::string &range_slice_key,
+                                    uint32_t new_segment_id);
 
     bool FetchTable(const txservice::TableName &table_name,
                     std::string &schema_image,
