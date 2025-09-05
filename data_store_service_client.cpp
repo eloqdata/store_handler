@@ -559,11 +559,11 @@ void DataStoreServiceClient::FetchCurrentTableStatistics(
     txservice::FetchTableStatisticsCc *fetch_cc)
 {
     std::string_view sv = ccm_table_name.StringView();
-    int32_t kv_partition_id = KvPartitionIdOf(ccm_table_name);
+    fetch_cc->kv_partition_id_ = KvPartitionIdOf(ccm_table_name);
 
     fetch_cc->SetStoreHandler(this);
     Read(kv_table_statistics_version_name,
-         kv_partition_id,
+         fetch_cc->kv_partition_id_,
          sv,
          fetch_cc,
          &FetchCurrentTableStatsCallback);
@@ -573,36 +573,33 @@ void DataStoreServiceClient::FetchTableStatistics(
     const txservice::TableName &ccm_table_name,
     txservice::FetchTableStatisticsCc *fetch_cc)
 {
+    fetch_cc->kv_start_key_.clear();
+    fetch_cc->kv_end_key_.clear();
+    fetch_cc->kv_session_id_.clear();
+
     uint64_t version = fetch_cc->CurrentVersion();
     uint64_t be_version = EloqShare::host_to_big_endian(version);
-    std::string start_key;
-    start_key.append(ccm_table_name.StringView());
-    start_key.append(reinterpret_cast<const char *>(&be_version),
-                     sizeof(uint64_t));
-    std::string end_key = start_key;
-    end_key.back()++;
+    fetch_cc->kv_start_key_.append(ccm_table_name.StringView());
+    fetch_cc->kv_start_key_.append(reinterpret_cast<const char *>(&be_version),
+                                   sizeof(uint64_t));
+    fetch_cc->kv_end_key_ = fetch_cc->kv_start_key_;
+    fetch_cc->kv_end_key_.back()++;
 
-    int32_t partition_id = KvPartitionIdOf(ccm_table_name);
+    fetch_cc->kv_partition_id_ = KvPartitionIdOf(ccm_table_name);
 
-    FetchTableStatsCallbackData *callback_data =
-        new FetchTableStatsCallbackData(fetch_cc,
-                                        kv_table_statistics_name,
-                                        partition_id,
-                                        std::move(start_key),
-                                        std::move(end_key));
     // NOTICE: here batch_size is 1, because the size of item in
     // {kv_table_statistics_name} may be more than MAX_WRITE_BATCH_SIZE.
-    ScanNext(callback_data->kv_table_name_,
-             callback_data->partition_id_,
-             callback_data->start_key_,
-             callback_data->end_key_,
-             callback_data->session_id_,
+    ScanNext(kv_table_statistics_name,
+             fetch_cc->kv_partition_id_,
+             fetch_cc->kv_start_key_,
+             fetch_cc->kv_end_key_,
+             fetch_cc->kv_session_id_,
              false,
              false,
              true,
              1,
-             &callback_data->search_conditions_,
-             callback_data,
+             nullptr,
+             fetch_cc,
              &FetchTableStatsCallback);
 }
 

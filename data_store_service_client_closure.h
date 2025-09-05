@@ -2532,34 +2532,6 @@ void FetchCurrentTableStatsCallback(void *data,
                                     DataStoreServiceClient &client,
                                     const remote::CommonResult &result);
 
-struct FetchTableStatsCallbackData
-{
-    FetchTableStatsCallbackData(txservice::FetchTableStatisticsCc *fetch_cc,
-                                const std::string_view kv_table_name,
-                                int32_t partition_id,
-                                std::string &&start_key,
-                                std::string &&end_key)
-        : fetch_cc_(fetch_cc),
-          kv_table_name_(kv_table_name),
-          partition_id_(partition_id),
-          start_key_(std::move(start_key)),
-          end_key_(std::move(end_key)),
-          session_id_(""),
-          search_conditions_()
-    {
-    }
-
-    txservice::FetchTableStatisticsCc *fetch_cc_;
-
-    const std::string_view kv_table_name_;
-    int32_t partition_id_;
-
-    std::string start_key_;
-    std::string end_key_;
-    std::string session_id_;
-    std::vector<remote::SearchCondition> search_conditions_;
-};
-
 void FetchTableStatsCallback(void *data,
                              ::google::protobuf::Closure *closure,
                              DataStoreServiceClient &client,
