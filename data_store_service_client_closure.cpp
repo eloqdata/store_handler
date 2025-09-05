@@ -31,6 +31,8 @@
 
 namespace EloqDS
 {
+static const std::string_view kv_range_table_name("table_ranges");
+static const std::string_view kv_range_slices_table_name("table_range_slices");
 static const std::string_view kv_table_statistics_name("table_statistics");
 static const std::string_view kv_table_statistics_version_name(
     "table_statistics_version");
@@ -570,10 +572,8 @@ void FetchTableRangesCallback(void *data,
                               DataStoreServiceClient &client,
                               const remote::CommonResult &result)
 {
-    FetchTableRangesCallbackData *fetch_data =
-        static_cast<FetchTableRangesCallbackData *>(data);
-
-    txservice::FetchTableRangesCc *fetch_range_cc = fetch_data->fetch_cc_;
+    txservice::FetchTableRangesCc *fetch_range_cc =
+        static_cast<txservice::FetchTableRangesCc *>(data);
 
     ScanNextClosure *scan_next_closure =
         static_cast<ScanNextClosure *>(closure);
@@ -585,7 +585,6 @@ void FetchTableRangesCallback(void *data,
 
         fetch_range_cc->SetFinish(
             static_cast<int>(txservice::CcErrorCode::DATA_STORE_ERR));
-        delete fetch_data;
     }
     else
     {
@@ -672,27 +671,26 @@ void FetchTableRangesCallback(void *data,
             }
             fetch_range_cc->AppendTableRanges(std::move(range_vec));
             fetch_range_cc->SetFinish(0);
-            delete fetch_data;
         }
         else
         {
             // has more data, continue to scan.
-            fetch_data->session_id_ = scan_next_closure->SessionId();
-            fetch_data->start_key_.clear();
-            fetch_data->start_key_.append(key);
+            fetch_range_cc->kv_session_id_ = scan_next_closure->SessionId();
+            fetch_range_cc->kv_start_key_.clear();
+            fetch_range_cc->kv_start_key_.append(key);
             fetch_range_cc->AppendTableRanges(std::move(range_vec));
 
-            client.ScanNext(fetch_data->kv_table_name_,
-                            fetch_data->partition_id_,
-                            fetch_data->start_key_,
-                            fetch_data->end_key_,
-                            fetch_data->session_id_,
+            client.ScanNext(kv_range_table_name,
+                            fetch_range_cc->kv_partition_id_,
+                            fetch_range_cc->kv_start_key_,
+                            fetch_range_cc->kv_end_key_,
+                            fetch_range_cc->kv_session_id_,
                             false,
                             false,
                             true,
-                            fetch_data->batch_size_,
-                            &fetch_data->search_conds_,
-                            fetch_data,
+                            100,
+                            nullptr,
+                            fetch_range_cc,
                             &FetchTableRangesCallback);
         }
     }
@@ -703,16 +701,15 @@ void FetchRangeSlicesCallback(void *data,
                               DataStoreServiceClient &client,
                               const remote::CommonResult &result)
 {
-    FetchRangeSlicesCallbackData *fetch_data =
-        static_cast<FetchRangeSlicesCallbackData *>(data);
+    txservice::FetchRangeSlicesReq *fetch_req =
+        static_cast<txservice::FetchRangeSlicesReq *>(data);
 
     ReadClosure *read_closure = static_cast<ReadClosure *>(closure);
 
     std::string_view read_val = read_closure->Value();
-    auto *fetch_req = fetch_data->fetch_cc_;
     txservice::NodeGroupId ng_id = fetch_req->cc_ng_id_;
 
-    if (fetch_data->step_ == 1U)
+    if (fetch_req->SegmentCnt() == 0U)
     {
         // step-1: fetched range info.
         if (result.error_code() == remote::DataStoreError::KEY_NOT_FOUND)
@@ -724,7 +721,6 @@ void FetchRangeSlicesCallback(void *data,
                 txservice::TxKey(), 0, txservice::SliceStatus::PartiallyCached);
             fetch_req->SetFinish(txservice::CcErrorCode::NO_ERROR);
             txservice::Sharder::Instance().UnpinNodeGroupData(ng_id);
-            delete fetch_data;
             return;
         }
         else if (result.error_code() != remote::DataStoreError::NO_ERROR)
@@ -735,13 +731,11 @@ void FetchRangeSlicesCallback(void *data,
                           "retring";
             fetch_req->SetFinish(txservice::CcErrorCode::DATA_STORE_ERR);
             txservice::Sharder::Instance().UnpinNodeGroupData(ng_id);
-            delete fetch_data;
             return;
         }
         else
         {
-            assert(read_closure->TableName() ==
-                   fetch_data->kv_range_table_name_);
+            assert(read_closure->TableName() == kv_range_table_name);
             assert(read_val.size() == (sizeof(int32_t) + sizeof(uint64_t) +
                                        sizeof(uint64_t) + sizeof(uint32_t)));
             const char *buf = read_val.data();
@@ -768,32 +762,29 @@ void FetchRangeSlicesCallback(void *data,
                     txservice::SliceStatus::PartiallyCached);
                 fetch_req->SetFinish(txservice::CcErrorCode::NO_ERROR);
                 txservice::Sharder::Instance().UnpinNodeGroupData(ng_id);
-                delete fetch_data;
                 return;
             }
             else
             {
-                fetch_data->step_ = 2U;
-                fetch_data->range_partition_id_ = range_partition_id;
+                assert(slice_version > 0);
                 fetch_req->SetSliceVersion(slice_version);
                 fetch_req->SetSegmentCnt(segment_cnt);
                 fetch_req->SetCurrentSegmentId(0);
 
-                fetch_data->key_ =
+                fetch_req->kv_start_key_ =
                     client.EncodeRangeSliceKey(fetch_req->table_name_,
                                                range_partition_id,
                                                fetch_req->CurrentSegmentId());
-                client.Read(fetch_data->kv_range_slices_table_name_,
-                            fetch_data->kv_partition_id_,
-                            fetch_data->key_,
-                            fetch_data,
+                client.Read(kv_range_slices_table_name,
+                            fetch_req->kv_partition_id_,
+                            fetch_req->kv_start_key_,
+                            fetch_req,
                             &FetchRangeSlicesCallback);
             }
         }
     }
     else
     {
-        assert(fetch_data->step_ == 2U);
         if (result.error_code() == remote::DataStoreError::KEY_NOT_FOUND)
         {
             assert(false);
@@ -802,7 +793,6 @@ void FetchRangeSlicesCallback(void *data,
                           "retring";
             fetch_req->SetFinish(txservice::CcErrorCode::DATA_STORE_ERR);
             txservice::Sharder::Instance().UnpinNodeGroupData(ng_id);
-            delete fetch_data;
             return;
         }
         else if (result.error_code() != remote::DataStoreError::NO_ERROR)
@@ -812,7 +802,6 @@ void FetchRangeSlicesCallback(void *data,
                           "retring";
             fetch_req->SetFinish(txservice::CcErrorCode::DATA_STORE_ERR);
             txservice::Sharder::Instance().UnpinNodeGroupData(ng_id);
-            delete fetch_data;
             return;
         }
         else
@@ -872,19 +861,16 @@ void FetchRangeSlicesCallback(void *data,
                 // All segments are fetched.
                 fetch_req->SetFinish(txservice::CcErrorCode::NO_ERROR);
                 txservice::Sharder::Instance().UnpinNodeGroupData(ng_id);
-                delete fetch_data;
                 return;
             }
 
             fetch_req->SetCurrentSegmentId(segment_id);
-            fetch_data->key_ =
-                client.EncodeRangeSliceKey(fetch_req->table_name_,
-                                           fetch_data->range_partition_id_,
-                                           fetch_req->CurrentSegmentId());
-            client.Read(fetch_data->kv_range_slices_table_name_,
-                        fetch_data->kv_partition_id_,
-                        fetch_data->key_,
-                        fetch_data,
+            client.UpdateEncodedRangeSliceKey(fetch_req->kv_start_key_,
+                                              fetch_req->CurrentSegmentId());
+            client.Read(kv_range_slices_table_name,
+                        fetch_req->kv_partition_id_,
+                        fetch_req->kv_start_key_,
+                        fetch_req,
                         &FetchRangeSlicesCallback);
         }
     }

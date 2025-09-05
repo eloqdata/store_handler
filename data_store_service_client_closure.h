@@ -2458,70 +2458,10 @@ void DiscoverAllTableNamesCallback(void *data,
                                    DataStoreServiceClient &client,
                                    const remote::CommonResult &result);
 
-struct FetchTableRangesCallbackData
-{
-    FetchTableRangesCallbackData(const std::string_view kv_table_name,
-                                 txservice::FetchTableRangesCc *fetch_cc,
-                                 int32_t partition_id,
-                                 uint32_t batch_size,
-                                 std::string &&start_key,
-                                 std::string &&end_key)
-        : kv_table_name_(kv_table_name),
-          fetch_cc_(fetch_cc),
-          search_conds_(),
-          session_id_(),
-          start_key_(std::move(start_key)),
-          end_key_(std::move(end_key)),
-          partition_id_(partition_id),
-          batch_size_(batch_size)
-    {
-    }
-
-    const std::string_view kv_table_name_;
-    txservice::FetchTableRangesCc *fetch_cc_;
-
-    std::vector<remote::SearchCondition> search_conds_;
-    std::string session_id_;
-    std::string start_key_;
-    std::string end_key_;
-    int32_t partition_id_;
-    uint32_t batch_size_;
-};
-
 void FetchTableRangesCallback(void *data,
                               ::google::protobuf::Closure *closure,
                               DataStoreServiceClient &client,
                               const remote::CommonResult &result);
-
-struct FetchRangeSlicesCallbackData
-{
-    FetchRangeSlicesCallbackData(
-        const std::string_view kv_range_table_name,
-        const std::string_view kv_range_slices_table_name,
-        txservice::FetchRangeSlicesReq *fetch_cc,
-        int32_t kv_partition_id,
-        std::string &&key,
-        uint8_t step = 1)
-        : kv_range_table_name_(kv_range_table_name),
-          kv_range_slices_table_name_(kv_range_slices_table_name),
-          fetch_cc_(fetch_cc),
-          kv_partition_id_(kv_partition_id),
-          key_(std::move(key)),
-          step_(step)
-    {
-    }
-
-    const std::string_view kv_range_table_name_;
-    const std::string_view kv_range_slices_table_name_;
-    txservice::FetchRangeSlicesReq *fetch_cc_;
-    int32_t kv_partition_id_;
-
-    std::string key_{};
-    int32_t range_partition_id_;
-
-    // step-1: fetch range info; step-2: fetch all slices of range.
-    uint8_t step_{1};
-};
 
 void FetchRangeSlicesCallback(void *data,
                               ::google::protobuf::Closure *closure,

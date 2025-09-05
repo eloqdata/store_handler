@@ -819,31 +819,24 @@ bool DataStoreServiceClient::UpsertTableStatistics(
 void DataStoreServiceClient::FetchTableRanges(
     txservice::FetchTableRangesCc *fetch_cc)
 {
-    int32_t kv_partition_id = KvPartitionIdOf(fetch_cc->table_name_);
+    fetch_cc->kv_partition_id_ = KvPartitionIdOf(fetch_cc->table_name_);
 
-    std::string start_key = fetch_cc->table_name_.String();
-    std::string end_key = start_key;
-    end_key.back()++;
+    fetch_cc->kv_start_key_ = fetch_cc->table_name_.String();
+    fetch_cc->kv_end_key_ = fetch_cc->table_name_.String();
+    fetch_cc->kv_end_key_.back()++;
+    fetch_cc->kv_session_id_.clear();
 
-    FetchTableRangesCallbackData *callback_data =
-        new FetchTableRangesCallbackData(kv_range_table_name,
-                                         fetch_cc,
-                                         kv_partition_id,
-                                         100,
-                                         std::move(start_key),
-                                         std::move(end_key));
-
-    ScanNext(callback_data->kv_table_name_,
-             callback_data->partition_id_,
-             callback_data->start_key_,
-             callback_data->end_key_,
-             callback_data->session_id_,
+    ScanNext(kv_range_table_name,
+             fetch_cc->kv_partition_id_,
+             fetch_cc->kv_start_key_,
+             fetch_cc->kv_end_key_,
+             fetch_cc->kv_session_id_,
              true,
              false,
              true,
-             callback_data->batch_size_,
-             &callback_data->search_conds_,
-             callback_data,
+             100,
+             nullptr,
+             fetch_cc,
              &FetchTableRangesCallback);
 }
 
@@ -859,22 +852,18 @@ void DataStoreServiceClient::FetchRangeSlices(
         fetch_cc->SetFinish(txservice::CcErrorCode::NG_TERM_CHANGED);
         return;
     }
-    int32_t kv_partition_id = KvPartitionIdOf(fetch_cc->table_name_);
+    fetch_cc->kv_partition_id_ = KvPartitionIdOf(fetch_cc->table_name_);
+    // Also use segment_cnt to identify the step is fetch range or fetch slices.
+    fetch_cc->SetSegmentCnt(0);
 
     txservice::TxKey start_key =
         fetch_cc->range_entry_->GetRangeInfo()->StartTxKey();
-    std::string range_key = EncodeRangeKey(fetch_cc->table_name_, start_key);
-    FetchRangeSlicesCallbackData *callback_data =
-        new FetchRangeSlicesCallbackData(kv_range_table_name,
-                                         kv_range_slices_table_name,
-                                         fetch_cc,
-                                         kv_partition_id,
-                                         std::move(range_key));
+    fetch_cc->kv_start_key_ = EncodeRangeKey(fetch_cc->table_name_, start_key);
 
-    Read(callback_data->kv_range_table_name_,
-         callback_data->kv_partition_id_,
-         callback_data->key_,
-         callback_data,
+    Read(kv_range_table_name,
+         fetch_cc->kv_partition_id_,
+         fetch_cc->kv_start_key_,
+         fetch_cc,
          &FetchRangeSlicesCallback);
 }
 
@@ -1075,6 +1064,7 @@ DataStoreServiceClient::LoadRangeSlice(
 // segment_key: [table_name + range_id + segment_id];
 // segment_record: [version + (slice_key+slice_size) +
 //                          (slice_key+slice_size) +...];
+// Notice: segment_id starts from 0.
 
 std::string DataStoreServiceClient::EncodeRangeKey(
     const txservice::TableName &table_name,
@@ -1133,6 +1123,16 @@ std::string DataStoreServiceClient::EncodeRangeSliceKey(
     key.append(reinterpret_cast<const char *>(&range_id), sizeof(range_id));
     key.append(reinterpret_cast<const char *>(&segment_id), sizeof(segment_id));
     return key;
+}
+
+// Replace the segment_id in range_slice_key
+void DataStoreServiceClient::UpdateEncodedRangeSliceKey(
+    std::string &range_slice_key, uint32_t new_segment_id)
+{
+    range_slice_key.replace(range_slice_key.size() - sizeof(new_segment_id),
+                            sizeof(new_segment_id),
+                            reinterpret_cast<const char *>(&new_segment_id),
+                            sizeof(new_segment_id));
 }
 
 bool DataStoreServiceClient::UpdateRangeSlices(
