@@ -32,6 +32,10 @@
 
 namespace EloqDS
 {
+static const std::string_view kv_table_statistics_name("table_statistics");
+static const std::string_view kv_table_statistics_version_name(
+    "table_statistics_version");
+
 void SyncCallback(void *data,
                   ::google::protobuf::Closure *closure,
                   DataStoreServiceClient &client,
@@ -918,12 +922,11 @@ void FetchTableStatsCallback(void *data,
                              DataStoreServiceClient &client,
                              const remote::CommonResult &result)
 {
-    FetchTableStatsCallbackData *fetch_data =
-        static_cast<FetchTableStatsCallbackData *>(data);
+    txservice::FetchTableStatisticsCc *fetch_cc =
+        static_cast<txservice::FetchTableStatisticsCc *>(data);
     ScanNextClosure *scan_next_closure =
         static_cast<ScanNextClosure *>(closure);
     auto err_code = result.error_code();
-    auto *fetch_cc = fetch_data->fetch_cc_;
 
     if (err_code != remote::DataStoreError::NO_ERROR)
     {
@@ -932,8 +935,6 @@ void FetchTableStatsCallback(void *data,
 
         fetch_cc->SetFinish(
             static_cast<int>(txservice::CcErrorCode::DATA_STORE_ERR));
-
-        delete fetch_data;
         return;
     }
     else
@@ -943,7 +944,7 @@ void FetchTableStatsCallback(void *data,
         uint64_t ts;
         uint64_t ttl;
         uint32_t items_size = scan_next_closure->ItemsSize();
-        fetch_data->session_id_ = scan_next_closure->SessionId();
+        fetch_cc->kv_session_id_ = scan_next_closure->SessionId();
         assert(items_size <= 1);
         if (items_size == 1)
         {
@@ -991,18 +992,18 @@ void FetchTableStatsCallback(void *data,
             fetch_cc->SamplePoolMergeFrom(indexname, std::move(samplekeys));
 
             // continue to scan
-            fetch_data->start_key_ = std::move(key);
-            client.ScanNext(fetch_data->kv_table_name_,
-                            fetch_data->partition_id_,
-                            fetch_data->start_key_,
-                            fetch_data->end_key_,
-                            fetch_data->session_id_,
+            fetch_cc->kv_start_key_ = std::move(key);
+            client.ScanNext(kv_table_statistics_name,
+                            fetch_cc->kv_partition_id_,
+                            fetch_cc->kv_start_key_,
+                            fetch_cc->kv_end_key_,
+                            fetch_cc->kv_session_id_,
                             false,
                             false,
                             true,
                             1,
-                            &fetch_data->search_conditions_,
-                            fetch_data,
+                            nullptr,
+                            fetch_cc,
                             &FetchTableStatsCallback);
         }
         else
@@ -1010,7 +1011,6 @@ void FetchTableStatsCallback(void *data,
             // has no more data, notify.
 
             fetch_cc->SetFinish(0);
-            delete fetch_data;
             return;
         }
     }
