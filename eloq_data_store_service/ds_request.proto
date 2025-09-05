@@ -57,7 +57,7 @@ enum DataStoreError {
   KEY_NOT_FOUND = 12;
   BACKUP_FAILED = 13;
   STATUS_SWITCH_FAILED = 14;
-  CREATE_BRANCH_ERROR = 15;
+  CREATE_SNAPSHOT_ERROR = 15;
 }
 
 enum CcTableType {
