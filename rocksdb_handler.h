@@ -268,9 +268,10 @@ public:
      * @param node_group
      * @return whether all entries are written to data store successfully
      */
-    bool PutAll(std::unordered_map<std::string_view,
-                       std::vector<std::unique_ptr<txservice::FlushTaskEntry>>>
-                       &batch) override;
+    bool PutAll(std::unordered_map<
+                std::string_view,
+                std::vector<std::unique_ptr<txservice::FlushTaskEntry>>> &batch)
+        override;
 
     /**
      * @brief indicate end of flush entries in a single ckpt for \@param
@@ -350,7 +351,6 @@ public:
         const txservice::TxKey *start_key,
         const txservice::TableSchema *table_schema) override;
 
-
     bool Read(const txservice::TableName &table_name,
               const txservice::TxKey &key,
               txservice::TxRecord &rec,
@@ -375,7 +375,6 @@ public:
         txservice::FetchRecordCc *fetch_cc,
         txservice::FetchSnapshotCc *fetch_snapshot_cc = nullptr) override;
     rocksdb::ColumnFamilyHandle *GetColumnFamilyHandler(const std::string &cf);
-
 
     std::unique_ptr<txservice::store::DataStoreScanner> ScanForward(
         const txservice::TableName &table_name,
@@ -454,14 +453,15 @@ public:
     bool PutArchivesAll(std::unordered_map<
                         std::string_view,
                         std::vector<std::unique_ptr<txservice::FlushTaskEntry>>>
-                        &batch) override;
+                            &batch) override;
     /**
      * @brief Copy record from base/sk table to mvcc_archives.
      */
     bool CopyBaseToArchive(
-        std::unordered_map<std::string_view,
-                       std::vector<std::unique_ptr<txservice::FlushTaskEntry>>>
-                       &batch) override;
+        std::unordered_map<
+            std::string_view,
+            std::vector<std::unique_ptr<txservice::FlushTaskEntry>>> &batch)
+        override;
 
     /**
      * @brief  Get the latest visible(commit_ts <= upper_bound_ts)
@@ -703,9 +703,9 @@ public:
                         std::vector<std::string> &snapshot_files);
     bool CreateSnapshotForStandby(
         std::vector<std::string> &snapshot_files) override;
-    bool CreateSnapshotForBackup(
-        const std::string &backup_name,
-        std::vector<std::string> &snapshot_files) override;
+    bool CreateSnapshotForBackup(const std::string &backup_name,
+                                 std::vector<std::string> &snapshot_files,
+                                 uint64_t backup_ts) override;
     bool RemoveBackupSnapshot(const std::string &backup_name) override;
 
     bool SendSnapshotToRemote(uint32_t ng_id,
