@@ -2679,7 +2679,6 @@ void DataStoreServiceClient::ReadInternal(ReadClosure *read_clouse)
                 ::EloqDS::remote::DataStoreError::NETWORK_ERROR);
             return;
         }
-        read_clouse->SetChannel(channel);
 
         EloqDS::remote::DataStoreRpcService_Stub stub(channel.get());
         brpc::Controller &cntl = *read_clouse->Controller();
@@ -2740,7 +2739,6 @@ void DataStoreServiceClient::DeleteRangeInternal(
                 ::EloqDS::remote::DataStoreError::NETWORK_ERROR);
             return;
         }
-        delete_range_clouse->SetChannel(channel);
 
         EloqDS::remote::DataStoreRpcService_Stub stub(channel.get());
         brpc::Controller &cntl = *delete_range_clouse->Controller();
@@ -2797,7 +2795,6 @@ void DataStoreServiceClient::FlushDataInternal(
                 ::EloqDS::remote::DataStoreError::NETWORK_ERROR);
             return;
         }
-        flush_data_closure->SetChannel(channel);
 
         EloqDS::remote::DataStoreRpcService_Stub stub(channel.get());
         brpc::Controller &cntl = *flush_data_closure->Controller();
@@ -2856,7 +2853,6 @@ void DataStoreServiceClient::DropTableInternal(
                 ::EloqDS::remote::DataStoreError::NETWORK_ERROR);
             return;
         }
-        drop_table_closure->SetChannel(channel);
 
         EloqDS::remote::DataStoreRpcService_Stub stub(channel.get());
         brpc::Controller &cntl = *drop_table_closure->Controller();
@@ -2933,7 +2929,6 @@ void DataStoreServiceClient::ScanNextInternal(
                 ::EloqDS::remote::DataStoreError::NETWORK_ERROR);
             return;
         }
-        scan_next_closure->SetChannel(channel);
 
         EloqDS::remote::DataStoreRpcService_Stub stub(channel.get());
         brpc::Controller &cntl = *scan_next_closure->Controller();
@@ -2993,7 +2988,6 @@ void DataStoreServiceClient::ScanCloseInternal(
                 ::EloqDS::remote::DataStoreError::NETWORK_ERROR);
             return;
         }
-        scan_next_closure->SetChannel(channel);
 
         EloqDS::remote::DataStoreRpcService_Stub stub(channel.get());
         brpc::Controller &cntl = *scan_next_closure->Controller();
@@ -3327,7 +3321,6 @@ void DataStoreServiceClient::BatchWriteRecordsInternal(
 {
     assert(closure != nullptr);
     uint32_t req_shard_id = GetShardIdByPartitionId(closure->partition_id_);
-    closure->SetReqShardId(req_shard_id);
 
     if (IsLocalShard(req_shard_id))
     {
@@ -3363,7 +3356,6 @@ void DataStoreServiceClient::BatchWriteRecordsInternal(
 
         // prepare request
         closure->PrepareRemoteRequest();
-        closure->SetChannel(channel);
         // timeout is set in the PrepareRemoteRequest
 
         // send request
