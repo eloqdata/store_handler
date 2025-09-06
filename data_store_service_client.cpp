@@ -56,9 +56,17 @@ thread_local ObjectPool<CreateSnapshotForBackupClosure>
 thread_local ObjectPool<CreateSnapshotForBackupCallbackData>
     create_snapshot_for_backup_callback_data_pool_;
 
+thread_local ObjectPool<SyncCallbackData> sync_callback_data_pool_;
+thread_local ObjectPool<FetchTableCallbackData> fetch_table_callback_data_pool_;
+thread_local ObjectPool<FetchDatabaseCallbackData> fetch_db_callback_data_pool_;
+thread_local ObjectPool<FetchAllDatabaseCallbackData>
+    fetch_all_dbs_callback_data_pool_;
+thread_local ObjectPool<DiscoverAllTableNamesCallbackData>
+    discover_all_tables_callback_data_pool_;
+thread_local ObjectPool<SyncPutAllData> sync_putall_data_pool_;
+
 static const uint64_t MAX_WRITE_BATCH_SIZE = 64 * 1024 * 1024;  // 64MB
 
-static const std::string_view kv_cluster_config_name("cluster_config");
 static const std::string_view kv_table_catalogs_name("table_catalogs");
 static const std::string_view kv_database_catalogs_name("db_catalogs");
 static const std::string_view kv_range_table_name("table_ranges");
@@ -186,7 +194,9 @@ bool DataStoreServiceClient::PutAll(
             flush_task_entry_idx++;
         }
 
-        SyncCallbackData sync_putall;
+        SyncCallbackData *sync_putall = sync_callback_data_pool_.NextObject();
+        PoolableGuard sync_putall_guard(sync_putall);
+
         uint16_t parts_cnt_per_key = 1;
         uint16_t parts_cnt_per_record = table_name.IsHashPartitioned() ? 1 : 5;
 
@@ -212,7 +222,7 @@ bool DataStoreServiceClient::PutAll(
                 // Start a new batch if done with current partition.
                 if (write_batch_size >= MAX_WRITE_BATCH_SIZE)
                 {
-                    sync_putall.Reset();
+                    sync_putall->Reset();
                     BatchWriteRecords(kv_table_name,
                                       part_it->first,
                                       std::move(key_parts),
@@ -221,13 +231,13 @@ bool DataStoreServiceClient::PutAll(
                                       std::move(records_ttl),
                                       std::move(op_types),
                                       true,
-                                      &sync_putall,
+                                      sync_putall,
                                       SyncCallback,
                                       parts_cnt_per_key,
                                       parts_cnt_per_record);
-                    sync_putall.Wait();
+                    sync_putall->Wait();
 
-                    if (sync_putall.Result().error_code() !=
+                    if (sync_putall->Result().error_code() !=
                         EloqDS::remote::DataStoreError::NO_ERROR)
                     {
                         LOG(WARNING)
@@ -306,7 +316,7 @@ bool DataStoreServiceClient::PutAll(
             // Send out the last batch
             if (key_parts.size() > 0)
             {
-                sync_putall.Reset();
+                sync_putall->Reset();
                 BatchWriteRecords(kv_table_name,
                                   part_it->first,
                                   std::move(key_parts),
@@ -315,18 +325,18 @@ bool DataStoreServiceClient::PutAll(
                                   std::move(records_ttl),
                                   std::move(op_types),
                                   true,
-                                  &sync_putall,
-                                  &SyncCallback,
+                                  sync_putall,
+                                  SyncCallback,
                                   parts_cnt_per_key,
                                   parts_cnt_per_record);
-                sync_putall.Wait();
+                sync_putall->Wait();
                 key_parts.clear();
                 record_parts.clear();
                 records_ts.clear();
                 records_ttl.clear();
                 op_types.clear();
                 write_batch_size = 0;
-                if (sync_putall.Result().error_code() !=
+                if (sync_putall->Result().error_code() !=
                     EloqDS::remote::DataStoreError::NO_ERROR)
                 {
                     LOG(WARNING) << "DataStoreHandler: Failed to write batch.";
@@ -360,7 +370,7 @@ bool DataStoreServiceClient::PutAll(
                     // Start a new batch if done with current partition.
                     if (write_batch_size >= MAX_WRITE_BATCH_SIZE)
                     {
-                        sync_putall.Reset();
+                        sync_putall->Reset();
                         BatchWriteRecords(kv_table_name,
                                           part_it->first,
                                           std::move(key_parts),
@@ -369,13 +379,13 @@ bool DataStoreServiceClient::PutAll(
                                           std::move(records_ttl),
                                           std::move(op_types),
                                           true,
-                                          &sync_putall,
+                                          sync_putall,
                                           SyncCallback,
                                           parts_cnt_per_key,
                                           parts_cnt_per_record);
-                        sync_putall.Wait();
+                        sync_putall->Wait();
 
-                        if (sync_putall.Result().error_code() !=
+                        if (sync_putall->Result().error_code() !=
                             EloqDS::remote::DataStoreError::NO_ERROR)
                         {
                             LOG(WARNING)
@@ -435,7 +445,7 @@ bool DataStoreServiceClient::PutAll(
                 // Send out the last batch
                 if (key_parts.size() > 0)
                 {
-                    sync_putall.Reset();
+                    sync_putall->Reset();
                     BatchWriteRecords(kv_table_name,
                                       part_it->first,
                                       std::move(key_parts),
@@ -444,11 +454,11 @@ bool DataStoreServiceClient::PutAll(
                                       std::move(records_ttl),
                                       std::move(op_types),
                                       true,
-                                      &sync_putall,
-                                      &SyncCallback,
+                                      sync_putall,
+                                      SyncCallback,
                                       parts_cnt_per_key,
                                       parts_cnt_per_record);
-                    sync_putall.Wait();
+                    sync_putall->Wait();
                     record_tmp_mem_area.clear();
                     key_parts.clear();
                     record_parts.clear();
@@ -456,7 +466,7 @@ bool DataStoreServiceClient::PutAll(
                     records_ttl.clear();
                     op_types.clear();
                     write_batch_size = 0;
-                    if (sync_putall.Result().error_code() !=
+                    if (sync_putall->Result().error_code() !=
                         EloqDS::remote::DataStoreError::NO_ERROR)
                     {
                         LOG(WARNING)
@@ -474,15 +484,17 @@ bool DataStoreServiceClient::PutAll(
 bool DataStoreServiceClient::PersistKV(
     const std::vector<std::string> &kv_table_names)
 {
-    SyncCallbackData callback_data;
+    SyncCallbackData *callback_data = sync_callback_data_pool_.NextObject();
+    PoolableGuard guard(callback_data);
+    callback_data->Reset();
 
-    FlushData(kv_table_names, &callback_data, &SyncCallback);
-    callback_data.Wait();
-    if (callback_data.Result().error_code() !=
+    FlushData(kv_table_names, callback_data, &SyncCallback);
+    callback_data->Wait();
+    if (callback_data->Result().error_code() !=
         EloqDS::remote::DataStoreError::NO_ERROR)
     {
         LOG(WARNING) << "DataStoreHandler: Failed to do PersistKV. Error: "
-                     << callback_data.Result().error_msg();
+                     << callback_data->Result().error_msg();
         return false;
     }
     DLOG(INFO) << "DataStoreHandler::PersistKV success.";
@@ -720,7 +732,10 @@ bool DataStoreServiceClient::UpsertTableStatistics(
     std::vector<uint64_t> records_ts;
     std::vector<uint64_t> records_ttl;
     std::vector<WriteOpType> op_types;
-    SyncCallbackData callback_data;
+    SyncCallbackData *callback_data_ptr = sync_callback_data_pool_.NextObject();
+    PoolableGuard guard(callback_data_ptr);
+    callback_data_ptr->Reset();
+    SyncCallbackData &callback_data = *callback_data_ptr;
 
     for (size_t i = 0; i < segment_keys.size(); ++i)
     {
@@ -887,21 +902,23 @@ bool DataStoreServiceClient::DeleteOutOfRangeData(
 
     std::string end_key_str = "";
 
-    SyncCallbackData callback_data;
+    SyncCallbackData *callback_data = sync_callback_data_pool_.NextObject();
+    PoolableGuard guard(callback_data);
+    callback_data->Reset();
     DeleteRange(kv_table_name,
                 KvPartitionIdOf(partition_id, true),
                 start_key_str,
                 end_key_str,
                 false,
-                &callback_data,
+                callback_data,
                 &SyncCallback);
-    callback_data.Wait();
+    callback_data->Wait();
 
-    if (callback_data.Result().error_code() !=
+    if (callback_data->Result().error_code() !=
         EloqDS::remote::DataStoreError::NO_ERROR)
     {
         LOG(ERROR) << "DataStoreHandler: Failed to do DeleteOutOfRangeData. "
-                   << callback_data.Result().error_msg();
+                   << callback_data->Result().error_msg();
         return false;
     }
 
@@ -1204,7 +1221,9 @@ bool DataStoreServiceClient::UpdateRangeSlices(
     std::vector<uint64_t> records_ts;
     std::vector<uint64_t> records_ttl;
     std::vector<WriteOpType> op_types;
-    SyncCallbackData callback_data;
+    SyncCallbackData *callback_data = sync_callback_data_pool_.NextObject();
+    PoolableGuard guard(callback_data);
+    callback_data->Reset();
 
     for (size_t i = 0; i < segment_keys.size(); ++i)
     {
@@ -1216,7 +1235,7 @@ bool DataStoreServiceClient::UpdateRangeSlices(
 
         // For segments are splitted based on MAX_WRITE_BATCH_SIZE, execute
         // one write request for each segment record.
-        callback_data.Reset();
+        callback_data->Reset();
         BatchWriteRecords(kv_range_slices_table_name,
                           kv_partition_id,
                           std::move(keys),
@@ -1225,16 +1244,16 @@ bool DataStoreServiceClient::UpdateRangeSlices(
                           std::move(records_ttl),
                           std::move(op_types),
                           true,
-                          &callback_data,
+                          callback_data,
                           &SyncCallback);
-        callback_data.Wait();
+        callback_data->Wait();
         keys.clear();
         records.clear();
         records_ts.clear();
         records_ttl.clear();
         op_types.clear();
 
-        if (callback_data.Result().error_code() !=
+        if (callback_data->Result().error_code() !=
             EloqDS::remote::DataStoreError::NO_ERROR)
         {
             LOG(WARNING) << "UpdateRangeSlices: Failed to write segments.";
@@ -1243,7 +1262,7 @@ bool DataStoreServiceClient::UpdateRangeSlices(
     }
 
     // 3- store range info into {kv_range_table_name}
-    callback_data.Reset();
+    callback_data->Reset();
 
     std::string key_str = EncodeRangeKey(table_name, range_start_key);
     std::string rec_str =
@@ -1263,10 +1282,10 @@ bool DataStoreServiceClient::UpdateRangeSlices(
                       std::move(records_ttl),
                       std::move(op_types),
                       true,
-                      &callback_data,
+                      callback_data,
                       &SyncCallback);
-    callback_data.Wait();
-    if (callback_data.Result().error_code() !=
+    callback_data->Wait();
+    if (callback_data->Result().error_code() !=
         EloqDS::remote::DataStoreError::NO_ERROR)
     {
         LOG(WARNING) << "UpdateRangeSlices: Failed to write range info.";
@@ -1296,16 +1315,18 @@ bool DataStoreServiceClient::UpsertRanges(
         }
     }
 
-    SyncCallbackData callback_data;
+    SyncCallbackData *callback_data = sync_callback_data_pool_.NextObject();
+    PoolableGuard guard(callback_data);
+    callback_data->Reset();
     std::vector<std::string> kv_range_table_names;
     kv_range_table_names.emplace_back(kv_range_table_name);
-    FlushData(kv_range_table_names, &callback_data, &SyncCallback);
-    callback_data.Wait();
-    if (callback_data.Result().error_code() !=
+    FlushData(kv_range_table_names, callback_data, &SyncCallback);
+    callback_data->Wait();
+    if (callback_data->Result().error_code() !=
         EloqDS::remote::DataStoreError::NO_ERROR)
     {
         LOG(WARNING) << "UpsertRanges: Failed to flush ranges. Error: "
-                     << callback_data.Result().error_msg();
+                     << callback_data->Result().error_msg();
         return false;
     }
 
@@ -1317,21 +1338,24 @@ bool DataStoreServiceClient::FetchTable(const txservice::TableName &table_name,
                                         bool &found,
                                         uint64_t &version_ts)
 {
-    FetchTableCallbackData callback_data(schema_image, found, version_ts);
+    FetchTableCallbackData *callback_data =
+        fetch_table_callback_data_pool_.NextObject();
+    PoolableGuard guard(callback_data);
+    callback_data->Reset(schema_image, found, version_ts);
     Read(kv_table_catalogs_name,
          0,
          table_name.StringView(),
-         &callback_data,
+         callback_data,
          &FetchTableCallback);
-    callback_data.Wait();
+    callback_data->Wait();
 
-    if (callback_data.HasError())
+    if (callback_data->HasError())
     {
         LOG(WARNING) << "FetchTable error: "
-                     << callback_data.Result().error_msg();
+                     << callback_data->Result().error_msg();
     }
 
-    return !callback_data.HasError();
+    return !callback_data->HasError();
 }
 
 bool DataStoreServiceClient::DiscoverAllTableNames(
@@ -1339,30 +1363,26 @@ bool DataStoreServiceClient::DiscoverAllTableNames(
     const std::function<void()> *yield_fptr,
     const std::function<void()> *resume_fptr)
 {
-    int32_t partition_id = 0;
+    DiscoverAllTableNamesCallbackData *callback_data =
+        discover_all_tables_callback_data_pool_.NextObject();
+    PoolableGuard guard(callback_data);
+    callback_data->Reset(norm_name_vec, yield_fptr, resume_fptr);
 
-    DiscoverAllTableNamesCallbackData callback_data(kv_table_catalogs_name,
-                                                    norm_name_vec,
-                                                    yield_fptr,
-                                                    resume_fptr,
-                                                    partition_id,
-                                                    10);
-
-    ScanNext(callback_data.kv_table_name_,
-             callback_data.partition_id_,
-             callback_data.start_key_,
-             callback_data.end_key_,
-             callback_data.session_id_,
+    ScanNext(kv_table_catalogs_name,
+             0,  // kv_partition_id
+             "",
+             "",
+             callback_data->session_id_,
              false,
              false,
              true,
-             callback_data.batch_size_,
-             &callback_data.search_conds_,
-             &callback_data,
+             10,
+             nullptr,
+             callback_data,
              &DiscoverAllTableNamesCallback);
-    callback_data.Wait();
+    callback_data->Wait();
 
-    return !callback_data.HasError();
+    return !callback_data->HasError();
 }
 
 // The store format of database catalog in kvstore is as follows:
@@ -1377,7 +1397,9 @@ bool DataStoreServiceClient::UpsertDatabase(std::string_view db,
     std::vector<uint64_t> records_ts;
     std::vector<uint64_t> records_ttl;
     std::vector<WriteOpType> op_types;
-    SyncCallbackData callback_data;
+    SyncCallbackData *callback_data = sync_callback_data_pool_.NextObject();
+    PoolableGuard guard(callback_data);
+    callback_data->Reset();
     uint64_t now =
         std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::high_resolution_clock::now().time_since_epoch())
@@ -1397,14 +1419,15 @@ bool DataStoreServiceClient::UpsertDatabase(std::string_view db,
                       std::move(records_ttl),
                       std::move(op_types),
                       false,
-                      &callback_data,
+                      callback_data,
                       &SyncCallback);
-    callback_data.Wait();
+    callback_data->Wait();
 
-    if (callback_data.Result().error_code() != remote::DataStoreError::NO_ERROR)
+    if (callback_data->Result().error_code() !=
+        remote::DataStoreError::NO_ERROR)
     {
         LOG(ERROR) << "UpsertDatabase failed, error:"
-                   << callback_data.Result().error_msg();
+                   << callback_data->Result().error_msg();
         return false;
     }
 
@@ -1418,7 +1441,9 @@ bool DataStoreServiceClient::DropDatabase(std::string_view db)
     std::vector<uint64_t> records_ts;
     std::vector<uint64_t> records_ttl;
     std::vector<WriteOpType> op_types;
-    SyncCallbackData callback_data;
+    SyncCallbackData *callback_data = sync_callback_data_pool_.NextObject();
+    PoolableGuard guard(callback_data);
+    callback_data->Reset();
     uint64_t now =
         std::chrono::duration_cast<std::chrono::microseconds>(
             std::chrono::high_resolution_clock::now().time_since_epoch())
@@ -1438,14 +1463,15 @@ bool DataStoreServiceClient::DropDatabase(std::string_view db)
                       std::move(records_ttl),
                       std::move(op_types),
                       false,
-                      &callback_data,
+                      callback_data,
                       &SyncCallback);
-    callback_data.Wait();
+    callback_data->Wait();
 
-    if (callback_data.Result().error_code() != remote::DataStoreError::NO_ERROR)
+    if (callback_data->Result().error_code() !=
+        remote::DataStoreError::NO_ERROR)
     {
         LOG(ERROR) << "DropDatabase failed, error:"
-                   << callback_data.Result().error_msg();
+                   << callback_data->Result().error_msg();
         return false;
     }
 
@@ -1459,17 +1485,18 @@ bool DataStoreServiceClient::FetchDatabase(
     const std::function<void()> *yield_fptr,
     const std::function<void()> *resume_fptr)
 {
-    FetchDatabaseCallbackData callback_data(
-        definition, found, yield_fptr, resume_fptr);
-
+    FetchDatabaseCallbackData *callback_data =
+        fetch_db_callback_data_pool_.NextObject();
+    PoolableGuard guard(callback_data);
+    callback_data->Reset(definition, found, yield_fptr, resume_fptr);
     Read(kv_database_catalogs_name,
          0,
          db,
-         &callback_data,
+         callback_data,
          &FetchDatabaseCallback);
-    callback_data.Wait();
+    callback_data->Wait();
 
-    return !callback_data.HasError();
+    return !callback_data->HasError();
 }
 
 bool DataStoreServiceClient::FetchAllDatabase(
@@ -1477,34 +1504,38 @@ bool DataStoreServiceClient::FetchAllDatabase(
     const std::function<void()> *yield_fptr,
     const std::function<void()> *resume_fptr)
 {
-    FetchAllDatabaseCallbackData callback_data(
-        kv_database_catalogs_name, dbnames, yield_fptr, resume_fptr, 0, 100);
+    FetchAllDatabaseCallbackData *callback_data =
+        fetch_all_dbs_callback_data_pool_.NextObject();
+    PoolableGuard guard(callback_data);
+    callback_data->Reset(dbnames, yield_fptr, resume_fptr);
 
-    ScanNext(callback_data.kv_table_name_,
-             callback_data.partition_id_,
-             callback_data.start_key_,
-             callback_data.end_key_,
-             callback_data.session_id_,
+    ScanNext(kv_database_catalogs_name,
+             0,
+             callback_data->start_key_,
+             callback_data->end_key_,
+             callback_data->session_id_,
              false,
              false,
              true,
-             callback_data.batch_size_,
-             &callback_data.search_conds_,
+             100,
+             nullptr,
              &callback_data,
              &FetchAllDatabaseCallback);
-    callback_data.Wait();
+    callback_data->Wait();
 
-    return !callback_data.HasError();
+    return !callback_data->HasError();
 }
 
 bool DataStoreServiceClient::DropKvTable(const std::string &kv_table_name)
 {
-    SyncCallbackData callback_data;
+    SyncCallbackData *callback_data = sync_callback_data_pool_.NextObject();
+    PoolableGuard guard(callback_data);
+    callback_data->Reset();
     DropTable(std::string_view(kv_table_name.data(), kv_table_name.size()),
-              &callback_data,
+              callback_data,
               &SyncCallback);
-    callback_data.Wait();
-    if (callback_data.Result().error_code() !=
+    callback_data->Wait();
+    if (callback_data->Result().error_code() !=
         EloqDS::remote::DataStoreError::NO_ERROR)
     {
         LOG(WARNING) << "DataStoreHandler: Failed to do DropKvTable.";
@@ -1517,6 +1548,9 @@ bool DataStoreServiceClient::DropKvTable(const std::string &kv_table_name)
 // NOTICE: this function is not atomic
 void DataStoreServiceClient::DropKvTableAsync(const std::string &kv_table_name)
 {
+    // FIXME(lzx): this function may not be used now.
+    assert(false);
+
     AsyncDropTableCallbackData *callback_data =
         new AsyncDropTableCallbackData();
     callback_data->kv_table_name_ = kv_table_name;
@@ -1878,7 +1912,9 @@ bool DataStoreServiceClient::PutArchivesAll(
         uint16_t parts_cnt_per_record = 5;
 
         // Send the batch request
-        SyncPutAllData sync_putall;
+        SyncPutAllData *sync_putall = sync_putall_data_pool_.NextObject();
+        PoolableGuard guard(sync_putall);
+        sync_putall->Reset();
         uint32_t batch_cnt = 0;
 
         size_t recs_cnt = archive_ptrs.size();
@@ -1901,7 +1937,7 @@ bool DataStoreServiceClient::PutArchivesAll(
                                   std::move(records_ttl),
                                   std::move(op_types),
                                   true,
-                                  &sync_putall,
+                                  sync_putall,
                                   SyncPutAllCallback,
                                   parts_cnt_per_key,
                                   parts_cnt_per_record);
@@ -1978,7 +2014,7 @@ bool DataStoreServiceClient::PutArchivesAll(
                               std::move(records_ttl),
                               std::move(op_types),
                               true,
-                              &sync_putall,
+                              sync_putall,
                               SyncPutAllCallback,
                               parts_cnt_per_key,
                               parts_cnt_per_record);
@@ -1999,20 +2035,20 @@ bool DataStoreServiceClient::PutArchivesAll(
 
         // Wait the result.
         {
-            std::unique_lock<bthread::Mutex> lk(sync_putall.mux_);
-            sync_putall.unfinished_request_cnt_ += batch_cnt;
-            sync_putall.all_request_started_ = true;
-            while (sync_putall.unfinished_request_cnt_ != 0)
+            std::unique_lock<bthread::Mutex> lk(sync_putall->mux_);
+            sync_putall->unfinished_request_cnt_ += batch_cnt;
+            sync_putall->all_request_started_ = true;
+            while (sync_putall->unfinished_request_cnt_ != 0)
             {
-                sync_putall.cv_.wait(lk);
+                sync_putall->cv_.wait(lk);
             }
         }
 
-        if (sync_putall.result_.error_code() !=
+        if (sync_putall->result_.error_code() !=
             remote::DataStoreError::NO_ERROR)
         {
             LOG(ERROR) << "PutArchivesAll failed for error: "
-                       << sync_putall.result_.error_msg();
+                       << sync_putall->result_.error_msg();
             return false;
         }
     }
@@ -2193,6 +2229,8 @@ bool DataStoreServiceClient::FetchArchives(
     std::vector<txservice::VersionTxRecord> &archives,
     uint64_t from_ts)
 {
+    assert(false);
+
     LOG(INFO) << "FetchArchives: table_name: " << table_name.StringView();
     const std::string &kv_table_name = kv_info->GetKvTableName(table_name);
     uint64_t be_from_ts = EloqShare::host_to_big_endian(from_ts);
@@ -2277,6 +2315,8 @@ bool DataStoreServiceClient::FetchVisibleArchive(
     txservice::RecordStatus &rec_status,
     uint64_t &commit_ts)
 {
+    assert(false);
+
     const std::string &kv_table_name = kv_info->GetKvTableName(table_name);
     uint64_t be_upper_bound_ts = EloqShare::host_to_big_endian(upper_bound_ts);
     std::string lower_bound_key =
@@ -2362,29 +2402,26 @@ DataStoreServiceClient::FetchArchives(txservice::FetchRecordCc *fetch_cc)
 
     uint64_t be_read_ts =
         EloqShare::host_to_big_endian(fetch_cc->snapshot_read_ts_);
-    std::string start_key = EncodeArchiveKey(
+    fetch_cc->kv_start_key_ = EncodeArchiveKey(
         kv_table_name, std::string_view(key.Data(), key.Size()), be_read_ts);
-    std::string end_key = EncodeArchiveKey(
+    fetch_cc->kv_end_key_ = EncodeArchiveKey(
         kv_table_name, std::string_view(key.Data(), key.Size()), 0);
     uint32_t partition_id = HashArchiveKey(kv_table_name, key);
-    int32_t kv_partition_id = KvPartitionIdOf(partition_id, true);
-    auto *callback_data =
-        new FetchRecordArchivesCallbackData(fetch_cc,
-                                            kv_mvcc_archive_name,
-                                            kv_partition_id,
-                                            std::move(start_key),
-                                            std::move(end_key));
-    ScanNext(callback_data->kv_table_name_,
-             callback_data->partition_id_,
-             callback_data->start_key_,
-             callback_data->end_key_,
-             callback_data->session_id_,
+    // Also use the partion_id in fetch_cc to store kv partition
+    fetch_cc->partition_id_ = KvPartitionIdOf(partition_id, true);
+    fetch_cc->kv_session_id_.clear();
+
+    ScanNext(kv_mvcc_archive_name,
+             fetch_cc->partition_id_,
+             fetch_cc->kv_start_key_,
+             fetch_cc->kv_end_key_,
+             fetch_cc->kv_session_id_,
              true,   // include start key
              false,  // include end key
              false,  // scan forward: false
              1,
              nullptr,  // search condition
-             callback_data,
+             fetch_cc,
              &FetchRecordArchivesCallback);
     return txservice::store::DataStoreHandler::DataStoreOpStatus::Success;
 }
@@ -2400,29 +2437,24 @@ DataStoreServiceClient::FetchVisibleArchive(
 
     uint64_t be_read_ts =
         EloqShare::host_to_big_endian(fetch_cc->snapshot_read_ts_);
-    std::string start_key = EncodeArchiveKey(
+    fetch_cc->kv_start_key_ = EncodeArchiveKey(
         kv_table_name, std::string_view(key.Data(), key.Size()), be_read_ts);
-    std::string end_key = EncodeArchiveKey(
+    fetch_cc->kv_end_key_ = EncodeArchiveKey(
         kv_table_name, std::string_view(key.Data(), key.Size()), 0);
     uint32_t partition_id = HashArchiveKey(kv_table_name, key);
     int32_t kv_partition_id = KvPartitionIdOf(partition_id, true);
-    auto *callback_data =
-        new FetchSnapshotArchiveCallbackData(fetch_cc,
-                                             kv_mvcc_archive_name,
-                                             kv_partition_id,
-                                             std::move(start_key),
-                                             std::move(end_key));
-    ScanNext(callback_data->kv_table_name_,
-             callback_data->partition_id_,
-             callback_data->start_key_,
-             callback_data->end_key_,
-             callback_data->session_id_,
+
+    ScanNext(kv_mvcc_archive_name,
+             kv_partition_id,
+             fetch_cc->kv_start_key_,
+             fetch_cc->kv_end_key_,
+             "",
              true,   // include start key
              false,  // include end key
              false,  // scan forward: false
              1,
              nullptr,  // search condition
-             callback_data,
+             fetch_cc,
              &FetchSnapshotArchiveCallback);
     return txservice::store::DataStoreHandler::DataStoreOpStatus::Success;
 }
@@ -2988,7 +3020,9 @@ bool DataStoreServiceClient::InitTableRanges(
     std::vector<uint64_t> records_ts;
     std::vector<uint64_t> records_ttl;
     std::vector<WriteOpType> op_types;
-    SyncCallbackData callback_data;
+    SyncCallbackData *callback_data = sync_callback_data_pool_.NextObject();
+    PoolableGuard guard(callback_data);
+    callback_data->Reset();
 
     std::string key_str = EncodeRangeKey(table_name, *neg_inf_key);
     std::string rec_str = EncodeRangeValue(init_range_id, version, version, 0);
@@ -3006,10 +3040,10 @@ bool DataStoreServiceClient::InitTableRanges(
                       std::move(records_ttl),
                       std::move(op_types),
                       false,
-                      &callback_data,
+                      callback_data,
                       &SyncCallback);
-    callback_data.Wait();
-    if (callback_data.Result().error_code() !=
+    callback_data->Wait();
+    if (callback_data->Result().error_code() !=
         EloqDS::remote::DataStoreError::NO_ERROR)
     {
         LOG(WARNING) << "InitTableRanges: Failed to write range info.";
@@ -3028,39 +3062,41 @@ bool DataStoreServiceClient::DeleteTableRanges(
     std::string end_key = start_key;
     end_key.back()++;
 
-    SyncCallbackData callback_data;
+    SyncCallbackData *callback_data = sync_callback_data_pool_.NextObject();
+    PoolableGuard guard(callback_data);
+    callback_data->Reset();
     DeleteRange(kv_range_slices_table_name,
                 kv_partition_id,
                 start_key,
                 end_key,
                 false,
-                &callback_data,
+                callback_data,
                 &SyncCallback);
-    callback_data.Wait();
+    callback_data->Wait();
 
-    if (callback_data.Result().error_code() !=
+    if (callback_data->Result().error_code() !=
         EloqDS::remote::DataStoreError::NO_ERROR)
     {
         LOG(ERROR) << "DeleteTableRanges failed, error: "
-                   << callback_data.Result().error_msg();
+                   << callback_data->Result().error_msg();
         return false;
     }
 
     // delete all range info from {kv_range_table_name} table
-    callback_data.Reset();
+    callback_data->Reset();
     DeleteRange(kv_range_table_name,
                 kv_partition_id,
                 start_key,
                 end_key,
                 false,
-                &callback_data,
+                callback_data,
                 &SyncCallback);
-    callback_data.Wait();
-    if (callback_data.Result().error_code() !=
+    callback_data->Wait();
+    if (callback_data->Result().error_code() !=
         EloqDS::remote::DataStoreError::NO_ERROR)
     {
         LOG(ERROR) << "DeleteTableRanges failed, error: "
-                   << callback_data.Result().error_msg();
+                   << callback_data->Result().error_msg();
         return false;
     }
 
@@ -3088,7 +3124,9 @@ bool DataStoreServiceClient::InitTableLastRangePartitionId(
     std::vector<uint64_t> records_ts;
     std::vector<uint64_t> records_ttl;
     std::vector<WriteOpType> op_types;
-    SyncCallbackData callback_data;
+    SyncCallbackData *callback_data = sync_callback_data_pool_.NextObject();
+    PoolableGuard guard(callback_data);
+    callback_data->Reset();
 
     std::pair<txservice::TxKey, txservice::TxRecord::Uptr> seq_pair =
         txservice::Sequences::GetSequenceKeyAndInitRecord(
@@ -3115,7 +3153,7 @@ bool DataStoreServiceClient::InitTableLastRangePartitionId(
     for (int i = 0; i < 3; i++)
     {
         // Write directly into sequence table in kvstore.
-        callback_data.Reset();
+        callback_data->Reset();
         keys.emplace_back(
             std::string_view(seq_pair.first.Data(), seq_pair.first.Size()));
         records.emplace_back(std::string_view(encoded_tx_record.data(),
@@ -3132,10 +3170,10 @@ bool DataStoreServiceClient::InitTableLastRangePartitionId(
                           std::move(records_ttl),
                           std::move(op_types),
                           false,
-                          &callback_data,
+                          callback_data,
                           &SyncCallback);
-        callback_data.Wait();
-        if (callback_data.Result().error_code() ==
+        callback_data->Wait();
+        if (callback_data->Result().error_code() ==
             EloqDS::remote::DataStoreError::NO_ERROR)
         {
             DLOG(INFO) << "DataStoreHandler:InitTableLastRangePartitionId "
@@ -3148,7 +3186,7 @@ bool DataStoreServiceClient::InitTableLastRangePartitionId(
             LOG(WARNING) << "DataStoreHandler:InitTableLastRangePartitionId "
                             "failed, retrying. Table: "
                          << table_name.StringView()
-                         << " Error: " << callback_data.Result().error_msg();
+                         << " Error: " << callback_data->Result().error_msg();
             bthread_usleep(500000U);
         }
     }
@@ -3165,41 +3203,43 @@ bool DataStoreServiceClient::DeleteTableStatistics(
     std::string end_key = start_key;
     end_key.back()++;
 
-    SyncCallbackData callback_data;
+    SyncCallbackData *callback_data = sync_callback_data_pool_.NextObject();
+    PoolableGuard guard(callback_data);
+    callback_data->Reset();
     DeleteRange(kv_table_statistics_name,
                 kv_partition_id,
                 start_key,
                 end_key,
                 false,
-                &callback_data,
+                callback_data,
                 &SyncCallback);
-    callback_data.Wait();
+    callback_data->Wait();
 
-    if (callback_data.Result().error_code() !=
+    if (callback_data->Result().error_code() !=
         EloqDS::remote::DataStoreError::NO_ERROR)
     {
         LOG(ERROR) << "DeleteTableStatistics failed, error: "
-                   << callback_data.Result().error_msg();
+                   << callback_data->Result().error_msg();
         return false;
     }
 
     // delete table statistics version from
     // {kv_table_statistics_version_name}
-    callback_data.Reset();
+    callback_data->Reset();
     DeleteRange(kv_table_statistics_version_name,
                 kv_partition_id,
                 start_key,
                 end_key,
                 false,
-                &callback_data,
+                callback_data,
                 &SyncCallback);
-    callback_data.Wait();
+    callback_data->Wait();
 
-    if (callback_data.Result().error_code() !=
+    if (callback_data->Result().error_code() !=
         EloqDS::remote::DataStoreError::NO_ERROR)
     {
         LOG(ERROR) << "DeleteTableStatistics failed, error: "
-                   << callback_data.Result().error_msg();
+                   << callback_data->Result().error_msg();
         return false;
     }
 

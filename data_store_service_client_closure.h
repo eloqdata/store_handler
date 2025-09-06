@@ -42,7 +42,7 @@ typedef void (*DataStoreCallback)(void *data,
                                   DataStoreServiceClient &client,
                                   const remote::CommonResult &result);
 
-struct SyncCallbackData
+struct SyncCallbackData : public Poolable
 {
     SyncCallbackData() : mtx_(), cv_(), finished_(false)
     {
@@ -54,6 +54,11 @@ struct SyncCallbackData
     {
         std::unique_lock<bthread::Mutex> lk(mtx_);
         finished_ = false;
+        result_.Clear();
+    }
+
+    virtual void Clear() override
+    {
         result_.Clear();
     }
 
@@ -92,47 +97,22 @@ private:
     remote::CommonResult result_;
 };
 
-struct SyncReadClusterConfigData
+struct SyncPutAllData : public Poolable
 {
-    SyncReadClusterConfigData(
-        std::unordered_map<uint32_t, std::vector<txservice::NodeConfig>>
-            &ng_configs,
-        uint64_t &version,
-        bool &uninitialized)
-        : ng_configs_(ng_configs),
-          version_(version),
-          uninitialized_(uninitialized)
+    void Reset()
     {
+        unfinished_request_cnt_ = 0;
+        all_request_started_ = false;
+        result_.Clear();
     }
 
-    void Notify()
+    virtual void Clear() override
     {
-        std::unique_lock<bthread::Mutex> lk(mux_);
-        finished_ = true;
-        cv_.notify_one();
+        unfinished_request_cnt_ = 0;
+        all_request_started_ = false;
+        result_.Clear();
     }
 
-    void Wait()
-    {
-        std::unique_lock<bthread::Mutex> lk(mux_);
-        while (!finished_)
-        {
-            cv_.wait(lk);
-        }
-    }
-
-    std::unordered_map<uint32_t, std::vector<txservice::NodeConfig>>
-        &ng_configs_;
-    uint64_t &version_;
-    bool &uninitialized_;
-    bthread::Mutex mux_;
-    bthread::ConditionVariable cv_;
-    bool finished_{false};
-    bool has_error_{false};
-};
-
-struct SyncPutAllData
-{
     void Finish(const remote::CommonResult &res)
     {
         std::unique_lock<bthread::Mutex> lk(mux_);
@@ -161,11 +141,6 @@ void SyncCallback(void *data,
                   ::google::protobuf::Closure *closure,
                   DataStoreServiceClient &client,
                   const remote::CommonResult &result);
-
-void SyncReadClusterConfigCallback(void *data,
-                                   ::google::protobuf::Closure *closure,
-                                   DataStoreServiceClient &client,
-                                   const remote::CommonResult &result);
 
 struct ReadBaseForArchiveCallbackData
 {
@@ -271,51 +246,6 @@ void SyncBatchReadForArchiveCallback(void *data,
                                      ::google::protobuf::Closure *closure,
                                      DataStoreServiceClient &client,
                                      const remote::CommonResult &result);
-
-// class LoadRangeSliceCallbackData : public Poolable
-// {
-// public:
-//     LoadRangeSliceCallbackData() = default;
-
-//     void Reset(std::string_view kv_table_name,
-//                uint32_t range_partition_id,
-//                txservice::FillStoreSliceCc *fill_store_slice_req,
-//                const std::string &&last_key,
-//                const std::string &&end_key,
-//                const std::string &session_id,
-//                size_t batch_size,
-//                std::shared_ptr<void> defer_unpin)
-//     {
-//         kv_table_name_ = kv_table_name;
-//         range_partition_id_ = range_partition_id;
-//         fill_store_slice_req_ = fill_store_slice_req;
-//         last_key_ = std::move(last_key);
-//         end_key_ = std::move(end_key);
-//         sesssion_id_ = session_id;
-//         batch_size_ = batch_size;
-//         defer_unpin_ = defer_unpin;
-//     }
-
-//     void Clear() override
-//     {
-//         kv_table_name_ = "";
-//         range_partition_id_ = 0;
-//         fill_store_slice_req_ = nullptr;
-//         last_key_ = "";
-//         sesssion_id_ = "";
-//         batch_size_ = 0;
-//         defer_unpin_ = nullptr;
-//     }
-
-//     std::string_view kv_table_name_;
-//     uint32_t range_partition_id_;
-//     txservice::FillStoreSliceCc *fill_store_slice_req_;
-//     std::string last_key_;
-//     std::string end_key_;
-//     std::string sesssion_id_;
-//     size_t batch_size_{0};
-//     std::shared_ptr<void> defer_unpin_;
-// };
 
 void LoadRangeSliceCallback(void *data,
                             ::google::protobuf::Closure *closure,
@@ -2262,16 +2192,26 @@ void FetchTableCatalogCallback(void *data,
 
 struct FetchTableCallbackData : public SyncCallbackData
 {
-    FetchTableCallbackData(std::string &schema_image,
-                           bool &found,
-                           uint64_t &version_ts)
-        : schema_image_(schema_image), found_(found), version_ts_(version_ts)
+    FetchTableCallbackData() = default;
+    ~FetchTableCallbackData() = default;
+
+    void Reset(std::string &schema_image, bool &found, uint64_t &version_ts)
     {
+        schema_image_ = &schema_image;
+        found_ = &found;
+        version_ts_ = &version_ts;
     }
 
-    std::string &schema_image_;
-    bool &found_;
-    uint64_t &version_ts_;
+    void Clear() override
+    {
+        schema_image_ = nullptr;
+        found_ = nullptr;
+        version_ts_ = nullptr;
+    }
+
+    std::string *schema_image_;
+    bool *found_;
+    uint64_t *version_ts_;
 };
 
 void FetchTableCallback(void *data,
@@ -2286,15 +2226,26 @@ void SyncPutAllCallback(void *data,
 
 struct FetchDatabaseCallbackData : public SyncCallbackData
 {
-    FetchDatabaseCallbackData(std::string &definition,
-                              bool &found,
-                              const std::function<void()> *yield_fptr,
-                              const std::function<void()> *resume_fptr)
-        : db_definition_(definition),
-          found_(found),
-          yield_fptr_(yield_fptr),
-          resume_fptr_(resume_fptr)
+    FetchDatabaseCallbackData() = default;
+    ~FetchDatabaseCallbackData() = default;
+
+    void Reset(std::string &definition,
+               bool &found,
+               const std::function<void()> *yield_fptr,
+               const std::function<void()> *resume_fptr)
     {
+        db_definition_ = &definition;
+        found_ = &found;
+        yield_fptr_ = yield_fptr;
+        resume_fptr_ = resume_fptr;
+    }
+
+    void Clear() override
+    {
+        db_definition_ = nullptr;
+        found_ = nullptr;
+        yield_fptr_ = nullptr;
+        resume_fptr_ = nullptr;
     }
 
     void Wait() override
@@ -2321,8 +2272,8 @@ struct FetchDatabaseCallbackData : public SyncCallbackData
         }
     }
 
-    std::string &db_definition_;
-    bool &found_;
+    std::string *db_definition_;
+    bool *found_;
     const std::function<void()> *yield_fptr_;
     const std::function<void()> *resume_fptr_;
 };
@@ -2334,23 +2285,29 @@ void FetchDatabaseCallback(void *data,
 
 struct FetchAllDatabaseCallbackData : public SyncCallbackData
 {
-    FetchAllDatabaseCallbackData(const std::string_view kv_table_name,
-                                 std::vector<std::string> &dbnames,
-                                 const std::function<void()> *yield_fptr,
-                                 const std::function<void()> *resume_fptr,
-                                 int32_t partition_id,
-                                 uint32_t batch_size)
-        : kv_table_name_(kv_table_name),
-          dbnames_(dbnames),
-          yield_fptr_(yield_fptr),
-          resume_fptr_(resume_fptr),
-          search_conds_(),
-          session_id_(),
-          start_key_(),
-          end_key_(),
-          partition_id_(partition_id),
-          batch_size_(batch_size)
+    FetchAllDatabaseCallbackData() = default;
+    ~FetchAllDatabaseCallbackData() = default;
+
+    void Reset(std::vector<std::string> &dbnames,
+               const std::function<void()> *yield_fptr,
+               const std::function<void()> *resume_fptr)
     {
+        dbnames_ = &dbnames;
+        yield_fptr_ = yield_fptr;
+        resume_fptr_ = resume_fptr;
+        session_id_.clear();
+        start_key_.clear();
+        end_key_.clear();
+    }
+
+    void Clear() override
+    {
+        dbnames_ = nullptr;
+        yield_fptr_ = nullptr;
+        resume_fptr_ = nullptr;
+        session_id_.clear();
+        start_key_.clear();
+        end_key_.clear();
     }
 
     void Wait() override
@@ -2377,17 +2334,13 @@ struct FetchAllDatabaseCallbackData : public SyncCallbackData
         }
     }
 
-    const std::string_view kv_table_name_;
-    std::vector<std::string> &dbnames_;
+    std::vector<std::string> *dbnames_;
     const std::function<void()> *yield_fptr_;
     const std::function<void()> *resume_fptr_;
 
-    std::vector<remote::SearchCondition> search_conds_;
     std::string session_id_;
     std::string start_key_;
     std::string end_key_;
-    int32_t partition_id_;
-    uint32_t batch_size_;
 };
 
 void FetchAllDatabaseCallback(void *data,
@@ -2397,23 +2350,25 @@ void FetchAllDatabaseCallback(void *data,
 
 struct DiscoverAllTableNamesCallbackData : public SyncCallbackData
 {
-    DiscoverAllTableNamesCallbackData(const std::string_view kv_table_name,
-                                      std::vector<std::string> &table_names,
-                                      const std::function<void()> *yield_fptr,
-                                      const std::function<void()> *resume_fptr,
-                                      int32_t partition_id,
-                                      uint32_t batch_size)
-        : kv_table_name_(kv_table_name),
-          table_names_(table_names),
-          yield_fptr_(yield_fptr),
-          resume_fptr_(resume_fptr),
-          search_conds_(),
-          session_id_(),
-          start_key_(),
-          end_key_(),
-          partition_id_(partition_id),
-          batch_size_(batch_size)
+    DiscoverAllTableNamesCallbackData() = default;
+    ~DiscoverAllTableNamesCallbackData() = default;
+
+    void Reset(std::vector<std::string> &table_names,
+               const std::function<void()> *yield_fptr,
+               const std::function<void()> *resume_fptr)
     {
+        table_names_ = &table_names;
+        yield_fptr_ = yield_fptr;
+        resume_fptr_ = resume_fptr;
+        session_id_.clear();
+    }
+
+    void Clear() override
+    {
+        table_names_ = nullptr;
+        yield_fptr_ = nullptr;
+        resume_fptr_ = nullptr;
+        session_id_.clear();
     }
 
     void Wait() override
@@ -2440,17 +2395,11 @@ struct DiscoverAllTableNamesCallbackData : public SyncCallbackData
         }
     }
 
-    const std::string_view kv_table_name_;
-    std::vector<std::string> &table_names_;
+    std::vector<std::string> *table_names_;
     const std::function<void()> *yield_fptr_;
     const std::function<void()> *resume_fptr_;
 
-    std::vector<remote::SearchCondition> search_conds_;
     std::string session_id_;
-    std::string start_key_;
-    std::string end_key_;
-    int32_t partition_id_;
-    uint32_t batch_size_;
 };
 
 void DiscoverAllTableNamesCallback(void *data,
@@ -2514,60 +2463,10 @@ void FetchArchivesCallback(void *data,
                            DataStoreServiceClient &client,
                            const remote::CommonResult &result);
 
-struct FetchRecordArchivesCallbackData
-{
-    FetchRecordArchivesCallbackData(txservice::FetchRecordCc *fetch_cc,
-                                    const std::string_view kv_table_name,
-                                    uint32_t partition_id,
-                                    std::string &&start_key,
-                                    std::string &&end_key)
-        : fetch_cc_(fetch_cc),
-          kv_table_name_(kv_table_name),
-          partition_id_(partition_id),
-          start_key_(std::move(start_key)),
-          end_key_(std::move(end_key)),
-          session_id_("")
-    {
-    }
-
-    txservice::FetchRecordCc *fetch_cc_;
-    const std::string_view kv_table_name_;
-    const uint32_t partition_id_;
-
-    std::string start_key_;
-    std::string end_key_;
-    std::string session_id_;
-};
-
 void FetchRecordArchivesCallback(void *data,
                                  ::google::protobuf::Closure *closure,
                                  DataStoreServiceClient &client,
                                  const remote::CommonResult &result);
-
-struct FetchSnapshotArchiveCallbackData
-{
-    FetchSnapshotArchiveCallbackData(txservice::FetchSnapshotCc *fetch_cc,
-                                     const std::string_view kv_table_name,
-                                     uint32_t partition_id,
-                                     std::string &&start_key,
-                                     std::string &&end_key)
-        : fetch_cc_(fetch_cc),
-          kv_table_name_(kv_table_name),
-          partition_id_(partition_id),
-          start_key_(std::move(start_key)),
-          end_key_(std::move(end_key)),
-          session_id_("")
-    {
-    }
-
-    txservice::FetchSnapshotCc *fetch_cc_;
-    const std::string_view kv_table_name_;
-    const uint32_t partition_id_;
-
-    std::string start_key_;
-    std::string end_key_;
-    std::string session_id_;
-};
 
 void FetchSnapshotArchiveCallback(void *data,
                                   ::google::protobuf::Closure *closure,
