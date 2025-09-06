@@ -52,6 +52,7 @@ thread_local ObjectPool<DeleteRangeClosure> delete_range_closure_pool_;
 thread_local ObjectPool<ReadClosure> read_closure_pool_;
 thread_local ObjectPool<DropTableClosure> drop_table_closure_pool_;
 thread_local ObjectPool<ScanNextClosure> scan_next_closure_pool_;
+
 thread_local ObjectPool<SyncCallbackData> sync_callback_data_pool_;
 thread_local ObjectPool<FetchTableCallbackData> fetch_table_callback_data_pool_;
 thread_local ObjectPool<FetchDatabaseCallbackData> fetch_db_callback_data_pool_;
@@ -728,10 +729,9 @@ bool DataStoreServiceClient::UpsertTableStatistics(
     std::vector<uint64_t> records_ts;
     std::vector<uint64_t> records_ttl;
     std::vector<WriteOpType> op_types;
-    SyncCallbackData *callback_data_ptr = sync_callback_data_pool_.NextObject();
-    PoolableGuard guard(callback_data_ptr);
-    callback_data_ptr->Reset();
-    SyncCallbackData &callback_data = *callback_data_ptr;
+    SyncCallbackData *callback_data = sync_callback_data_pool_.NextObject();
+    PoolableGuard guard(callback_data);
+    callback_data->Reset();
 
     for (size_t i = 0; i < segment_keys.size(); ++i)
     {
@@ -744,7 +744,7 @@ bool DataStoreServiceClient::UpsertTableStatistics(
         // For segments are splitted based on MAX_WRITE_BATCH_SIZE, execute
         // one write request for each segment record.
 
-        callback_data.Reset();
+        callback_data->Reset();
         BatchWriteRecords(kv_table_statistics_name,
                           kv_partition_id,
                           std::move(keys),
@@ -753,11 +753,11 @@ bool DataStoreServiceClient::UpsertTableStatistics(
                           std::move(records_ttl),
                           std::move(op_types),
                           true,
-                          &callback_data,
+                          callback_data,
                           &SyncCallback);
-        callback_data.Wait();
+        callback_data->Wait();
 
-        if (callback_data.Result().error_code() !=
+        if (callback_data->Result().error_code() !=
             EloqDS::remote::DataStoreError::NO_ERROR)
         {
             LOG(WARNING) << "UpdatetableStatistics: Failed to write segments.";
@@ -767,7 +767,7 @@ bool DataStoreServiceClient::UpsertTableStatistics(
     }
 
     // 3- Update the ckpt version of the table statistics
-    callback_data.Reset();
+    callback_data->Reset();
     keys.emplace_back(ccm_table_name.StringView());
     std::string version_str = std::to_string(version);
     records.emplace_back(version_str);
@@ -782,11 +782,11 @@ bool DataStoreServiceClient::UpsertTableStatistics(
                       std::move(records_ttl),
                       std::move(op_types),
                       true,
-                      &callback_data,
+                      callback_data,
                       &SyncCallback);
-    callback_data.Wait();
+    callback_data->Wait();
 
-    if (callback_data.Result().error_code() !=
+    if (callback_data->Result().error_code() !=
         EloqDS::remote::DataStoreError::NO_ERROR)
     {
         LOG(WARNING) << "UpdatetableStatistics: Failed to write segments.";
@@ -806,16 +806,16 @@ bool DataStoreServiceClient::UpsertTableStatistics(
     end_key.append(reinterpret_cast<const char *>(&be_version),
                    sizeof(uint64_t));
 
-    callback_data.Reset();
+    callback_data->Reset();
     DeleteRange(kv_table_statistics_name,
                 kv_partition_id,
                 start_key,
                 end_key,
                 true,
-                &callback_data,
+                callback_data,
                 &SyncCallback);
-    callback_data.Wait();
-    if (callback_data.Result().error_code() !=
+    callback_data->Wait();
+    if (callback_data->Result().error_code() !=
         EloqDS::remote::DataStoreError::NO_ERROR)
     {
         LOG(WARNING) << "UpdatetableStatistics: Failed to write ckpt version.";
@@ -1515,7 +1515,7 @@ bool DataStoreServiceClient::FetchAllDatabase(
              true,
              100,
              nullptr,
-             &callback_data,
+             callback_data,
              &FetchAllDatabaseCallback);
     callback_data->Wait();
 
@@ -3421,7 +3421,9 @@ bool DataStoreServiceClient::InitPreBuiltTables()
     if (!keys.empty())
     {
         // write init catalog to kvstore
-        SyncCallbackData callback_data;
+        SyncCallbackData *callback_data = sync_callback_data_pool_.NextObject();
+        PoolableGuard guard(callback_data);
+        callback_data->Reset();
         BatchWriteRecords(kv_table_catalogs_name,
                           partition_id,
                           std::move(keys),
@@ -3430,11 +3432,11 @@ bool DataStoreServiceClient::InitPreBuiltTables()
                           std::move(records_ttl),
                           std::move(op_types),
                           false,
-                          &callback_data,
+                          callback_data,
                           &SyncCallback);
-        callback_data.Wait();
+        callback_data->Wait();
 
-        if (callback_data.Result().error_code() !=
+        if (callback_data->Result().error_code() !=
             remote::DataStoreError::NO_ERROR)
         {
             LOG(WARNING) << "InitPreBuiltTables failed" << std::endl;
@@ -3634,7 +3636,9 @@ bool DataStoreServiceClient::UpsertCatalog(
     std::vector<uint64_t> records_ts;
     std::vector<uint64_t> records_ttl;
     std::vector<WriteOpType> op_types;
-    SyncCallbackData callback_data;
+    SyncCallbackData *callback_data = sync_callback_data_pool_.NextObject();
+    PoolableGuard guard(callback_data);
+    callback_data->Reset();
 
     // Save table catalog image
     const txservice::TableName &base_table_name =
@@ -3657,14 +3661,15 @@ bool DataStoreServiceClient::UpsertCatalog(
                       std::move(records_ttl),
                       std::move(op_types),
                       false,
-                      &callback_data,
+                      callback_data,
                       &SyncCallback);
 
-    callback_data.Wait();
-    if (callback_data.Result().error_code() != remote::DataStoreError::NO_ERROR)
+    callback_data->Wait();
+    if (callback_data->Result().error_code() !=
+        remote::DataStoreError::NO_ERROR)
     {
         LOG(ERROR) << "UpsertCatalog: failed to upsert table catalog, error:"
-                   << callback_data.Result().error_msg();
+                   << callback_data->Result().error_msg();
         return false;
     }
 
@@ -3679,7 +3684,9 @@ bool DataStoreServiceClient::DeleteCatalog(
     std::vector<uint64_t> records_ts;
     std::vector<uint64_t> records_ttl;
     std::vector<WriteOpType> op_types;
-    SyncCallbackData callback_data;
+    SyncCallbackData *callback_data = sync_callback_data_pool_.NextObject();
+    PoolableGuard guard(callback_data);
+    callback_data->Reset();
 
     // Delete table catalog image
     int32_t partition_id = 0;
@@ -3698,11 +3705,12 @@ bool DataStoreServiceClient::DeleteCatalog(
                       std::move(records_ttl),
                       std::move(op_types),
                       false,
-                      &callback_data,
+                      callback_data,
                       &SyncCallback);
 
-    callback_data.Wait();
-    if (callback_data.Result().error_code() != remote::DataStoreError::NO_ERROR)
+    callback_data->Wait();
+    if (callback_data->Result().error_code() !=
+        remote::DataStoreError::NO_ERROR)
     {
         LOG(ERROR) << "DeleteCatalog: failed to upsert table catalog";
         return false;
