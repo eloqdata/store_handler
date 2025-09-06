@@ -287,8 +287,6 @@ public:
         cntl_.Reset();
         request_.Clear();
         response_.Clear();
-        cntl_.Reset();
-        channel_.reset();
         table_name_ = "";
         partition_id_ = 0;
         key_ = "";
@@ -342,15 +340,15 @@ public:
                     cntl_.ErrorCode() != EAGAIN &&
                     cntl_.ErrorCode() != brpc::ERPCTIMEDOUT)
                 {
-                    channel_ = ds_service_client_
-                                   ->UpdateDataStoreServiceChannelByPartitionId(
-                                       partition_id_);
+                    auto channel =
+                        ds_service_client_
+                            ->UpdateDataStoreServiceChannelByPartitionId(
+                                partition_id_);
 
                     // Retry
                     if (retry_count_ < ds_service_client_->retry_limit_)
                     {
                         self_guard.Release();
-                        channel_ = nullptr;
                         retry_count_++;
                         ds_service_client_->ReadInternal(this);
                         return;
@@ -362,7 +360,6 @@ public:
                     EloqDS::remote::DataStoreError::NETWORK_ERROR);
                 result.set_error_msg(cntl_.ErrorText());
                 (*callback_)(callback_data_, this, *ds_service_client_, result);
-                channel_ = nullptr;
                 return;
             }
             result = &response_.result();
@@ -384,7 +381,6 @@ public:
             if (retry_count_ < ds_service_client_->retry_limit_)
             {
                 self_guard.Release();
-                channel_ = nullptr;
                 response_.Clear();
                 cntl_.Reset();
                 retry_count_++;
@@ -409,16 +405,6 @@ public:
     EloqDS::remote::ReadRequest *ReadRequest()
     {
         return &request_;
-    }
-
-    void SetChannel(std::shared_ptr<brpc::Channel> channel)
-    {
-        channel_ = channel;
-    }
-
-    brpc::Channel *Channel()
-    {
-        return channel_.get();
     }
 
     const std::string_view TableName()
@@ -544,7 +530,6 @@ private:
     EloqDS::remote::ReadRequest request_;
     EloqDS::remote::ReadResponse response_;
     // keep channel alive
-    std::shared_ptr<brpc::Channel> channel_;
 
     // serve local call
     std::string_view table_name_;
@@ -573,7 +558,6 @@ public:
         request_.Clear();
         response_.Clear();
         cntl_.Reset();
-        channel_ = nullptr;
         ds_service_client_ = nullptr;
         retry_count_ = 0;
         is_local_request_ = false;
@@ -647,15 +631,13 @@ public:
                     cntl_.ErrorCode() != EAGAIN &&
                     cntl_.ErrorCode() != brpc::ERPCTIMEDOUT)
                 {
-                    channel_ = ds_service_client_
-                                   ->UpdateDataStoreServiceChannelByShardId(
-                                       shard_ids_.back());
+                    ds_service_client_->UpdateDataStoreServiceChannelByShardId(
+                        shard_ids_.back());
 
                     // Retry
                     if (retry_count_ < ds_service_client_->retry_limit_)
                     {
                         self_guard.Release();
-                        channel_ = nullptr;
                         retry_count_++;
                         ds_service_client_->FlushDataInternal(this);
                         return;
@@ -687,7 +669,6 @@ public:
             if (retry_count_ < ds_service_client_->retry_limit_)
             {
                 self_guard.Release();
-                channel_ = nullptr;
                 response_.Clear();
                 cntl_.Reset();
                 retry_count_++;
@@ -730,16 +711,6 @@ public:
         return &response_;
     }
 
-    brpc::Channel *GetChannel()
-    {
-        return channel_.get();
-    }
-
-    void SetChannel(std::shared_ptr<brpc::Channel> channel)
-    {
-        channel_ = channel;
-    }
-
     const std::vector<std::string> &KvTableNames()
     {
         return *kv_table_names_;
@@ -771,7 +742,6 @@ private:
     brpc::Controller cntl_;
     ::EloqDS::remote::FlushDataRequest request_;
     ::EloqDS::remote::FlushDataResponse response_;
-    std::shared_ptr<brpc::Channel> channel_;
     DataStoreServiceClient *ds_service_client_;
     uint16_t retry_count_{0};
 
@@ -800,7 +770,6 @@ public:
         request_.Clear();
         response_.Clear();
         cntl_.Reset();
-        channel_ = nullptr;
         ds_service_client_ = nullptr;
         retry_count_ = 0;
         is_local_request_ = false;
@@ -878,15 +847,14 @@ public:
                     cntl_.ErrorCode() != EAGAIN &&
                     cntl_.ErrorCode() != brpc::ERPCTIMEDOUT)
                 {
-                    channel_ = ds_service_client_
-                                   ->UpdateDataStoreServiceChannelByPartitionId(
-                                       partition_id_);
+                    ds_service_client_
+                        ->UpdateDataStoreServiceChannelByPartitionId(
+                            partition_id_);
 
                     // Retry
                     if (retry_count_ < ds_service_client_->retry_limit_)
                     {
                         self_guard.Release();
-                        channel_ = nullptr;
                         retry_count_++;
                         ds_service_client_->DeleteRangeInternal(this);
                         return;
@@ -918,7 +886,6 @@ public:
             if (retry_count_ < ds_service_client_->retry_limit_)
             {
                 self_guard.Release();
-                channel_ = nullptr;
                 response_.Clear();
                 cntl_.Reset();
                 retry_count_++;
@@ -933,16 +900,6 @@ public:
     brpc::Controller *Controller()
     {
         return &cntl_;
-    }
-
-    brpc::Channel *GetChannel()
-    {
-        return channel_.get();
-    }
-
-    void SetChannel(std::shared_ptr<brpc::Channel> channel)
-    {
-        channel_ = channel;
     }
 
     ::EloqDS::remote::DeleteRangeRequest *DeleteRangeRequest()
@@ -1001,7 +958,6 @@ private:
     brpc::Controller cntl_;
     ::EloqDS::remote::DeleteRangeRequest request_;
     ::EloqDS::remote::DeleteRangeResponse response_;
-    std::shared_ptr<brpc::Channel> channel_;
     DataStoreServiceClient *ds_service_client_;
     uint16_t retry_count_{0};
 
@@ -1033,7 +989,6 @@ public:
         request_.Clear();
         response_.Clear();
         cntl_.Reset();
-        channel_ = nullptr;
         ds_service_client_ = nullptr;
         retry_count_ = 0;
         is_local_request_ = false;
@@ -1102,15 +1057,13 @@ public:
                     cntl_.ErrorCode() != EAGAIN &&
                     cntl_.ErrorCode() != brpc::ERPCTIMEDOUT)
                 {
-                    channel_ = ds_service_client_
-                                   ->UpdateDataStoreServiceChannelByShardId(
-                                       shard_ids_.back());
+                    ds_service_client_->UpdateDataStoreServiceChannelByShardId(
+                        shard_ids_.back());
 
                     // Retry
                     if (retry_count_ < ds_service_client_->retry_limit_)
                     {
                         self_guard.Release();
-                        channel_ = nullptr;
                         retry_count_++;
                         ds_service_client_->DropTableInternal(this);
                         return;
@@ -1142,7 +1095,6 @@ public:
             if (retry_count_ < ds_service_client_->retry_limit_)
             {
                 self_guard.Release();
-                channel_ = nullptr;
                 response_.Clear();
                 cntl_.Reset();
                 retry_count_++;
@@ -1185,16 +1137,6 @@ public:
         return &response_;
     }
 
-    brpc::Channel *GetChannel()
-    {
-        return channel_.get();
-    }
-
-    void SetChannel(std::shared_ptr<brpc::Channel> channel)
-    {
-        channel_ = channel;
-    }
-
     const std::string_view TableName()
     {
         return table_name_;
@@ -1226,7 +1168,6 @@ private:
     brpc::Controller cntl_;
     ::EloqDS::remote::DropTableRequest request_;
     ::EloqDS::remote::DropTableResponse response_;
-    std::shared_ptr<brpc::Channel> channel_;
     DataStoreServiceClient *ds_service_client_;
     uint16_t retry_count_{0};
 
@@ -1259,7 +1200,6 @@ public:
     {
         ds_service_client_ = nullptr;
         retry_count_ = 0;
-        req_shard_id_ = 0;
         is_local_request_ = false;
 
         kv_table_name_ = "";
@@ -1277,7 +1217,6 @@ public:
         request_.Clear();
         response_.Clear();
         cntl_.Reset();
-        channel_ = nullptr;
         parts_cnt_per_key_ = 1;
         parts_cnt_per_record_ = 1;
     }
@@ -1355,7 +1294,6 @@ public:
         bool need_retry = false;
         if (!is_local_request_)
         {
-            assert(channel_ != nullptr);
             if (cntl_.Failed())
             {
                 // RPC failed.
@@ -1366,11 +1304,11 @@ public:
                     cntl_.ErrorCode() != EAGAIN &&
                     cntl_.ErrorCode() != brpc::ERPCTIMEDOUT)
                 {
-                    // NOTICE(lzx): Should re-fetch the shared_id after
-                    // supporting partition migration between data shards.
-                    channel_ = ds_service_client_
-                                   ->UpdateDataStoreServiceChannelByShardId(
-                                       req_shard_id_);
+                    uint32_t req_shard_id =
+                        ds_service_client_->GetShardIdByPartitionId(
+                            partition_id_);
+                    ds_service_client_->UpdateDataStoreServiceChannelByShardId(
+                        req_shard_id);
                     need_retry = true;
                 }
                 else
@@ -1418,7 +1356,6 @@ public:
         request_.Clear();
         response_.Clear();
         is_local_request_ = false;
-        channel_ = nullptr;
 
         // make request
         request_.set_kv_table_name(kv_table_name_.data(),
@@ -1461,11 +1398,6 @@ public:
         }
     }
 
-    void SetReqShardId(uint32_t shard_id)
-    {
-        req_shard_id_ = shard_id;
-    }
-
     brpc::Controller *Controller()
     {
         return &cntl_;
@@ -1479,16 +1411,6 @@ public:
     EloqDS::remote::BatchWriteRecordsResponse *RemoteResponse()
     {
         return &response_;
-    }
-
-    void SetChannel(std::shared_ptr<brpc::Channel> channel)
-    {
-        channel_ = channel;
-    }
-
-    brpc::Channel *Channel()
-    {
-        return channel_.get();
     }
 
     remote::CommonResult &Result()
@@ -1510,9 +1432,7 @@ private:
     brpc::Controller cntl_;
     EloqDS::remote::BatchWriteRecordsRequest request_;
     EloqDS::remote::BatchWriteRecordsResponse response_;
-    std::shared_ptr<brpc::Channel> channel_;
     DataStoreServiceClient *ds_service_client_{nullptr};
-    uint32_t req_shard_id_{0};
     uint16_t retry_count_{0};
 
     std::string_view kv_table_name_;
@@ -1553,7 +1473,6 @@ public:
         request_.Clear();
         response_.Clear();
         cntl_.Reset();
-        channel_ = nullptr;
         ds_service_client_ = nullptr;
         retry_count_ = 0;
         is_local_request_ = false;
@@ -1674,15 +1593,14 @@ public:
                     cntl_.ErrorCode() != EAGAIN &&
                     cntl_.ErrorCode() != brpc::ERPCTIMEDOUT)
                 {
-                    channel_ = ds_service_client_
-                                   ->UpdateDataStoreServiceChannelByPartitionId(
-                                       partition_id_);
+                    ds_service_client_
+                        ->UpdateDataStoreServiceChannelByPartitionId(
+                            partition_id_);
 
                     // Retry
                     if (retry_count_ < ds_service_client_->retry_limit_)
                     {
                         self_guard.Release();
-                        channel_ = nullptr;
                         retry_count_++;
                         ds_service_client_->ScanNextInternal(this);
                         return;
@@ -1714,7 +1632,6 @@ public:
             if (retry_count_ < ds_service_client_->retry_limit_)
             {
                 self_guard.Release();
-                channel_ = nullptr;
                 response_.Clear();
                 cntl_.Reset();
                 retry_count_++;
@@ -1729,16 +1646,6 @@ public:
     brpc::Controller *Controller()
     {
         return &cntl_;
-    }
-
-    brpc::Channel *GetChannel()
-    {
-        return channel_.get();
-    }
-
-    void SetChannel(std::shared_ptr<brpc::Channel> channel)
-    {
-        channel_ = channel;
     }
 
     ::EloqDS::remote::ScanRequest *ScanNextRequest()
@@ -1885,7 +1792,6 @@ private:
     brpc::Controller cntl_;
     ::EloqDS::remote::ScanRequest request_;
     ::EloqDS::remote::ScanResponse response_;
-    std::shared_ptr<brpc::Channel> channel_;
     DataStoreServiceClient *ds_service_client_;
     uint16_t retry_count_{0};
 
