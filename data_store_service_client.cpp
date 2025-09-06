@@ -51,8 +51,6 @@ thread_local ObjectPool<DeleteRangeClosure> delete_range_closure_pool_;
 thread_local ObjectPool<ReadClosure> read_closure_pool_;
 thread_local ObjectPool<DropTableClosure> drop_table_closure_pool_;
 thread_local ObjectPool<ScanNextClosure> scan_next_closure_pool_;
-thread_local ObjectPool<LoadRangeSliceCallbackData>
-    load_range_slice_callback_data_pool_;
 thread_local ObjectPool<CreateSnapshotForBackupClosure>
     create_snapshot_for_backup_closure_pool_;
 thread_local ObjectPool<CreateSnapshotForBackupCallbackData>
@@ -992,56 +990,51 @@ DataStoreServiceClient::LoadRangeSlice(
         nullptr,
         [ng_id = load_slice_req->NodeGroup()](void *)
         { txservice::Sharder::Instance().UnpinNodeGroupData(ng_id); });
-    std::string start_key_str;
+
     const txservice::TxKey &start_key = load_slice_req->StartKey();
     if (start_key == *txservice::TxKeyFactory::NegInfTxKey())
     {
         const txservice::TxKey *neg_key =
             txservice::TxKeyFactory::PackedNegativeInfinity();
-        start_key_str = std::string(neg_key->Data(), neg_key->Size());
+        load_slice_req->kv_start_key_ =
+            std::string_view(neg_key->Data(), neg_key->Size());
     }
     else
     {
-        start_key_str = std::string(start_key.Data(), start_key.Size());
+        load_slice_req->kv_start_key_ =
+            std::string_view(start_key.Data(), start_key.Size());
     }
 
-    std::string end_key_str;
     const txservice::TxKey &end_key = load_slice_req->EndKey();
     if (end_key == *txservice::TxKeyFactory::PosInfTxKey())
     {
         // end_key of empty string indicates the positive infinity in the
         // ScanNext
-        end_key_str = "";
+        load_slice_req->kv_end_key_ = "";
     }
     else
     {
-        end_key_str = std::string(end_key.Data(), end_key.Size());
+        load_slice_req->kv_end_key_ =
+            std::string_view(end_key.Data(), end_key.Size());
     }
 
-    const std::string &kv_table_name = kv_info->GetKvTableName(table_name);
-    LoadRangeSliceCallbackData *callback_data =
-        load_range_slice_callback_data_pool_.NextObject();
-    int32_t kv_partition_id = KvPartitionIdOf(range_partition_id, true);
-    callback_data->Reset(kv_table_name,
-                         kv_partition_id,
-                         load_slice_req,
-                         std::move(start_key_str),
-                         std::move(end_key_str),
-                         "",  // session_id
-                         1000,
-                         defer_unpin);
+    load_slice_req->kv_table_name_ = &(kv_info->GetKvTableName(table_name));
+    load_slice_req->defer_unpin_ = std::move(defer_unpin);
+    load_slice_req->kv_partition_id_ =
+        KvPartitionIdOf(range_partition_id, true);
+    load_slice_req->kv_session_id_.clear();
 
-    ScanNext(kv_info->GetKvTableName(table_name),
-             kv_partition_id,
-             callback_data->last_key_,
-             callback_data->end_key_,
-             "",                          // session_id
-             true,                        // include start_key
-             false,                       // include end_key
-             true,                        // scan forward
-             callback_data->batch_size_,  // batch size
-             nullptr,                     // search condition
-             callback_data,
+    ScanNext(*load_slice_req->kv_table_name_,
+             load_slice_req->kv_partition_id_,
+             load_slice_req->kv_start_key_,
+             load_slice_req->kv_end_key_,
+             "",       // session_id
+             true,     // include start_key
+             false,    // include end_key
+             true,     // scan forward
+             1000,     // batch size
+             nullptr,  // search condition
+             load_slice_req,
              &LoadRangeSliceCallback);
 
     return txservice::store::DataStoreHandler::DataStoreOpStatus::Success;

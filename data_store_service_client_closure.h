@@ -272,50 +272,50 @@ void SyncBatchReadForArchiveCallback(void *data,
                                      DataStoreServiceClient &client,
                                      const remote::CommonResult &result);
 
-class LoadRangeSliceCallbackData : public Poolable
-{
-public:
-    LoadRangeSliceCallbackData() = default;
+// class LoadRangeSliceCallbackData : public Poolable
+// {
+// public:
+//     LoadRangeSliceCallbackData() = default;
 
-    void Reset(std::string_view kv_table_name,
-               uint32_t range_partition_id,
-               txservice::FillStoreSliceCc *fill_store_slice_req,
-               const std::string &&last_key,
-               const std::string &&end_key,
-               const std::string &session_id,
-               size_t batch_size,
-               std::shared_ptr<void> defer_unpin)
-    {
-        kv_table_name_ = kv_table_name;
-        range_partition_id_ = range_partition_id;
-        fill_store_slice_req_ = fill_store_slice_req;
-        last_key_ = std::move(last_key);
-        end_key_ = std::move(end_key);
-        sesssion_id_ = session_id;
-        batch_size_ = batch_size;
-        defer_unpin_ = defer_unpin;
-    }
+//     void Reset(std::string_view kv_table_name,
+//                uint32_t range_partition_id,
+//                txservice::FillStoreSliceCc *fill_store_slice_req,
+//                const std::string &&last_key,
+//                const std::string &&end_key,
+//                const std::string &session_id,
+//                size_t batch_size,
+//                std::shared_ptr<void> defer_unpin)
+//     {
+//         kv_table_name_ = kv_table_name;
+//         range_partition_id_ = range_partition_id;
+//         fill_store_slice_req_ = fill_store_slice_req;
+//         last_key_ = std::move(last_key);
+//         end_key_ = std::move(end_key);
+//         sesssion_id_ = session_id;
+//         batch_size_ = batch_size;
+//         defer_unpin_ = defer_unpin;
+//     }
 
-    void Clear() override
-    {
-        kv_table_name_ = "";
-        range_partition_id_ = 0;
-        fill_store_slice_req_ = nullptr;
-        last_key_ = "";
-        sesssion_id_ = "";
-        batch_size_ = 0;
-        defer_unpin_ = nullptr;
-    }
+//     void Clear() override
+//     {
+//         kv_table_name_ = "";
+//         range_partition_id_ = 0;
+//         fill_store_slice_req_ = nullptr;
+//         last_key_ = "";
+//         sesssion_id_ = "";
+//         batch_size_ = 0;
+//         defer_unpin_ = nullptr;
+//     }
 
-    std::string_view kv_table_name_;
-    uint32_t range_partition_id_;
-    txservice::FillStoreSliceCc *fill_store_slice_req_;
-    std::string last_key_;
-    std::string end_key_;
-    std::string sesssion_id_;
-    size_t batch_size_{0};
-    std::shared_ptr<void> defer_unpin_;
-};
+//     std::string_view kv_table_name_;
+//     uint32_t range_partition_id_;
+//     txservice::FillStoreSliceCc *fill_store_slice_req_;
+//     std::string last_key_;
+//     std::string end_key_;
+//     std::string sesssion_id_;
+//     size_t batch_size_{0};
+//     std::shared_ptr<void> defer_unpin_;
+// };
 
 void LoadRangeSliceCallback(void *data,
                             ::google::protobuf::Closure *closure,

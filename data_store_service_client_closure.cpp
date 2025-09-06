@@ -1009,25 +1009,21 @@ void LoadRangeSliceCallback(void *data,
                             const remote::CommonResult &result)
 {
     assert(data != nullptr);
-    LoadRangeSliceCallbackData *callback_data =
-        static_cast<LoadRangeSliceCallbackData *>(data);
+    auto *fill_store_slice_req =
+        static_cast<txservice::FillStoreSliceCc *>(data);
     ScanNextClosure *scan_next_closure =
         static_cast<ScanNextClosure *>(closure);
-    auto *fill_store_slice_req = callback_data->fill_store_slice_req_;
 
     if (result.error_code() != EloqDS::remote::DataStoreError::NO_ERROR)
     {
         LOG(ERROR) << "DataStoreHandler: Failed to do LoadRangeSlice. "
                    << result.error_msg();
         fill_store_slice_req->SetKvFinish(false);
-        // recycle the callback data
-        PoolableGuard guard(callback_data);
         return;
     }
 
     // Process records from this batch
-    const txservice::TableName &table_name =
-        callback_data->fill_store_slice_req_->TblName();
+    const txservice::TableName &table_name = fill_store_slice_req->TblName();
     uint32_t items_size = scan_next_closure->ItemsSize();
 
     std::string key_str, value_str;
@@ -1070,34 +1066,36 @@ void LoadRangeSliceCallback(void *data,
             }
         }
 
+        if (i == items_size - 1)
+        {
+            fill_store_slice_req->kv_start_key_ =
+                std::string_view(key.Data(), key.Size());
+        }
+
         fill_store_slice_req->AddDataItem(
             std::move(key), std::move(record), ts, is_deleted);
     }
 
-    callback_data->last_key_ = key_str;
-
-    callback_data->sesssion_id_ = scan_next_closure->GetSessionId();
-    if (scan_next_closure->ItemsSize() == callback_data->batch_size_)
+    fill_store_slice_req->kv_session_id_ = scan_next_closure->GetSessionId();
+    if (scan_next_closure->ItemsSize() == 1000)
     {
         // has more data, continue to scan.
-        client.ScanNext(callback_data->kv_table_name_,
-                        callback_data->range_partition_id_,
-                        callback_data->last_key_,
-                        callback_data->end_key_,
-                        callback_data->sesssion_id_,
+        client.ScanNext(*fill_store_slice_req->kv_table_name_,
+                        fill_store_slice_req->kv_partition_id_,
+                        fill_store_slice_req->kv_start_key_,
+                        fill_store_slice_req->kv_end_key_,
+                        fill_store_slice_req->kv_session_id_,
                         false,  // include start_key
                         false,  // include end_key
                         true,   // scan forward
-                        callback_data->batch_size_,
+                        1000,
                         nullptr,
-                        callback_data,
+                        fill_store_slice_req,
                         &LoadRangeSliceCallback);
     }
     else
     {
         fill_store_slice_req->SetKvFinish(true);
-        // recycle the callback data
-        PoolableGuard guard(callback_data);
     }
 }
 
