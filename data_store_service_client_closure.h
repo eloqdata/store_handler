@@ -52,13 +52,13 @@ struct SyncCallbackData : public Poolable
 
     void Reset()
     {
-        std::unique_lock<bthread::Mutex> lk(mtx_);
         finished_ = false;
         result_.Clear();
     }
 
     virtual void Clear() override
     {
+        finished_ = false;
         result_.Clear();
     }
 
@@ -2103,6 +2103,7 @@ struct FetchTableCallbackData : public SyncCallbackData
 
     void Reset(std::string &schema_image, bool &found, uint64_t &version_ts)
     {
+        SyncCallbackData::Reset();
         schema_image_ = &schema_image;
         found_ = &found;
         version_ts_ = &version_ts;
@@ -2110,6 +2111,7 @@ struct FetchTableCallbackData : public SyncCallbackData
 
     void Clear() override
     {
+        SyncCallbackData::Clear();
         schema_image_ = nullptr;
         found_ = nullptr;
         version_ts_ = nullptr;
@@ -2140,6 +2142,7 @@ struct FetchDatabaseCallbackData : public SyncCallbackData
                const std::function<void()> *yield_fptr,
                const std::function<void()> *resume_fptr)
     {
+        SyncCallbackData::Reset();
         db_definition_ = &definition;
         found_ = &found;
         yield_fptr_ = yield_fptr;
@@ -2152,6 +2155,7 @@ struct FetchDatabaseCallbackData : public SyncCallbackData
         found_ = nullptr;
         yield_fptr_ = nullptr;
         resume_fptr_ = nullptr;
+        SyncCallbackData::Clear();
     }
 
     void Wait() override
@@ -2198,6 +2202,7 @@ struct FetchAllDatabaseCallbackData : public SyncCallbackData
                const std::function<void()> *yield_fptr,
                const std::function<void()> *resume_fptr)
     {
+        SyncCallbackData::Reset();
         dbnames_ = &dbnames;
         yield_fptr_ = yield_fptr;
         resume_fptr_ = resume_fptr;
@@ -2208,6 +2213,7 @@ struct FetchAllDatabaseCallbackData : public SyncCallbackData
 
     void Clear() override
     {
+        SyncCallbackData::Clear();
         dbnames_ = nullptr;
         yield_fptr_ = nullptr;
         resume_fptr_ = nullptr;
@@ -2263,6 +2269,7 @@ struct DiscoverAllTableNamesCallbackData : public SyncCallbackData
                const std::function<void()> *yield_fptr,
                const std::function<void()> *resume_fptr)
     {
+        SyncCallbackData::Reset();
         table_names_ = &table_names;
         yield_fptr_ = yield_fptr;
         resume_fptr_ = resume_fptr;
@@ -2271,6 +2278,7 @@ struct DiscoverAllTableNamesCallbackData : public SyncCallbackData
 
     void Clear() override
     {
+        SyncCallbackData::Clear();
         table_names_ = nullptr;
         yield_fptr_ = nullptr;
         resume_fptr_ = nullptr;
