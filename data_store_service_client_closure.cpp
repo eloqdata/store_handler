@@ -32,6 +32,15 @@
 
 namespace EloqDS
 {
+static const std::string_view kv_table_catalogs_name("table_catalogs");
+static const std::string_view kv_range_table_name("table_ranges");
+static const std::string_view kv_range_slices_table_name("table_range_slices");
+static const std::string_view kv_table_statistics_name("table_statistics");
+static const std::string_view kv_table_statistics_version_name(
+    "table_statistics_version");
+static const std::string_view kv_database_catalogs_name("db_catalogs");
+static const std::string_view kv_mvcc_archive_name("mvcc_archives");
+
 void SyncCallback(void *data,
                   ::google::protobuf::Closure *closure,
                   DataStoreServiceClient &client,
@@ -360,25 +369,24 @@ void FetchTableCallback(void *data,
 
     if (err_code == remote::DataStoreError::KEY_NOT_FOUND)
     {
-        fetch_table_data->found_ = false;
-        fetch_table_data->schema_image_.clear();
-        fetch_table_data->version_ts_ = 1;
+        *(fetch_table_data->found_) = false;
+        (*fetch_table_data->version_ts_) = 1;
+        fetch_table_data->schema_image_->clear();
     }
     else if (result.error_code() == remote::DataStoreError::NO_ERROR)
     {
-        fetch_table_data->found_ = true;
-        fetch_table_data->version_ts_ = read_closure->Ts();
-        std::string &catalog_image = fetch_table_data->schema_image_;
+        *(fetch_table_data->found_) = true;
+        (*fetch_table_data->version_ts_) = read_closure->Ts();
 
         // TODO(lzx): Unify table schema (de)serialization method for EloqSql
         // and EloqKV. And all data_store_handler share one KvCatalogInfo.
-        catalog_image.append(read_closure->ValueString());
+        fetch_table_data->schema_image_->append(read_closure->ValueString());
     }
     else
     {
-        fetch_table_data->found_ = false;
-        fetch_table_data->schema_image_.clear();
-        fetch_table_data->version_ts_ = 1;
+        *(fetch_table_data->found_) = false;
+        (*fetch_table_data->version_ts_) = 1;
+        fetch_table_data->schema_image_->clear();
     }
 
     fetch_table_data->Result().set_error_code(result.error_code());
@@ -408,17 +416,16 @@ void FetchDatabaseCallback(void *data,
 
     if (err_code == remote::DataStoreError::KEY_NOT_FOUND)
     {
-        fetch_data->found_ = false;
+        *(fetch_data->found_) = false;
     }
     else if (result.error_code() == remote::DataStoreError::NO_ERROR)
     {
-        fetch_data->found_ = true;
-
-        fetch_data->db_definition_.append(read_closure->ValueString());
+        *(fetch_data->found_) = true;
+        fetch_data->db_definition_->append(read_closure->ValueString());
     }
     else
     {
-        fetch_data->found_ = false;
+        *(fetch_data->found_) = false;
     }
 
     fetch_data->Result().set_error_code(result.error_code());
@@ -458,7 +465,7 @@ void FetchAllDatabaseCallback(void *data,
         for (uint32_t i = 0; i < items_size; i++)
         {
             scan_next_closure->GetItem(i, key, value, ts, ttl);
-            fetch_data->dbnames_.emplace_back(std::move(key));
+            fetch_data->dbnames_->emplace_back(std::move(key));
         }
 
         if (items_size < scan_next_closure->BatchSize())
@@ -474,17 +481,16 @@ void FetchAllDatabaseCallback(void *data,
         {
             // has more data, continue to scan.
             fetch_data->session_id_ = scan_next_closure->SessionId();
-            // fetch_data->start_key_ = fetch_data->dbnames_.back();
-            client.ScanNext(fetch_data->kv_table_name_,
-                            fetch_data->partition_id_,
-                            fetch_data->dbnames_.back(),
+            client.ScanNext(kv_database_catalogs_name,
+                            0,
+                            fetch_data->dbnames_->back(),
                             fetch_data->end_key_,
                             fetch_data->session_id_,
                             false,
                             false,
                             true,
-                            fetch_data->batch_size_,
-                            &fetch_data->search_conds_,
+                            scan_next_closure->BatchSize(),
+                            nullptr,
                             fetch_data,
                             &FetchAllDatabaseCallback);
         }
@@ -526,7 +532,7 @@ void DiscoverAllTableNamesCallback(void *data,
             {
                 continue;
             }
-            fetch_data->table_names_.emplace_back(std::move(key));
+            fetch_data->table_names_->emplace_back(std::move(key));
         }
 
         if (items_size < scan_next_closure->BatchSize())
@@ -542,18 +548,16 @@ void DiscoverAllTableNamesCallback(void *data,
         {
             // has more data, continue to scan.
             fetch_data->session_id_ = scan_next_closure->SessionId();
-            // fetch_data->start_key_ = fetch_data->table_names_.back();
-            client.ScanNext(fetch_data->kv_table_name_,
-                            fetch_data->partition_id_,
-                            // fetch_data->start_key_,
-                            fetch_data->table_names_.back(),
-                            fetch_data->end_key_,
+            client.ScanNext(kv_table_catalogs_name,
+                            0,
+                            fetch_data->table_names_->back(),
+                            "",
                             fetch_data->session_id_,
                             false,
                             false,
                             true,
-                            fetch_data->batch_size_,
-                            &fetch_data->search_conds_,
+                            scan_next_closure->BatchSize(),
+                            nullptr,
                             fetch_data,
                             &DiscoverAllTableNamesCallback);
         }
@@ -565,10 +569,8 @@ void FetchTableRangesCallback(void *data,
                               DataStoreServiceClient &client,
                               const remote::CommonResult &result)
 {
-    FetchTableRangesCallbackData *fetch_data =
-        static_cast<FetchTableRangesCallbackData *>(data);
-
-    txservice::FetchTableRangesCc *fetch_range_cc = fetch_data->fetch_cc_;
+    txservice::FetchTableRangesCc *fetch_range_cc =
+        static_cast<txservice::FetchTableRangesCc *>(data);
 
     ScanNextClosure *scan_next_closure =
         static_cast<ScanNextClosure *>(closure);
@@ -580,7 +582,6 @@ void FetchTableRangesCallback(void *data,
 
         fetch_range_cc->SetFinish(
             static_cast<int>(txservice::CcErrorCode::DATA_STORE_ERR));
-        delete fetch_data;
     }
     else
     {
@@ -667,27 +668,26 @@ void FetchTableRangesCallback(void *data,
             }
             fetch_range_cc->AppendTableRanges(std::move(range_vec));
             fetch_range_cc->SetFinish(0);
-            delete fetch_data;
         }
         else
         {
             // has more data, continue to scan.
-            fetch_data->session_id_ = scan_next_closure->SessionId();
-            fetch_data->start_key_.clear();
-            fetch_data->start_key_.append(key);
+            fetch_range_cc->kv_session_id_ = scan_next_closure->SessionId();
+            fetch_range_cc->kv_start_key_.clear();
+            fetch_range_cc->kv_start_key_.append(key);
             fetch_range_cc->AppendTableRanges(std::move(range_vec));
 
-            client.ScanNext(fetch_data->kv_table_name_,
-                            fetch_data->partition_id_,
-                            fetch_data->start_key_,
-                            fetch_data->end_key_,
-                            fetch_data->session_id_,
+            client.ScanNext(kv_range_table_name,
+                            fetch_range_cc->kv_partition_id_,
+                            fetch_range_cc->kv_start_key_,
+                            fetch_range_cc->kv_end_key_,
+                            fetch_range_cc->kv_session_id_,
                             false,
                             false,
                             true,
-                            fetch_data->batch_size_,
-                            &fetch_data->search_conds_,
-                            fetch_data,
+                            100,
+                            nullptr,
+                            fetch_range_cc,
                             &FetchTableRangesCallback);
         }
     }
@@ -698,16 +698,15 @@ void FetchRangeSlicesCallback(void *data,
                               DataStoreServiceClient &client,
                               const remote::CommonResult &result)
 {
-    FetchRangeSlicesCallbackData *fetch_data =
-        static_cast<FetchRangeSlicesCallbackData *>(data);
+    txservice::FetchRangeSlicesReq *fetch_req =
+        static_cast<txservice::FetchRangeSlicesReq *>(data);
 
     ReadClosure *read_closure = static_cast<ReadClosure *>(closure);
 
     std::string_view read_val = read_closure->Value();
-    auto *fetch_req = fetch_data->fetch_cc_;
     txservice::NodeGroupId ng_id = fetch_req->cc_ng_id_;
 
-    if (fetch_data->step_ == 1U)
+    if (fetch_req->SegmentCnt() == 0U)
     {
         // step-1: fetched range info.
         if (result.error_code() == remote::DataStoreError::KEY_NOT_FOUND)
@@ -719,7 +718,6 @@ void FetchRangeSlicesCallback(void *data,
                 txservice::TxKey(), 0, txservice::SliceStatus::PartiallyCached);
             fetch_req->SetFinish(txservice::CcErrorCode::NO_ERROR);
             txservice::Sharder::Instance().UnpinNodeGroupData(ng_id);
-            delete fetch_data;
             return;
         }
         else if (result.error_code() != remote::DataStoreError::NO_ERROR)
@@ -730,13 +728,11 @@ void FetchRangeSlicesCallback(void *data,
                           "retring";
             fetch_req->SetFinish(txservice::CcErrorCode::DATA_STORE_ERR);
             txservice::Sharder::Instance().UnpinNodeGroupData(ng_id);
-            delete fetch_data;
             return;
         }
         else
         {
-            assert(read_closure->TableName() ==
-                   fetch_data->kv_range_table_name_);
+            assert(read_closure->TableName() == kv_range_table_name);
             assert(read_val.size() == (sizeof(int32_t) + sizeof(uint64_t) +
                                        sizeof(uint64_t) + sizeof(uint32_t)));
             const char *buf = read_val.data();
@@ -763,32 +759,29 @@ void FetchRangeSlicesCallback(void *data,
                     txservice::SliceStatus::PartiallyCached);
                 fetch_req->SetFinish(txservice::CcErrorCode::NO_ERROR);
                 txservice::Sharder::Instance().UnpinNodeGroupData(ng_id);
-                delete fetch_data;
                 return;
             }
             else
             {
-                fetch_data->step_ = 2U;
-                fetch_data->range_partition_id_ = range_partition_id;
+                assert(slice_version > 0);
                 fetch_req->SetSliceVersion(slice_version);
                 fetch_req->SetSegmentCnt(segment_cnt);
                 fetch_req->SetCurrentSegmentId(0);
 
-                fetch_data->key_ =
+                fetch_req->kv_start_key_ =
                     client.EncodeRangeSliceKey(fetch_req->table_name_,
                                                range_partition_id,
                                                fetch_req->CurrentSegmentId());
-                client.Read(fetch_data->kv_range_slices_table_name_,
-                            fetch_data->kv_partition_id_,
-                            fetch_data->key_,
-                            fetch_data,
+                client.Read(kv_range_slices_table_name,
+                            fetch_req->kv_partition_id_,
+                            fetch_req->kv_start_key_,
+                            fetch_req,
                             &FetchRangeSlicesCallback);
             }
         }
     }
     else
     {
-        assert(fetch_data->step_ == 2U);
         if (result.error_code() == remote::DataStoreError::KEY_NOT_FOUND)
         {
             assert(false);
@@ -797,7 +790,6 @@ void FetchRangeSlicesCallback(void *data,
                           "retring";
             fetch_req->SetFinish(txservice::CcErrorCode::DATA_STORE_ERR);
             txservice::Sharder::Instance().UnpinNodeGroupData(ng_id);
-            delete fetch_data;
             return;
         }
         else if (result.error_code() != remote::DataStoreError::NO_ERROR)
@@ -807,7 +799,6 @@ void FetchRangeSlicesCallback(void *data,
                           "retring";
             fetch_req->SetFinish(txservice::CcErrorCode::DATA_STORE_ERR);
             txservice::Sharder::Instance().UnpinNodeGroupData(ng_id);
-            delete fetch_data;
             return;
         }
         else
@@ -867,19 +858,16 @@ void FetchRangeSlicesCallback(void *data,
                 // All segments are fetched.
                 fetch_req->SetFinish(txservice::CcErrorCode::NO_ERROR);
                 txservice::Sharder::Instance().UnpinNodeGroupData(ng_id);
-                delete fetch_data;
                 return;
             }
 
             fetch_req->SetCurrentSegmentId(segment_id);
-            fetch_data->key_ =
-                client.EncodeRangeSliceKey(fetch_req->table_name_,
-                                           fetch_data->range_partition_id_,
-                                           fetch_req->CurrentSegmentId());
-            client.Read(fetch_data->kv_range_slices_table_name_,
-                        fetch_data->kv_partition_id_,
-                        fetch_data->key_,
-                        fetch_data,
+            client.UpdateEncodedRangeSliceKey(fetch_req->kv_start_key_,
+                                              fetch_req->CurrentSegmentId());
+            client.Read(kv_range_slices_table_name,
+                        fetch_req->kv_partition_id_,
+                        fetch_req->kv_start_key_,
+                        fetch_req,
                         &FetchRangeSlicesCallback);
         }
     }
@@ -918,12 +906,11 @@ void FetchTableStatsCallback(void *data,
                              DataStoreServiceClient &client,
                              const remote::CommonResult &result)
 {
-    FetchTableStatsCallbackData *fetch_data =
-        static_cast<FetchTableStatsCallbackData *>(data);
+    txservice::FetchTableStatisticsCc *fetch_cc =
+        static_cast<txservice::FetchTableStatisticsCc *>(data);
     ScanNextClosure *scan_next_closure =
         static_cast<ScanNextClosure *>(closure);
     auto err_code = result.error_code();
-    auto *fetch_cc = fetch_data->fetch_cc_;
 
     if (err_code != remote::DataStoreError::NO_ERROR)
     {
@@ -932,8 +919,6 @@ void FetchTableStatsCallback(void *data,
 
         fetch_cc->SetFinish(
             static_cast<int>(txservice::CcErrorCode::DATA_STORE_ERR));
-
-        delete fetch_data;
         return;
     }
     else
@@ -943,7 +928,7 @@ void FetchTableStatsCallback(void *data,
         uint64_t ts;
         uint64_t ttl;
         uint32_t items_size = scan_next_closure->ItemsSize();
-        fetch_data->session_id_ = scan_next_closure->SessionId();
+        fetch_cc->kv_session_id_ = scan_next_closure->SessionId();
         assert(items_size <= 1);
         if (items_size == 1)
         {
@@ -991,18 +976,18 @@ void FetchTableStatsCallback(void *data,
             fetch_cc->SamplePoolMergeFrom(indexname, std::move(samplekeys));
 
             // continue to scan
-            fetch_data->start_key_ = std::move(key);
-            client.ScanNext(fetch_data->kv_table_name_,
-                            fetch_data->partition_id_,
-                            fetch_data->start_key_,
-                            fetch_data->end_key_,
-                            fetch_data->session_id_,
+            fetch_cc->kv_start_key_ = std::move(key);
+            client.ScanNext(kv_table_statistics_name,
+                            fetch_cc->kv_partition_id_,
+                            fetch_cc->kv_start_key_,
+                            fetch_cc->kv_end_key_,
+                            fetch_cc->kv_session_id_,
                             false,
                             false,
                             true,
                             1,
-                            &fetch_data->search_conditions_,
-                            fetch_data,
+                            nullptr,
+                            fetch_cc,
                             &FetchTableStatsCallback);
         }
         else
@@ -1010,7 +995,6 @@ void FetchTableStatsCallback(void *data,
             // has no more data, notify.
 
             fetch_cc->SetFinish(0);
-            delete fetch_data;
             return;
         }
     }
@@ -1022,25 +1006,21 @@ void LoadRangeSliceCallback(void *data,
                             const remote::CommonResult &result)
 {
     assert(data != nullptr);
-    LoadRangeSliceCallbackData *callback_data =
-        static_cast<LoadRangeSliceCallbackData *>(data);
+    auto *fill_store_slice_req =
+        static_cast<txservice::FillStoreSliceCc *>(data);
     ScanNextClosure *scan_next_closure =
         static_cast<ScanNextClosure *>(closure);
-    auto *fill_store_slice_req = callback_data->fill_store_slice_req_;
 
     if (result.error_code() != EloqDS::remote::DataStoreError::NO_ERROR)
     {
         LOG(ERROR) << "DataStoreHandler: Failed to do LoadRangeSlice. "
                    << result.error_msg();
         fill_store_slice_req->SetKvFinish(false);
-        // recycle the callback data
-        PoolableGuard guard(callback_data);
         return;
     }
 
     // Process records from this batch
-    const txservice::TableName &table_name =
-        callback_data->fill_store_slice_req_->TblName();
+    const txservice::TableName &table_name = fill_store_slice_req->TblName();
     uint32_t items_size = scan_next_closure->ItemsSize();
 
     std::string key_str, value_str;
@@ -1083,34 +1063,36 @@ void LoadRangeSliceCallback(void *data,
             }
         }
 
+        if (i == items_size - 1)
+        {
+            fill_store_slice_req->kv_start_key_ =
+                std::string_view(key.Data(), key.Size());
+        }
+
         fill_store_slice_req->AddDataItem(
             std::move(key), std::move(record), ts, is_deleted);
     }
 
-    callback_data->last_key_ = key_str;
-
-    callback_data->sesssion_id_ = scan_next_closure->GetSessionId();
-    if (scan_next_closure->ItemsSize() == callback_data->batch_size_)
+    fill_store_slice_req->kv_session_id_ = scan_next_closure->GetSessionId();
+    if (scan_next_closure->ItemsSize() == 1000)
     {
         // has more data, continue to scan.
-        client.ScanNext(callback_data->kv_table_name_,
-                        callback_data->range_partition_id_,
-                        callback_data->last_key_,
-                        callback_data->end_key_,
-                        callback_data->sesssion_id_,
+        client.ScanNext(*fill_store_slice_req->kv_table_name_,
+                        fill_store_slice_req->kv_partition_id_,
+                        fill_store_slice_req->kv_start_key_,
+                        fill_store_slice_req->kv_end_key_,
+                        fill_store_slice_req->kv_session_id_,
                         false,  // include start_key
                         false,  // include end_key
                         true,   // scan forward
-                        callback_data->batch_size_,
+                        1000,
                         nullptr,
-                        callback_data,
+                        fill_store_slice_req,
                         &LoadRangeSliceCallback);
     }
     else
     {
         fill_store_slice_req->SetKvFinish(true);
-        // recycle the callback data
-        PoolableGuard guard(callback_data);
     }
 }
 
@@ -1180,106 +1162,129 @@ void FetchRecordArchivesCallback(void *data,
                                  DataStoreServiceClient &client,
                                  const remote::CommonResult &result)
 {
-  FetchRecordArchivesCallbackData *fetch_data=
-      static_cast<FetchRecordArchivesCallbackData *>(data);
-  txservice::FetchRecordCc *fetch_cc= fetch_data->fetch_cc_;
+    txservice::FetchRecordCc *fetch_cc =
+        static_cast<txservice::FetchRecordCc *>(data);
 
-  ScanNextClosure *scan_next_closure= static_cast<ScanNextClosure *>(closure);
-  auto err_code= result.error_code();
+    ScanNextClosure *scan_next_closure =
+        static_cast<ScanNextClosure *>(closure);
+    auto err_code = result.error_code();
 
-  if (err_code != remote::DataStoreError::NO_ERROR)
-  {
-    assert(err_code != remote::DataStoreError::KEY_NOT_FOUND);
-    DLOG(INFO) << "FetchRecordArchivesCallback, error_code:" << err_code
-               << ", error_msg: " << result.error_msg();
-    fetch_cc->SetFinish(
-        static_cast<int>(txservice::CcErrorCode::DATA_STORE_ERR));
-    delete fetch_data;
-    return;
-  }
-
-  uint32_t items_size= scan_next_closure->ItemsSize();
-  DLOG(INFO) << "FetchRecordArchivesCallback, items_size:" << items_size;
-  std::string archive_key;
-  std::string archive_value;
-  uint64_t commit_ts;
-  uint64_t ttl;
-
-  if (fetch_cc->archive_records_ == nullptr)
-  {
-    fetch_cc->archive_records_= std::make_unique<std::vector<
-        std::tuple<uint64_t, txservice::RecordStatus, std::string>>>();
-  }
-  auto &archive_records= *fetch_cc->archive_records_;
-
-  archive_records.reserve(archive_records.size() + items_size);
-  for (uint32_t i= 0; i < items_size; i++)
-  {
-    scan_next_closure->GetItem(i, archive_key, archive_value, commit_ts, ttl);
-    // parse archive_value
-    bool is_deleted= false;
-    size_t value_offset= 0;
-    client.DecodeArchiveValue(archive_value, is_deleted, value_offset);
-    if (is_deleted)
+    if (err_code != remote::DataStoreError::NO_ERROR)
     {
-      archive_records.emplace_back(commit_ts, txservice::RecordStatus::Deleted,
-                                   "");
+        assert(err_code != remote::DataStoreError::KEY_NOT_FOUND);
+        DLOG(INFO) << "FetchRecordArchivesCallback, error_code:" << err_code
+                   << ", error_msg: " << result.error_msg();
+        fetch_cc->SetFinish(
+            static_cast<int>(txservice::CcErrorCode::DATA_STORE_ERR));
+        return;
+    }
+
+    uint32_t items_size = scan_next_closure->ItemsSize();
+    DLOG(INFO) << "FetchRecordArchivesCallback, items_size:" << items_size;
+    std::string archive_key;
+    std::string archive_value;
+    uint64_t commit_ts;
+    uint64_t ttl;
+
+    if (fetch_cc->archive_records_ == nullptr)
+    {
+        fetch_cc->archive_records_ = std::make_unique<std::vector<
+            std::tuple<uint64_t, txservice::RecordStatus, std::string>>>();
+    }
+    auto &archive_records = *fetch_cc->archive_records_;
+
+    archive_records.reserve(archive_records.size() + items_size);
+    for (uint32_t i = 0; i < items_size; i++)
+    {
+        scan_next_closure->GetItem(
+            i, archive_key, archive_value, commit_ts, ttl);
+        // parse archive_value
+        bool is_deleted = false;
+        size_t value_offset = 0;
+        client.DecodeArchiveValue(archive_value, is_deleted, value_offset);
+        if (is_deleted)
+        {
+            archive_records.emplace_back(
+                commit_ts, txservice::RecordStatus::Deleted, "");
+        }
+        else
+        {
+            std::string record_str(archive_value.data() + value_offset,
+                                   archive_value.size() - value_offset);
+            assert(record_str.size() > 0);
+            archive_records.emplace_back(commit_ts,
+                                         txservice::RecordStatus::Normal,
+                                         std::move(record_str));
+        }
+    }
+
+    if (scan_next_closure->BatchSize() == 1 &&
+        !scan_next_closure->ScanForward())
+    {
+        if (items_size == 0)
+        {
+            // Not found the visible archive version in the archives table.
+            assert(archive_records.size() == 0);
+            archive_records.emplace_back(
+                1U, txservice::RecordStatus::Deleted, "");
+
+            fetch_cc->kv_start_key_ = client.EncodeArchiveKey(
+                fetch_cc->kv_table_name_,
+                std::string_view(fetch_cc->tx_key_.Data(),
+                                 fetch_cc->tx_key_.Size()),
+                EloqShare::host_to_big_endian(1U));
+        }
+        else
+        {
+            fetch_cc->kv_start_key_ = std::move(archive_key);
+        }
+
+        // Fetched the visible version, next scan is fetching all the
+        // archives whose commit_ts is bigger than the visible version.
+        fetch_cc->kv_end_key_ =
+            client.EncodeArchiveKey(fetch_cc->kv_table_name_,
+                                    std::string_view(fetch_cc->tx_key_.Data(),
+                                                     fetch_cc->tx_key_.Size()),
+                                    EloqShare::host_to_big_endian(UINT64_MAX));
+        fetch_cc->kv_session_id_.clear();
+
+        client.ScanNext(kv_mvcc_archive_name,
+                        fetch_cc->partition_id_,
+                        fetch_cc->kv_start_key_,
+                        fetch_cc->kv_end_key_,
+                        fetch_cc->kv_session_id_,
+                        false,
+                        false,
+                        true,
+                        100,
+                        nullptr,
+                        fetch_cc,
+                        &FetchRecordArchivesCallback);
+    }
+    else if (items_size < scan_next_closure->BatchSize())
+    {
+        assert(archive_records.size() > 0);
+        fetch_cc->SetFinish(0);
     }
     else
     {
-      std::string record_str(archive_value.data() + value_offset,
-                             archive_value.size() - value_offset);
-      assert(record_str.size() > 0);
-      archive_records.emplace_back(commit_ts, txservice::RecordStatus::Normal,
-                                   std::move(record_str));
+        // set the start key of next scan batch
+        fetch_cc->kv_start_key_ = std::move(archive_key);
+        fetch_cc->kv_session_id_ = scan_next_closure->SessionId();
+
+        client.ScanNext(kv_mvcc_archive_name,
+                        fetch_cc->partition_id_,
+                        fetch_cc->kv_start_key_,
+                        fetch_cc->kv_end_key_,
+                        fetch_cc->kv_session_id_,
+                        false,
+                        false,
+                        true,
+                        100,
+                        nullptr,
+                        fetch_cc,
+                        &FetchRecordArchivesCallback);
     }
-  }
-
-  if (scan_next_closure->BatchSize() == 1 && !scan_next_closure->ScanForward())
-  {
-    if (items_size == 0)
-    {
-      // Not found the visible archive version in the archives table.
-      assert(archive_records.size() == 0);
-      archive_records.emplace_back(1U, txservice::RecordStatus::Deleted, "");
-
-      fetch_data->start_key_= client.EncodeArchiveKey(
-          fetch_cc->kv_table_name_,
-          std::string_view(fetch_cc->tx_key_.Data(), fetch_cc->tx_key_.Size()),
-          EloqShare::host_to_big_endian(1U));
-    }
-    else
-    {
-      fetch_data->start_key_= std::move(archive_key);
-    }
-
-    // Fetched the visible version, next scan is fetching all the
-    // archives whose commit_ts is bigger than the visible version.
-    fetch_data->end_key_= client.EncodeArchiveKey(
-        fetch_cc->kv_table_name_,
-        std::string_view(fetch_cc->tx_key_.Data(), fetch_cc->tx_key_.Size()),
-        EloqShare::host_to_big_endian(UINT64_MAX));
-
-    client.ScanNext(fetch_data->kv_table_name_, fetch_data->partition_id_,
-                    fetch_data->start_key_, fetch_data->end_key_,
-                    scan_next_closure->SessionId(), false, false, true, 100,
-                    nullptr, fetch_data, &FetchRecordArchivesCallback);
-  }
-  else if (items_size < scan_next_closure->BatchSize())
-  {
-    assert(archive_records.size() > 0);
-    fetch_cc->SetFinish(0);
-    delete fetch_data;
-  }
-  else
-  {
-    // set the start key of next scan batch
-    fetch_data->start_key_= std::move(archive_key);
-    client.ScanNext(fetch_data->kv_table_name_, fetch_data->partition_id_,
-                    fetch_data->start_key_, fetch_data->end_key_,
-                    scan_next_closure->SessionId(), false, false, true, 100,
-                    nullptr, fetch_data, &FetchRecordArchivesCallback);
-  }
 }
 
 void FetchSnapshotArchiveCallback(void *data,
@@ -1287,62 +1292,62 @@ void FetchSnapshotArchiveCallback(void *data,
                                   DataStoreServiceClient &client,
                                   const remote::CommonResult &result)
 {
-  FetchSnapshotArchiveCallbackData *fetch_data=
-      static_cast<FetchSnapshotArchiveCallbackData *>(data);
-  txservice::FetchSnapshotCc *fetch_cc= fetch_data->fetch_cc_;
+    txservice::FetchSnapshotCc *fetch_cc =
+        static_cast<txservice::FetchSnapshotCc *>(data);
 
-  ScanNextClosure *scan_next_closure= static_cast<ScanNextClosure *>(closure);
-  auto err_code= result.error_code();
+    ScanNextClosure *scan_next_closure =
+        static_cast<ScanNextClosure *>(closure);
+    auto err_code = result.error_code();
 
-  if (err_code != remote::DataStoreError::NO_ERROR)
-  {
-    assert(err_code != remote::DataStoreError::KEY_NOT_FOUND);
-    DLOG(INFO) << "FetchSnapshotArchiveCallback, error_code:" << err_code
-               << ", error_msg: " << result.error_msg();
-    fetch_cc->SetFinish(
-        static_cast<int>(txservice::CcErrorCode::DATA_STORE_ERR));
-    delete fetch_data;
-    return;
-  }
-
-  uint32_t items_size= scan_next_closure->ItemsSize();
-  DLOG(INFO) << "FetchSnapshotArchiveCallback, items_size:" << items_size;
-
-  if (items_size == 1)
-  {
-    std::string archive_key;
-    std::string archive_value;
-    uint64_t commit_ts;
-    uint64_t ttl;
-    assert(items_size <= 1);
-
-    scan_next_closure->GetItem(0, archive_key, archive_value, commit_ts, ttl);
-
-    // parse archive_value
-    bool is_deleted= false;
-    size_t value_offset= 0;
-    client.DecodeArchiveValue(archive_value, is_deleted, value_offset);
-    if (is_deleted)
+    if (err_code != remote::DataStoreError::NO_ERROR)
     {
-      fetch_cc->rec_ts_= commit_ts;
-      fetch_cc->rec_status_= txservice::RecordStatus::Deleted;
+        assert(err_code != remote::DataStoreError::KEY_NOT_FOUND);
+        DLOG(INFO) << "FetchSnapshotArchiveCallback, error_code:" << err_code
+                   << ", error_msg: " << result.error_msg();
+        fetch_cc->SetFinish(
+            static_cast<int>(txservice::CcErrorCode::DATA_STORE_ERR));
+        return;
+    }
+
+    uint32_t items_size = scan_next_closure->ItemsSize();
+    DLOG(INFO) << "FetchSnapshotArchiveCallback, items_size:" << items_size;
+
+    if (items_size == 1)
+    {
+        std::string archive_key;
+        std::string archive_value;
+        uint64_t commit_ts;
+        uint64_t ttl;
+        assert(items_size <= 1);
+
+        scan_next_closure->GetItem(
+            0, archive_key, archive_value, commit_ts, ttl);
+
+        // parse archive_value
+        bool is_deleted = false;
+        size_t value_offset = 0;
+        client.DecodeArchiveValue(archive_value, is_deleted, value_offset);
+        if (is_deleted)
+        {
+            fetch_cc->rec_ts_ = commit_ts;
+            fetch_cc->rec_status_ = txservice::RecordStatus::Deleted;
+        }
+        else
+        {
+            fetch_cc->rec_str_.assign(archive_value.data() + value_offset,
+                                      archive_value.size() - value_offset);
+            fetch_cc->rec_ts_ = commit_ts;
+            fetch_cc->rec_status_ = txservice::RecordStatus::Normal;
+        }
     }
     else
     {
-      fetch_cc->rec_str_.assign(archive_value.data() + value_offset,
-                                archive_value.size() - value_offset);
-      fetch_cc->rec_ts_= commit_ts;
-      fetch_cc->rec_status_= txservice::RecordStatus::Normal;
+        // Not found the visible archive version in the archives table.
+        fetch_cc->rec_ts_ = 1U;
+        fetch_cc->rec_status_ = txservice::RecordStatus::Deleted;
     }
-  }
-  else
-  {
-    // Not found the visible archive version in the archives table.
-    fetch_cc->rec_ts_= 1U;
-    fetch_cc->rec_status_= txservice::RecordStatus::Deleted;
-  }
 
-  fetch_cc->SetFinish(0);
+    fetch_cc->SetFinish(0);
 }
 
 }  // namespace EloqDS
