@@ -1017,6 +1017,8 @@ void LoadRangeSliceCallback(void *data,
         LOG(ERROR) << "DataStoreHandler: Failed to do LoadRangeSlice. "
                    << result.error_msg();
         fill_store_slice_req->SetKvFinish(false);
+        txservice::Sharder::Instance().UnpinNodeGroupData(
+            fill_store_slice_req->NodeGroup());
         return;
     }
 
@@ -1094,6 +1096,8 @@ void LoadRangeSliceCallback(void *data,
     else
     {
         fill_store_slice_req->SetKvFinish(true);
+        txservice::Sharder::Instance().UnpinNodeGroupData(
+            fill_store_slice_req->NodeGroup());
     }
 }
 

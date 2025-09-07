@@ -539,6 +539,7 @@ void DataStoreServiceClient::UpsertTable(
                                                       new_table_schema,
                                                       op_type,
                                                       commit_ts,
+                                                      defer_unpin,
                                                       ng_id,
                                                       tx_term,
                                                       hd_res,
@@ -1001,11 +1002,7 @@ DataStoreServiceClient::LoadRangeSlice(
     {
         return txservice::store::DataStoreHandler::DataStoreOpStatus::Error;
     }
-
-    std::shared_ptr<void> defer_unpin(
-        nullptr,
-        [ng_id = load_slice_req->NodeGroup()](void *)
-        { txservice::Sharder::Instance().UnpinNodeGroupData(ng_id); });
+    // NOTICE: must unpin node group on calling load_slice_req->SetKvFinish().
 
     const txservice::TxKey &start_key = load_slice_req->StartKey();
     if (start_key == *txservice::TxKeyFactory::NegInfTxKey())
