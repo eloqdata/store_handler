@@ -1032,7 +1032,6 @@ DataStoreServiceClient::LoadRangeSlice(
     }
 
     load_slice_req->kv_table_name_ = &(kv_info->GetKvTableName(table_name));
-    load_slice_req->defer_unpin_ = std::move(defer_unpin);
     load_slice_req->kv_partition_id_ =
         KvPartitionIdOf(range_partition_id, true);
     load_slice_req->kv_session_id_.clear();
