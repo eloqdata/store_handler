@@ -850,6 +850,7 @@ public:
                remote::CreateTableResponse *resp,
                google::protobuf::Closure *done)
     {
+        ds_service_ = ds_service;
         req_ = req;
         resp_ = resp;
         done_ = done;
@@ -1026,6 +1027,7 @@ public:
                remote::CommonResult &result,
                google::protobuf::Closure *done)
     {
+        ds_service_ = ds_service;
         table_name_ = table_name;
         result_ = &result;
         done_ = done;
