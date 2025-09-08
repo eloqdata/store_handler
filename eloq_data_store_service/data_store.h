@@ -37,6 +37,7 @@ class ReadRequest;
 class CreateTableRequest;
 class DropTableRequest;
 class ScanRequest;
+class CreateSnapshotForBackupRequest;
 
 class DataStore
 {
@@ -120,6 +121,12 @@ public:
      * @param req_shard_id Requested shard id.
      */
     virtual void ScanClose(ScanRequest *scan_req) = 0;
+
+    /**
+     * @brief Create a snapshot of the data store.
+     * @param req The pointer of the request.
+     */
+    virtual void CreateSnapshotForBackup(CreateSnapshotForBackupRequest *req) = 0;
 
     /**
      * @brief Switch the data store to read only mode.

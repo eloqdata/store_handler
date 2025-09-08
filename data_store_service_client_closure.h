@@ -1982,6 +1982,259 @@ private:
     void *callback_data_;
 };
 
+class CreateSnapshotForBackupClosure : public ::google::protobuf::Closure,
+                                       public Poolable
+{
+public:
+    CreateSnapshotForBackupClosure() = default;
+    CreateSnapshotForBackupClosure(const CreateSnapshotForBackupClosure &rhs) =
+        delete;
+    CreateSnapshotForBackupClosure(CreateSnapshotForBackupClosure &&rhs) =
+        delete;
+
+    void Clear() override
+    {
+        cntl_.Reset();
+        request_.Clear();
+        response_.Clear();
+        channel_ = nullptr;
+        ds_service_client_ = nullptr;
+        retry_count_ = 0;
+        is_local_request_ = false;
+        rpc_request_prepare_ = false;
+        result_.Clear();
+
+        shard_ids_.clear();
+        backup_name_ = "";
+        backup_ts_ = 0;
+        backup_files_ = nullptr;
+
+        // callback function
+        callback_ = nullptr;
+        callback_data_ = nullptr;
+    }
+
+    void Reset(DataStoreServiceClient &store_hd,
+               std::vector<uint32_t> &&shard_ids,
+               std::string_view backup_name,
+               uint64_t backup_ts,
+               std::vector<std::string> *backup_files,
+               void *callback_data,
+               DataStoreCallback callback)
+    {
+        is_local_request_ = true;
+        rpc_request_prepare_ = false;
+        retry_count_ = 0;
+        ds_service_client_ = &store_hd;
+        shard_ids_ = std::move(shard_ids);
+        backup_name_ = backup_name;
+        backup_ts_ = backup_ts;
+        backup_files_ = backup_files;
+        callback_data_ = callback_data;
+        callback_ = callback;
+    }
+
+    void PrepareRequest(const bool is_local_request)
+    {
+        if (is_local_request)
+        {
+            is_local_request_ = true;
+            result_.Clear();
+        }
+        else
+        {
+            is_local_request_ = false;
+            response_.Clear();
+            cntl_.Reset();
+            if (rpc_request_prepare_)
+            {
+                return;
+            }
+            request_.Clear();
+            // prepare rpc request parameters
+
+            request_.set_shard_id(shard_ids_.back());
+            request_.set_backup_name(backup_name_.data(), backup_name_.size());
+            request_.set_backup_ts(backup_ts_);
+            rpc_request_prepare_ = true;
+        }
+    }
+
+    bool IsLocalRequest() const
+    {
+        return is_local_request_;
+    }
+
+    // Run() will be called when rpc request is processed by cc node
+    // service.
+    void Run() override
+    {
+        PoolableGuard self_guard = PoolableGuard(this);
+        const ::EloqDS::remote::CommonResult *result;
+        if (!is_local_request_)
+        {
+            if (cntl_.Failed())
+            {
+                // RPC failed.
+                LOG(ERROR) << "Failed for CreateSnapshotForBackup RPC request "
+                           << ", with Error code: " << cntl_.ErrorCode()
+                           << ". Error Msg: " << cntl_.ErrorText();
+                if (cntl_.ErrorCode() != brpc::EOVERCROWDED &&
+                    cntl_.ErrorCode() != EAGAIN &&
+                    cntl_.ErrorCode() != brpc::ERPCTIMEDOUT)
+                {
+                    uint32_t shard_id = shard_ids_.back();
+                    channel_ =
+                        ds_service_client_
+                            ->UpdateDataStoreServiceChannelByShardId(shard_id);
+
+                    // Retry
+                    if (retry_count_ < ds_service_client_->retry_limit_)
+                    {
+                        self_guard.Release();
+                        channel_ = nullptr;
+                        retry_count_++;
+                        ds_service_client_->CreateSnapshotForBackupInternal(
+                            this);
+                        return;
+                    }
+                }
+                result_.set_error_code(
+                    EloqDS::remote::DataStoreError::NETWORK_ERROR);
+                result_.set_error_msg(cntl_.ErrorText());
+                (*callback_)(
+                    callback_data_, this, *ds_service_client_, result_);
+                return;
+            }
+            result = &response_.result();
+        }
+        else
+        {
+            result = &result_;
+        }
+        auto err_code =
+            static_cast<::EloqDS::remote::DataStoreError>(result->error_code());
+        if (err_code ==
+            ::EloqDS::remote::DataStoreError::REQUESTED_NODE_NOT_OWNER)
+        {
+            ds_service_client_->HandleShardingError(*result);
+            // Retry
+            if (retry_count_ < ds_service_client_->retry_limit_)
+            {
+                self_guard.Release();
+                channel_ = nullptr;
+                response_.Clear();
+                cntl_.Reset();
+                retry_count_++;
+                ds_service_client_->CreateSnapshotForBackupInternal(this);
+                return;
+            }
+        }
+
+        (*callback_)(callback_data_, this, *ds_service_client_, *result);
+    }
+
+    brpc::Controller *Controller()
+    {
+        return &cntl_;
+    }
+
+    brpc::Channel *GetChannel()
+    {
+        return channel_.get();
+    }
+
+    void SetChannel(std::shared_ptr<brpc::Channel> channel)
+    {
+        channel_ = channel;
+    }
+
+    const std::string_view GetBackupName()
+    {
+        return backup_name_;
+    }
+
+    uint64_t GetBackupTs()
+    {
+        return backup_ts_;
+    }
+
+    std::vector<uint32_t> &UnfinishedShards()
+    {
+        return shard_ids_;
+    }
+
+    std::vector<std::string> *LocalBackupFilesPtr()
+    {
+        return backup_files_;
+    }
+
+    ::EloqDS::remote::CommonResult &LocalResultRef()
+    {
+        return result_;
+    }
+
+    std::vector<std::string> *BackupFiles()
+    {
+        if (is_local_request_)
+        {
+            return backup_files_;
+        }
+        else
+        {
+            backup_files_->clear();
+            for (int i = 0; i < response_.backup_files_size(); i++)
+            {
+                backup_files_->emplace_back(response_.backup_files(i));
+            }
+            return backup_files_;
+        }
+    }
+
+    ::EloqDS::remote::CommonResult &Result()
+    {
+        if (is_local_request_)
+        {
+            return result_;
+        }
+        else
+        {
+            return *response_.mutable_result();
+        }
+    }
+
+    ::EloqDS::remote::CreateSnapshotForBackupRequest *RemoteRequest()
+    {
+        return &request_;
+    }
+
+    ::EloqDS::remote::CreateSnapshotForBackupResponse *RemoteResponse()
+    {
+        return &response_;
+    }
+
+private:
+    brpc::Controller cntl_;
+    ::EloqDS::remote::CreateSnapshotForBackupRequest request_;
+    ::EloqDS::remote::CreateSnapshotForBackupResponse response_;
+    std::shared_ptr<brpc::Channel> channel_;
+    DataStoreServiceClient *ds_service_client_;
+    uint16_t retry_count_{0};
+
+    // call parameters
+    bool is_local_request_{false};
+    bool rpc_request_prepare_{false};
+    std::string_view backup_name_;
+    uint64_t backup_ts_;
+    std::vector<std::string> *backup_files_{nullptr};
+    std::vector<uint32_t> shard_ids_;
+    ::EloqDS::remote::CommonResult result_;
+
+    // callback function
+    DataStoreCallback callback_;
+    void *callback_data_;
+};
+
 void FetchRecordCallback(void *data,
                          ::google::protobuf::Closure *closure,
                          DataStoreServiceClient &client,
@@ -2408,5 +2661,37 @@ void FetchSnapshotArchiveCallback(void *data,
                                   ::google::protobuf::Closure *closure,
                                   DataStoreServiceClient &client,
                                   const remote::CommonResult &result);
+
+struct CreateSnapshotForBackupCallbackData : public SyncCallbackData,
+                                             public Poolable
+{
+    CreateSnapshotForBackupCallbackData() = default;
+
+    void Reset(std::string_view backup_name,
+               uint64_t backup_ts,
+               std::vector<std::string> *backup_files)
+    {
+        SyncCallbackData::Reset();
+        backup_name_ = backup_name;
+        backup_ts_ = backup_ts;
+        backup_files_ = backup_files;
+    }
+
+    void Clear() override
+    {
+        backup_name_ = "";
+        backup_ts_ = 0;
+        backup_files_ = nullptr;
+    }
+
+    std::string_view backup_name_;
+    uint64_t backup_ts_;
+    std::vector<std::string> *backup_files_;
+};
+
+void CreateSnapshotForBackupCallback(void *data,
+                                     ::google::protobuf::Closure *closure,
+                                     DataStoreServiceClient &client,
+                                     const remote::CommonResult &result);
 
 }  // namespace EloqDS

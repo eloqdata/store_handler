@@ -35,6 +35,10 @@ service DataStoreRpcService {
 
   //-----FaultInject for tests
   rpc FaultInjectForTest(FaultInjectRequest) returns (FaultInjectResponse);
+
+  //-----Snapshot and branch
+  rpc CreateSnapshotForBackup(CreateSnapshotForBackupRequest) returns (CreateSnapshotForBackupResponse);
+
 };
 
 enum DataStoreError {
@@ -53,6 +57,7 @@ enum DataStoreError {
   KEY_NOT_FOUND = 12;
   BACKUP_FAILED = 13;
   STATUS_SWITCH_FAILED = 14;
+  CREATE_SNAPSHOT_ERROR = 15;
 }
 
 enum CcTableType {
@@ -323,13 +328,14 @@ message ScanResponse {
   string session_id = 3;
 }
 
-message CreateSnapshotRequest {
-  uint32 req_shard_id = 1;
+message CreateSnapshotForBackupRequest {
+  uint32 shard_id = 1;
   string backup_name = 2;
+  uint64 backup_ts = 3;
 }
 
-message CreateSnapshotResponse {
-  repeated string snapshot_files = 1;
+message CreateSnapshotForBackupResponse {
+  repeated string backup_files = 1;
   CommonResult result = 2;
 }
 

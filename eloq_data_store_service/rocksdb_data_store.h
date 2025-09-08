@@ -27,8 +27,8 @@
 
 #include "data_store.h"
 #include "data_store_service.h"
-#include "rocksdb_data_store_common.h"
 #include "rocksdb_config.h"
+#include "rocksdb_data_store_common.h"
 
 namespace EloqDS
 {
@@ -36,10 +36,10 @@ class RocksDBDataStore : public RocksDBDataStoreCommon
 {
 public:
     RocksDBDataStore(const EloqDS::RocksDBConfig &config,
-                          bool create_if_missing,
-                          bool tx_enable_cache_replacement,
-                          uint32_t shard_id,
-                          DataStoreService *data_store_service);
+                     bool create_if_missing,
+                     bool tx_enable_cache_replacement,
+                     uint32_t shard_id,
+                     DataStoreService *data_store_service);
 
     ~RocksDBDataStore();
 
@@ -54,6 +54,11 @@ public:
      * @brief Close the cloud database.
      */
     void Shutdown() override;
+
+    void CreateSnapshotForBackup(CreateSnapshotForBackupRequest *req) override
+    {
+        assert(false);
+    }
 
 protected:
     /**

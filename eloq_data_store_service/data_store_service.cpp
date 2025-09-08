@@ -19,8 +19,6 @@
  *    <http://www.gnu.org/licenses/>.
  *
  */
-#include "data_store_service.h"
-
 #include <brpc/closure_guard.h>
 #include <brpc/server.h>
 
@@ -36,6 +34,7 @@
 #include <vector>
 
 #include "data_store_fault_inject.h"  // ACTION_FAULT_INJECTOR
+#include "data_store_service.h"
 #include "internal_request.h"
 #include "object_pool.h"
 
@@ -63,6 +62,11 @@ thread_local ObjectPool<DropTableLocalRequest> local_drop_table_req_pool_;
 
 thread_local ObjectPool<ScanLocalRequest> local_scan_request_pool_;
 thread_local ObjectPool<ScanRpcRequest> rpc_scan_request_pool_;
+
+thread_local ObjectPool<CreateSnapshotForBackupRpcRequest>
+    rpc_create_snapshot_req_pool_;
+thread_local ObjectPool<CreateSnapshotForBackupLocalRequest>
+    local_create_snapshot_req_pool_;
 
 TTLWrapperCache::TTLWrapperCache()
 {
@@ -1136,6 +1140,68 @@ void DataStoreService::BatchWriteRecords(
                            parts_cnt_per_record);
 
     data_store_map_[shard_id]->BatchWriteRecords(batch_write_req);
+}
+
+void DataStoreService::CreateSnapshotForBackup(
+    ::google::protobuf::RpcController *controller,
+    const ::EloqDS::remote::CreateSnapshotForBackupRequest *request,
+    ::EloqDS::remote::CreateSnapshotForBackupResponse *response,
+    ::google::protobuf::Closure *done)
+{
+    auto *result = response->mutable_result();
+    uint32_t shard_id = request->shard_id();
+
+    if (!cluster_manager_.IsOwnerOfShard(shard_id))
+    {
+        cluster_manager_.PrepareShardingError(shard_id, result);
+        return;
+    }
+
+    std::shared_lock<std::shared_mutex> lk(serv_mux_);
+    if (!data_store_map_[shard_id])
+    {
+        brpc::ClosureGuard done_guard(done);
+        result->set_error_code(::EloqDS::remote::DataStoreError::DB_NOT_OPEN);
+        result->set_error_msg("KV store not opened yet.");
+        return;
+    }
+
+    CreateSnapshotForBackupRpcRequest *req =
+        rpc_create_snapshot_req_pool_.NextObject();
+
+    req->Reset(this, request, response, done);
+    data_store_map_[shard_id]->CreateSnapshotForBackup(req);
+}
+
+void DataStoreService::CreateSnapshotForBackup(
+    uint32_t shard_id,
+    std::string_view backup_name,
+    uint64_t backup_ts,
+    std::vector<std::string> *backup_files,
+    remote::CommonResult *result,
+    ::google::protobuf::Closure *done)
+{
+    if (!cluster_manager_.IsOwnerOfShard(shard_id))
+    {
+        cluster_manager_.PrepareShardingError(shard_id, result);
+        return;
+    }
+
+    std::shared_lock<std::shared_mutex> lk(serv_mux_);
+    if (!data_store_map_[shard_id])
+    {
+        result->set_error_code(::EloqDS::remote::DataStoreError::DB_NOT_OPEN);
+        result->set_error_msg("KV store not opened yet.");
+        return;
+    }
+
+    CreateSnapshotForBackupLocalRequest *req =
+        local_create_snapshot_req_pool_.NextObject();
+
+    req->Reset(this, backup_name, backup_ts, backup_files, result, done);
+
+    // Process request async
+    data_store_map_[shard_id]->CreateSnapshotForBackup(req);
 }
 
 void DataStoreService::FetchDSSClusterConfig(

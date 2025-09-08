@@ -20,8 +20,6 @@
  *
  */
 
-#include "rocksdb_handler.h"
-
 #include <brpc/controller.h>
 #include <brpc/server.h>
 #include <brpc/stream.h>
@@ -68,6 +66,7 @@
 #include "redis_zset_object.h"
 #include "rocksdb/iostats_context.h"
 #include "rocksdb/rate_limiter.h"
+#include "rocksdb_handler.h"
 #include "rocksdb_scanner.h"
 #include "store_util.h"
 #include "tx_record.h"
@@ -3248,7 +3247,9 @@ bool RocksDBHandlerImpl::CreateSnapshotForStandby(
     return CreateSnapshot(ckpt_path_, snapshot_files);
 }
 bool RocksDBHandlerImpl::CreateSnapshotForBackup(
-    const std::string &backup_name, std::vector<std::string> &snapshot_files)
+    const std::string &backup_name,
+    std::vector<std::string> &snapshot_files,
+    uint64_t backup_ts)
 {
     // local path to store snapshot temporarily
     const std::string snapshot_path = backup_path_ + backup_name + "/";

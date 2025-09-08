@@ -1371,4 +1371,150 @@ private:
     google::protobuf::Closure *done_{nullptr};
 };
 
+class CreateSnapshotForBackupRequest : public Poolable
+{
+public:
+    CreateSnapshotForBackupRequest() = default;
+    CreateSnapshotForBackupRequest(
+        const CreateSnapshotForBackupRequest &other) = delete;
+    CreateSnapshotForBackupRequest &operator=(
+        const CreateSnapshotForBackupRequest &other) = delete;
+
+    virtual ~CreateSnapshotForBackupRequest() = default;
+
+    virtual std::string_view GetBackupName() const = 0;
+    virtual uint64_t GetBackupTs() const = 0;
+    virtual void AddBackupFile(const std::string &file) = 0;
+
+    // finish
+    virtual void SetFinish(const ::EloqDS::remote::DataStoreError error_code,
+                           const std::string error_message = "") = 0;
+};
+
+class CreateSnapshotForBackupRpcRequest : public CreateSnapshotForBackupRequest
+{
+public:
+    CreateSnapshotForBackupRpcRequest() = default;
+    CreateSnapshotForBackupRpcRequest(
+        const CreateSnapshotForBackupRpcRequest &other) = delete;
+    CreateSnapshotForBackupRpcRequest &operator=(
+        const CreateSnapshotForBackupRpcRequest &other) = delete;
+
+    void Reset(DataStoreService *ds_service,
+               const remote::CreateSnapshotForBackupRequest *req,
+               remote::CreateSnapshotForBackupResponse *resp,
+               google::protobuf::Closure *done)
+    {
+        ds_service_ = ds_service;
+        req_ = req;
+        resp_ = resp;
+        done_ = done;
+    }
+
+    void Clear() override
+    {
+        ds_service_ = nullptr;
+        req_ = nullptr;
+        resp_ = nullptr;
+        done_ = nullptr;
+    }
+
+    std::string_view GetBackupName() const override
+    {
+        return req_->backup_name();
+    }
+
+    uint64_t GetBackupTs() const override
+    {
+        return req_->backup_ts();
+    }
+
+    void AddBackupFile(const std::string &file) override
+    {
+        resp_->add_backup_files(file);
+    }
+
+    void SetFinish(const ::EloqDS::remote::DataStoreError error_code,
+                   const std::string error_message) override
+    {
+        brpc::ClosureGuard done_guard(done_);
+        ::EloqDS::remote::CommonResult *result = resp_->mutable_result();
+        result->set_error_code(error_code);
+        result->set_error_msg(error_message);
+    }
+
+private:
+    DataStoreService *ds_service_{nullptr};
+    const remote::CreateSnapshotForBackupRequest *req_{nullptr};
+    remote::CreateSnapshotForBackupResponse *resp_{nullptr};
+    google::protobuf::Closure *done_{nullptr};
+};
+
+class CreateSnapshotForBackupLocalRequest
+    : public CreateSnapshotForBackupRequest
+{
+public:
+    CreateSnapshotForBackupLocalRequest() = default;
+    CreateSnapshotForBackupLocalRequest(
+        const CreateSnapshotForBackupLocalRequest &other) = delete;
+    CreateSnapshotForBackupLocalRequest &operator=(
+        const CreateSnapshotForBackupLocalRequest &other) = delete;
+
+    void Reset(DataStoreService *ds_service,
+               std::string_view backup_name,
+               const uint64_t backup_ts,
+               std::vector<std::string> *backup_files,
+               ::EloqDS::remote::CommonResult *result,
+               google::protobuf::Closure *done)
+    {
+        ds_service_ = ds_service;
+        backup_name_ = backup_name;
+        backup_files_ = backup_files;
+        backup_ts_ = backup_ts;
+        result_ = result;
+        done_ = done;
+    }
+
+    void Clear() override
+    {
+        ds_service_ = nullptr;
+        backup_name_ = "";
+        backup_files_ = nullptr;
+        backup_ts_ = 0;
+        result_ = nullptr;
+        done_ = nullptr;
+    }
+
+    std::string_view GetBackupName() const override
+    {
+        return backup_name_;
+    }
+
+    void AddBackupFile(const std::string &file) override
+    {
+        backup_files_->emplace_back(file);
+    }
+
+    uint64_t GetBackupTs() const override
+    {
+        return backup_ts_;
+    }
+
+    void SetFinish(const ::EloqDS::remote::DataStoreError error_code,
+                   const std::string error_message) override
+    {
+        brpc::ClosureGuard done_guard(done_);
+        result_->set_error_code(error_code);
+        result_->set_error_msg(error_message);
+    }
+
+private:
+    DataStoreService *ds_service_{nullptr};
+    EloqDS::remote::CommonResult *result_{nullptr};
+    std::string_view backup_name_{""};
+    std::vector<std::string> *backup_files_{nullptr};
+    uint64_t backup_ts_{0};
+    google::protobuf::Closure *done_{nullptr};
+};
+
 }  // namespace EloqDS
