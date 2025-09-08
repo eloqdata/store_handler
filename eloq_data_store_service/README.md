@@ -16,6 +16,36 @@ The service provides a unified interface for data storage operations regardless 
 
 The DataStore Service is built as part of the EloqData KV project. The main executable is called `dss_server`.
 
+### Building with Different Storage Backends
+
+The DataStore Service can be built with different storage backends. Use the following CMake commands to build with your preferred backend:
+
+#### 1. Building with RocksDB
+```bash
+cmake -DWITH_DATA_STORE=ELOQDSS_ROCKSDB ..
+make -j$(nproc)
+```
+
+#### 2. Building with RocksDB Cloud S3
+```bash
+cmake -DWITH_DATA_STORE=ELOQDSS_ROCKSDB_CLOUD_S3 ..
+make -j$(nproc)
+```
+
+#### 3. Building with RocksDB Cloud GCS
+```bash
+cmake -DWITH_DATA_STORE=ELOQDSS_ROCKSDB_CLOUD_GCS ..
+make -j$(nproc)
+```
+
+#### 4. Building with EloqStore
+```bash
+cmake -DWITH_DATA_STORE=ELOQDSS_ELOQSTORE ..
+make -j$(nproc)
+```
+
+Each build option sets specific compiler definitions that determine which storage backend implementation will be used.
+
 ## Configuration
 
 ### Command Line Flags
