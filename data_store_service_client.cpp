@@ -871,7 +871,11 @@ void DataStoreServiceClient::FetchRangeSlices(
 
     txservice::TxKey start_key =
         fetch_cc->range_entry_->GetRangeInfo()->StartTxKey();
-    fetch_cc->kv_start_key_ = EncodeRangeKey(fetch_cc->table_name_, start_key);
+
+    auto catalog_factory = GetCatalogFactory(fetch_cc->table_name_.Engine());
+    assert(catalog_factory != nullptr);
+    fetch_cc->kv_start_key_ =
+        EncodeRangeKey(catalog_factory, fetch_cc->table_name_, start_key);
 
     Read(kv_range_table_name,
          fetch_cc->kv_partition_id_,
@@ -889,10 +893,14 @@ bool DataStoreServiceClient::DeleteOutOfRangeData(
     const std::string &kv_table_name =
         table_schema->GetKVCatalogInfo()->GetKvTableName(table_name);
     std::string start_key_str;
-    if (start_key == txservice::TxKeyFactory::NegInfTxKey())
+
+    auto catalog_factory = GetCatalogFactory(table_name.Engine());
+    assert(catalog_factory != nullptr);
+
+    if (start_key->Type() == txservice::KeyType::NegativeInf)
     {
         const txservice::TxKey *neg_key =
-            txservice::TxKeyFactory::PackedNegativeInfinity();
+            catalog_factory->PackedNegativeInfinity();
         start_key_str = std::string(neg_key->Data(), neg_key->Size());
     }
     else
@@ -949,11 +957,13 @@ DataStoreServiceClient::ScanForward(
     const txservice::KVCatalogInfo *kv_info,
     bool scan_forward)
 {
+    auto *catalog_factory = GetCatalogFactory(table_name.Engine());
     if (scan_forward)
     {
         auto scanner =
             std::make_unique<DataStoreServiceHashPartitionScanner<true>>(
                 this,
+                catalog_factory,
                 key_schema,
                 rec_schema,
                 table_name,
@@ -973,6 +983,7 @@ DataStoreServiceClient::ScanForward(
         auto scanner =
             std::make_unique<DataStoreServiceHashPartitionScanner<false>>(
                 this,
+                catalog_factory,
                 key_schema,
                 rec_schema,
                 table_name,
@@ -1004,11 +1015,14 @@ DataStoreServiceClient::LoadRangeSlice(
     }
     // NOTICE: must unpin node group on calling load_slice_req->SetKvFinish().
 
+    auto catalog_factory = GetCatalogFactory(table_name.Engine());
+    assert(catalog_factory != nullptr);
+
     const txservice::TxKey &start_key = load_slice_req->StartKey();
-    if (start_key == *txservice::TxKeyFactory::NegInfTxKey())
+    if (start_key.Type() == txservice::KeyType::NegativeInf)
     {
         const txservice::TxKey *neg_key =
-            txservice::TxKeyFactory::PackedNegativeInfinity();
+            catalog_factory->PackedNegativeInfinity();
         load_slice_req->kv_start_key_ =
             std::string_view(neg_key->Data(), neg_key->Size());
     }
@@ -1019,7 +1033,7 @@ DataStoreServiceClient::LoadRangeSlice(
     }
 
     const txservice::TxKey &end_key = load_slice_req->EndKey();
-    if (end_key == *txservice::TxKeyFactory::PosInfTxKey())
+    if (end_key.Type() == txservice::KeyType::PositiveInf)
     {
         // end_key of empty string indicates the positive infinity in the
         // ScanNext
@@ -1072,6 +1086,7 @@ DataStoreServiceClient::LoadRangeSlice(
 // Notice: segment_id starts from 0.
 
 std::string DataStoreServiceClient::EncodeRangeKey(
+    const txservice::CatalogFactory *catalog_factory,
     const txservice::TableName &table_name,
     const txservice::TxKey &range_start_key)
 {
@@ -1082,7 +1097,7 @@ std::string DataStoreServiceClient::EncodeRangeKey(
     if (range_start_key.Type() == txservice::KeyType::NegativeInf)
     {
         const txservice::TxKey *packed_neginf =
-            txservice::TxKeyFactory::PackedNegativeInfinity();
+            catalog_factory->PackedNegativeInfinity();
         key.append(packed_neginf->Data(), packed_neginf->Size());
     }
     else
@@ -1148,6 +1163,9 @@ bool DataStoreServiceClient::UpdateRangeSlices(
     int32_t partition_id,
     uint64_t range_version)
 {
+    auto catalog_factory = GetCatalogFactory(table_name.Engine());
+    assert(catalog_factory != nullptr);
+
     // 1- store range_slices info into {kv_range_slices_table_name}
     std::vector<std::string> segment_keys;
     std::vector<std::string> segment_records;
@@ -1168,8 +1186,8 @@ bool DataStoreServiceClient::UpdateRangeSlices(
         txservice::TxKey slice_start_key = slices[i]->StartTxKey();
         if (slice_start_key.Type() == txservice::KeyType::NegativeInf)
         {
-            slice_start_key = txservice::TxKeyFactory::PackedNegativeInfinity()
-                                  ->GetShallowCopy();
+            slice_start_key =
+                catalog_factory->PackedNegativeInfinity()->GetShallowCopy();
         }
         uint32_t key_size = static_cast<uint32_t>(slice_start_key.Size());
         batch_size += sizeof(uint32_t);
@@ -1259,7 +1277,8 @@ bool DataStoreServiceClient::UpdateRangeSlices(
     // 3- store range info into {kv_range_table_name}
     callback_data->Reset();
 
-    std::string key_str = EncodeRangeKey(table_name, range_start_key);
+    std::string key_str =
+        EncodeRangeKey(catalog_factory, table_name, range_start_key);
     std::string rec_str =
         EncodeRangeValue(partition_id, range_version, version, segment_cnt);
 
@@ -1747,47 +1766,6 @@ void DataStoreServiceClient::EncodeArchiveKey(
     write_batch_size += sizeof(uint64_t);
 }
 
-bool DataStoreServiceClient::DecodeArchiveKey(const std::string &archive_key,
-                                              std::string &table_name,
-                                              txservice::TxKey &key,
-                                              uint64_t &be_commit_ts)
-{
-    // Find the first separator
-    size_t first_sep = archive_key.find(KEY_SEPARATOR);
-    if (first_sep == std::string::npos)
-    {
-        return false;
-    }
-
-    // Extract table_name
-    table_name = archive_key.substr(0, first_sep);
-
-    // Find the second separator
-    size_t second_sep =
-        archive_key.find(KEY_SEPARATOR, first_sep + KEY_SEPARATOR.size());
-    if (second_sep == std::string::npos)
-    {
-        return false;
-    }
-
-    // Extract key
-    size_t key_start = first_sep + KEY_SEPARATOR.size();
-    size_t key_length = second_sep - key_start;
-    key = txservice::TxKeyFactory::CreateTxKey(archive_key.data() + key_start,
-                                               key_length);
-
-    // Extract commit_ts
-    size_t ts_pos = second_sep + KEY_SEPARATOR.size();
-    if (ts_pos + sizeof(uint64_t) > archive_key.size())
-    {
-        return false;
-    }
-    be_commit_ts =
-        *reinterpret_cast<const uint64_t *>(archive_key.data() + ts_pos);
-
-    return true;
-}
-
 void DataStoreServiceClient::EncodeArchiveValue(
     bool is_deleted,
     const txservice::TxRecord *value,
@@ -2067,6 +2045,9 @@ bool DataStoreServiceClient::CopyBaseToArchive(
             flush_task_entry.front()->data_sync_task_->table_name_;
         auto &table_schema = flush_task_entry.front()->table_schema_;
 
+        auto *catalog_factory = GetCatalogFactory(table_name.Engine());
+        assert(catalog_factory != nullptr);
+
         for (auto &entry : flush_task_entry)
         {
             auto &base_vec = *entry->mv_base_vec_;
@@ -2128,16 +2109,16 @@ bool DataStoreServiceClient::CopyBaseToArchive(
             for (size_t i = 0; i < base_vec.size(); i++)
             {
                 auto &callback_data = callback_datas[i];
-                txservice::TxKey tx_key = txservice::TxKeyFactory::CreateTxKey(
-                    callback_data.key_str_.data(),
-                    callback_data.key_str_.size());
+                txservice::TxKey tx_key =
+                    catalog_factory->CreateTxKey(callback_data.key_str_.data(),
+                                                 callback_data.key_str_.size());
                 batch_size += callback_data.key_str_.size();
                 batch_size += callback_data.value_str_.size();
                 std::string_view val = callback_data.value_str_;
                 size_t offset = 0;
                 bool is_deleted = false;
                 std::unique_ptr<txservice::TxRecord> record =
-                    txservice::TxRecordFactory::CreateTxRecord();
+                    catalog_factory->CreateTxRecord();
                 if (table_name.Engine() == txservice::TableEngine::EloqKv)
                 {
                     // mvcc is not used for EloqKV
@@ -2267,6 +2248,9 @@ bool DataStoreServiceClient::FetchArchives(
         return false;
     }
 
+    auto *catalog_factory = GetCatalogFactory(table_name.Engine());
+    assert(catalog_factory != nullptr);
+
     for (size_t i = 0; i < callback_data.archive_values_.size(); ++i)
     {
         const std::string &archive_value_str = callback_data.archive_values_[i];
@@ -2291,7 +2275,7 @@ bool DataStoreServiceClient::FetchArchives(
             else
             {
                 std::unique_ptr<txservice::TxRecord> tmp_rec =
-                    txservice::TxRecordFactory::CreateTxRecord();
+                    catalog_factory->CreateTxRecord();
                 tmp_rec->Deserialize(archive_value_str.data(), value_offset);
                 ref.record_ = std::move(tmp_rec);
             }
@@ -3000,9 +2984,11 @@ bool DataStoreServiceClient::InitTableRanges(
     int32_t kv_partition_id = KvPartitionIdOf(table_name);
     int32_t init_range_id =
         txservice::Sequences::InitialRangePartitionIdOf(table_name);
+    auto catalog_factory = GetCatalogFactory(table_name.Engine());
+    assert(catalog_factory != nullptr);
 
     const txservice::TxKey *neg_inf_key =
-        txservice::TxKeyFactory::PackedNegativeInfinity();
+        catalog_factory->PackedNegativeInfinity();
 
     std::vector<std::string_view> keys;
     std::vector<std::string_view> records;
@@ -3013,7 +2999,8 @@ bool DataStoreServiceClient::InitTableRanges(
     PoolableGuard guard(callback_data);
     callback_data->Reset();
 
-    std::string key_str = EncodeRangeKey(table_name, *neg_inf_key);
+    std::string key_str =
+        EncodeRangeKey(catalog_factory, table_name, *neg_inf_key);
     std::string rec_str = EncodeRangeValue(init_range_id, version, version, 0);
 
     keys.emplace_back(std::string_view(key_str.data(), key_str.size()));

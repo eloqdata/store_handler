@@ -62,9 +62,14 @@ public:
     ~DataStoreServiceClient();
 
     DataStoreServiceClient(
+        txservice::CatalogFactory *catalog_factory[4],
         const DataStoreServiceClusterManager &cluster_manager,
         DataStoreService *data_store_service = nullptr)
         : ds_serv_shutdown_indicator_(false),
+          catalog_factory_array_{catalog_factory[0],
+                                 catalog_factory[1],
+                                 catalog_factory[2],
+                                 catalog_factory[3]},
           cluster_manager_(cluster_manager),
           data_store_service_(data_store_service),
           flying_remote_fetch_count_(0)
@@ -236,7 +241,8 @@ public:
                       std::vector<txservice::SplitRangeInfo> range_info,
                       uint64_t version) override;
 
-    std::string EncodeRangeKey(const txservice::TableName &table_name,
+    std::string EncodeRangeKey(const txservice::CatalogFactory *catalog_factory,
+                               const txservice::TableName &table_name,
                                const txservice::TxKey &range_start_key);
     std::string EncodeRangeValue(int32_t range_id,
                                  uint64_t range_version,
@@ -418,12 +424,6 @@ public:
                                  std::vector<std::string_view> &keys,
                                  uint64_t &write_batch_size);
 
-    // NOTICE: be_commit_ts is the big endian encode value of commit_ts
-    static bool DecodeArchiveKey(const std::string &archive_key,
-                                 std::string &table_name,
-                                 txservice::TxKey &key,
-                                 uint64_t &be_commit_ts);
-
     static void EncodeArchiveValue(bool is_deleted,
                                    const txservice::TxRecord *value,
                                    size_t &unpack_info_size,
@@ -602,6 +602,14 @@ private:
         return cluster_manager_.GetShardIdByPartitionId(partition_id);
     }
 
+    const txservice::CatalogFactory *GetCatalogFactory(
+        txservice::TableEngine table_engine)
+    {
+        assert(catalog_factory_array_.at(static_cast<int>(table_engine)) !=
+               nullptr);
+        return catalog_factory_array_.at(static_cast<int>(table_engine));
+    }
+
     /**
      * @brief Check if the partition_id is local to the current node.
      * @param partition_id
@@ -612,6 +620,8 @@ private:
     bthread::Mutex ds_service_mutex_;
     bthread::ConditionVariable ds_service_cv_;
     std::atomic<bool> ds_serv_shutdown_indicator_;
+
+    std::array<const txservice::CatalogFactory *, 4> catalog_factory_array_;
 
     // remote data store service configuration
     DataStoreServiceClusterManager cluster_manager_;
