@@ -67,6 +67,7 @@ bool SinglePartitionScanner::FetchNextBatch()
         last_key_,
         scanner_->GetEndKey(),
         session_id_,
+        true,
         // only set inclusive_start for the first batch
         first_batch_fetched_ ? false : scanner_->IsInclusiveStart(),
         scanner_->IsInclusiveEnd(),

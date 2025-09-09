@@ -24,8 +24,11 @@
 
 #include <memory>
 #include <string>
+#include <string_view>
 #include <utility>
 
+#include "cc_req_misc.h"
+#include "error_messages.h"
 #include "store_util.h"  // host_to_big_endian
 #include "tx_service/include/cc/cc_request.h"
 #include "tx_service/include/cc/local_cc_shards.h"
@@ -66,11 +69,11 @@ void SyncBatchReadForArchiveCallback(void *data,
     if (err_code == remote::DataStoreError::KEY_NOT_FOUND)
     {
         LOG(ERROR) << "BatchReadForArchiveCallback, key not found: "
-                   << read_closure->Key();
+                   << read_closure->Key().back();
         // callback_data->SetErrorCode(
         //     static_cast<int>(txservice::CcErrorCode::DATA_STORE_ERR));
         // assert(false);
-        std::string_view key_str = read_closure->Key();
+        std::string_view key_str = read_closure->Key().back();
         uint64_t ts = 1U;
         uint64_t ttl = 0U;
         std::string value_str = client.SerializeTxRecord(true, nullptr);
@@ -93,7 +96,7 @@ void SyncBatchReadForArchiveCallback(void *data,
     }
     else
     {
-        std::string_view key_str = read_closure->Key();
+        std::string_view key_str = read_closure->Key().back();
         std::string &value_str = read_closure->ValueStringRef();
         uint64_t ts = read_closure->Ts();
         uint64_t ttl = read_closure->Ttl();
@@ -113,8 +116,8 @@ void FetchRecordCallback(void *data,
                          const remote::CommonResult &result)
 {
     auto *read_closure = static_cast<ReadClosure *>(closure);
-
-    auto *fetch_cc = static_cast<txservice::FetchRecordCc *>(data);
+    txservice::FetchRecordCc *fetch_cc =
+        static_cast<txservice::FetchRecordCc *>(data);
     auto err_code = result.error_code();
 
     {
@@ -221,6 +224,62 @@ void FetchRecordCallback(void *data,
     }
 }
 
+void FetchBucketDataCallback(void *data,
+                             ::google::protobuf::Closure *closure,
+                             DataStoreServiceClient &client,
+                             const remote::CommonResult &result)
+{
+    assert(data != nullptr);
+    FetchBucketDataCallbackData *callback_data =
+        static_cast<FetchBucketDataCallbackData *>(data);
+    ScanNextClosure *scan_next_closure =
+        static_cast<ScanNextClosure *>(closure);
+    assert(!scan_next_closure->GenerateSessionId());
+    auto *fetch_bucket_data_cc = callback_data->fetch_bucket_data_cc_;
+
+    if (result.error_code() != EloqDS::remote::DataStoreError::NO_ERROR)
+    {
+        LOG(ERROR) << "DataStoreHandler: Failed to do FetchBucketData. "
+                   << result.error_msg();
+        fetch_bucket_data_cc->SetFinish(
+            static_cast<int32_t>(txservice::CcErrorCode::DATA_STORE_ERR));
+
+        delete callback_data;
+        return;
+    }
+
+    assert(fetch_bucket_data_cc->table_name_.IsHashPartitioned());
+
+    uint32_t items_size = scan_next_closure->ItemsSize();
+    std::string key_str;
+    std::string value_str;
+    uint64_t ts = UINT64_MAX;
+    uint64_t ttl = UINT64_MAX;
+    uint64_t now = txservice::LocalCcShards::ClockTsInMillseconds();
+    for (uint32_t item_idx = 0; item_idx < items_size; ++item_idx)
+    {
+        scan_next_closure->GetItem(item_idx, key_str, value_str, ts, ttl);
+
+        std::string tx_key(
+            client.DecodeKvKeyForHashPart(key_str.data(), key_str.size()));
+        if (ttl > 0 && ttl < now)
+        {
+            fetch_bucket_data_cc->AddDataItem(std::move(tx_key), "", 1, true);
+        }
+        else
+        {
+            fetch_bucket_data_cc->AddDataItem(
+                std::move(tx_key), std::move(value_str), ts, false);
+        }
+    }
+
+    // callback_data->session_id_ = scan_next_closure->GetSessionId();
+    fetch_bucket_data_cc->SetFinish(
+        static_cast<int32_t>(txservice::CcErrorCode::NO_ERROR));
+
+    delete callback_data;
+}
+
 void FetchSnapshotCallback(void *data,
                            ::google::protobuf::Closure *closure,
                            DataStoreServiceClient &client,
@@ -267,7 +326,9 @@ void FetchSnapshotCallback(void *data,
                         val, is_deleted, offset))
                 {
                     LOG(ERROR) << "====fetch snapshot===decode error=="
-                               << " key: " << read_closure->Key()
+                               << " key: "
+                               << std::string_view(fetch_cc->tx_key_.Data(),
+                                                   fetch_cc->tx_key_.Size())
                                << " status: " << (int) fetch_cc->rec_status_;
                     std::abort();
                 }
@@ -531,6 +592,7 @@ void FetchAllDatabaseCallback(void *data,
                             fetch_data->dbnames_->back(),
                             fetch_data->end_key_,
                             fetch_data->session_id_,
+                            true,
                             false,
                             false,
                             true,
@@ -598,6 +660,7 @@ void DiscoverAllTableNamesCallback(void *data,
                             fetch_data->table_names_->back(),
                             "",
                             fetch_data->session_id_,
+                            true,
                             false,
                             false,
                             true,
@@ -727,6 +790,7 @@ void FetchTableRangesCallback(void *data,
                             fetch_range_cc->kv_start_key_,
                             fetch_range_cc->kv_end_key_,
                             fetch_range_cc->kv_session_id_,
+                            true,
                             false,
                             false,
                             true,
@@ -817,9 +881,10 @@ void FetchRangeSlicesCallback(void *data,
                     client.EncodeRangeSliceKey(fetch_req->table_name_,
                                                range_partition_id,
                                                fetch_req->CurrentSegmentId());
+
                 client.Read(kv_range_slices_table_name,
                             fetch_req->kv_partition_id_,
-                            fetch_req->kv_start_key_,
+                            "".fetch_req->kv_start_key_,
                             fetch_req,
                             &FetchRangeSlicesCallback);
             }
@@ -911,8 +976,10 @@ void FetchRangeSlicesCallback(void *data,
                                               fetch_req->CurrentSegmentId());
             client.Read(kv_range_slices_table_name,
                         fetch_req->kv_partition_id_,
+                        "",
                         fetch_req->kv_start_key_,
                         fetch_req,
+
                         &FetchRangeSlicesCallback);
         }
     }
@@ -1027,6 +1094,7 @@ void FetchTableStatsCallback(void *data,
                             fetch_cc->kv_start_key_,
                             fetch_cc->kv_end_key_,
                             fetch_cc->kv_session_id_,
+                            true,
                             false,
                             false,
                             true,
@@ -1129,9 +1197,9 @@ void LoadRangeSliceCallback(void *data,
                         fill_store_slice_req->kv_start_key_,
                         fill_store_slice_req->kv_end_key_,
                         fill_store_slice_req->kv_session_id_,
-                        false,  // include start_key
-                        false,  // include end_key
-                        true,   // scan forward
+                        true false,  // include start_key
+                        false,       // include end_key
+                        true,        // scan forward
                         1000,
                         nullptr,
                         fill_store_slice_req,
@@ -1196,6 +1264,7 @@ void FetchArchivesCallback(void *data,
                         fetch_data->start_key_,
                         fetch_data->end_key_,
                         scan_next_closure->SessionId(),
+                        true,
                         false,
                         false,
                         fetch_data->scan_forward_,
@@ -1295,6 +1364,7 @@ void FetchRecordArchivesCallback(void *data,
                                     std::string_view(fetch_cc->tx_key_.Data(),
                                                      fetch_cc->tx_key_.Size()),
                                     EloqShare::host_to_big_endian(UINT64_MAX));
+
         fetch_cc->kv_session_id_.clear();
 
         client.ScanNext(kv_mvcc_archive_name,
@@ -1302,6 +1372,7 @@ void FetchRecordArchivesCallback(void *data,
                         fetch_cc->kv_start_key_,
                         fetch_cc->kv_end_key_,
                         fetch_cc->kv_session_id_,
+                        true,
                         false,
                         false,
                         true,
@@ -1326,6 +1397,7 @@ void FetchRecordArchivesCallback(void *data,
                         fetch_cc->kv_start_key_,
                         fetch_cc->kv_end_key_,
                         fetch_cc->kv_session_id_,
+                        true,
                         false,
                         false,
                         true,
@@ -1343,7 +1415,6 @@ void FetchSnapshotArchiveCallback(void *data,
 {
     txservice::FetchSnapshotCc *fetch_cc =
         static_cast<txservice::FetchSnapshotCc *>(data);
-
     ScanNextClosure *scan_next_closure =
         static_cast<ScanNextClosure *>(closure);
     auto err_code = result.error_code();

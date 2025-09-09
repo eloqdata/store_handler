@@ -27,18 +27,23 @@
 #include <boost/uuid/uuid.hpp>
 #include <boost/uuid/uuid_generators.hpp>
 #include <boost/uuid/uuid_io.hpp>
+#include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
+#include "cc_req_misc.h"
 #include "data_store_service_client_closure.h"
 #include "data_store_service_scanner.h"
 #include "eloq_data_store_service/object_pool.h"  // ObjectPool
 #include "eloq_data_store_service/thread_worker_pool.h"
 #include "metrics.h"
+#include "sharder.h"
 #include "store_util.h"  // host_to_big_endian
+#include "tx_key.h"
 #include "tx_service/include/cc/local_cc_shards.h"
 #include "tx_service/include/error_messages.h"
 #include "tx_service/include/sequences/sequences.h"
@@ -257,8 +262,8 @@ bool DataStoreServiceClient::PutAll(
         PoolableGuard sync_putall_guard(sync_putall);
         sync_putall->Reset();
 
-        uint16_t parts_cnt_per_key = 1;
-        uint16_t parts_cnt_per_record = table_name.IsObjectTable() ? 1 : 5;
+        uint16_t parts_cnt_per_key = table_name.IsHashPartitioned() ? 2 : 1;
+        uint16_t parts_cnt_per_record = table_name.IsHashPartitioned() ? 1 : 5;
 
         // Create partition states and prepare batches
         std::vector<PartitionCallbackData *> callback_data_list;
@@ -494,6 +499,7 @@ void DataStoreServiceClient::FetchTableCatalog(
     std::string_view key = fetch_cc->CatalogName().StringView();
     Read(kv_table_catalogs_name,
          kv_partition_id,
+         "",
          key,
          fetch_cc,
          &FetchTableCatalogCallback);
@@ -521,6 +527,7 @@ void DataStoreServiceClient::FetchCurrentTableStatistics(
     fetch_cc->SetStoreHandler(this);
     Read(kv_table_statistics_version_name,
          fetch_cc->kv_partition_id_,
+         "",
          sv,
          fetch_cc,
          &FetchCurrentTableStatsCallback);
@@ -564,6 +571,7 @@ void DataStoreServiceClient::FetchTableStatistics(
              fetch_cc->kv_start_key_,
              fetch_cc->kv_end_key_,
              fetch_cc->kv_session_id_,
+             true,
              false,
              false,
              true,
@@ -831,6 +839,7 @@ void DataStoreServiceClient::FetchTableRanges(
              fetch_cc->kv_end_key_,
              fetch_cc->kv_session_id_,
              true,
+             true,
              false,
              true,
              100,
@@ -872,6 +881,7 @@ void DataStoreServiceClient::FetchRangeSlices(
 
     Read(kv_range_table_name,
          fetch_cc->kv_partition_id_,
+         "",
          fetch_cc->kv_start_key_,
          fetch_cc,
          &FetchRangeSlicesCallback);
@@ -1084,7 +1094,8 @@ DataStoreServiceClient::LoadRangeSlice(
              load_slice_req->kv_partition_id_,
              load_slice_req->kv_start_key_,
              load_slice_req->kv_end_key_,
-             "",       // session_id
+             "",  // session_id
+             true,
              true,     // include start_key
              false,    // include end_key
              true,     // scan forward
@@ -1464,6 +1475,7 @@ bool DataStoreServiceClient::FetchTable(const txservice::TableName &table_name,
     callback_data->Reset(schema_image, found, version_ts);
     Read(kv_table_catalogs_name,
          0,
+         "",
          table_name.StringView(),
          callback_data,
          &FetchTableCallback);
@@ -1508,6 +1520,7 @@ bool DataStoreServiceClient::DiscoverAllTableNames(
              "",
              "",
              callback_data->session_id_,
+             true,
              false,
              false,
              true,
@@ -1662,6 +1675,7 @@ bool DataStoreServiceClient::FetchDatabase(
     callback_data->Reset(definition, found, yield_fptr, resume_fptr);
     Read(kv_database_catalogs_name,
          0,
+         "",
          db,
          callback_data,
          &FetchDatabaseCallback);
@@ -1685,6 +1699,7 @@ bool DataStoreServiceClient::FetchAllDatabase(
              callback_data->start_key_,
              callback_data->end_key_,
              callback_data->session_id_,
+             true,
              false,
              false,
              true,
@@ -1883,6 +1898,39 @@ uint32_t DataStoreServiceClient::HashArchiveKey(
     uint32_t partition_id =
         (kv_table_name_hash ^ (key_hash << 1)) & 0x3FF;  // 1024 partitions
     return partition_id;
+}
+
+std::string DataStoreServiceClient::EncodeKvKeyForHashPart(uint16_t bucket_id)
+{
+    std::string kv_key;
+    uint16_t be_bucket_id = EloqShare::host_to_big_endian(bucket_id);
+    kv_key.append(reinterpret_cast<const char *>(&be_bucket_id),
+                  sizeof(be_bucket_id));
+    return kv_key;
+}
+
+std::string DataStoreServiceClient::EncodeKvKeyForHashPart(
+    uint16_t bucket_id, const txservice::TxKey &tx_key)
+{
+    std::string kv_key;
+    uint16_t be_bucket_id = EloqShare::host_to_big_endian(bucket_id);
+    kv_key.reserve(sizeof(uint16_t) + tx_key.Size());
+    kv_key.append(reinterpret_cast<const char *>(&be_bucket_id),
+                  sizeof(be_bucket_id));
+    if (tx_key.Type() == txservice::KeyType::Normal)
+    {
+        kv_key.append(tx_key.Data(), tx_key.Size());
+    }
+    return kv_key;
+}
+
+std::string_view DataStoreServiceClient::DecodeKvKeyForHashPart(
+    const char *data, size_t size)
+{
+    assert(size >= sizeof(uint16_t));
+    const char *tx_key_start = data + sizeof(uint16_t);
+    size_t tx_key_len = size - sizeof(uint16_t);
+    return std::string_view(tx_key_start, tx_key_len);
 }
 
 std::string DataStoreServiceClient::EncodeArchiveKey(
@@ -2357,15 +2405,26 @@ bool DataStoreServiceClient::CopyBaseToArchive(
             {
                 txservice::TxKey &tx_key = base_vec[base_idx].first;
                 assert(tx_key.Data() != nullptr && tx_key.Size() > 0);
+
                 uint32_t partition_id = base_vec[base_idx].second;
                 auto *callback_data = &callback_datas[base_idx];
                 callback_data->ResetResult();
                 size_t flying_cnt = callback_data->AddFlyingReadCount();
+
+                std::string_view be_bucket_id =
+                    table_name.IsHashPartitioned()
+                        ? EncodeBucketId(
+                              txservice::Sharder::MapKeyHashToBucketId(
+                                  tx_key.Hash()))
+                        : std::string_view();
+
                 Read(base_kv_table_name,
                      KvPartitionIdOf(partition_id, true),
+                     be_bucket_id,
                      std::string_view(tx_key.Data(), tx_key.Size()),
                      callback_data,
                      &SyncBatchReadForArchiveCallback);
+
                 if (flying_cnt >= MAX_FLYING_READ_COUNT)
                 {
                     callback_data->Wait();
@@ -2390,10 +2449,17 @@ bool DataStoreServiceClient::CopyBaseToArchive(
             for (size_t i = 0; i < base_vec.size(); i++)
             {
                 auto &callback_data = callback_datas[i];
+                std::string_view tx_key_view = callback_data.key_str_;
+                if (table_name.IsHashPartitioned())
+                {
+                    tx_key_view = DecodeKvKeyForHashPart(tx_key_view.data(),
+                                                         tx_key_view.size());
+                }
+
                 txservice::TxKey tx_key = txservice::TxKeyFactory::CreateTxKey(
-                    callback_data.key_str_.data(),
-                    callback_data.key_str_.size());
-                batch_size += callback_data.key_str_.size();
+                    tx_key_view.data(), tx_key_view.size());
+
+                batch_size += tx_key_view.size();
                 batch_size += callback_data.value_str_.size();
                 std::string_view val = callback_data.value_str_;
                 size_t offset = 0;
@@ -2526,6 +2592,7 @@ bool DataStoreServiceClient::FetchArchives(
              lower_bound_key,
              upper_bound_key,
              callback_data.session_id_,
+             true,
              true,                         // include start key
              false,                        // include end key
              callback_data.scan_forward_,  // scan forward: true
@@ -2629,6 +2696,7 @@ bool DataStoreServiceClient::FetchVisibleArchive(
              lower_bound_key,
              upper_bound_key,
              callback_data.session_id_,
+             true,
              true,                         // include start key
              false,                        // include end key
              callback_data.scan_forward_,  // scan forward: false
@@ -2717,6 +2785,7 @@ DataStoreServiceClient::FetchArchives(txservice::FetchRecordCc *fetch_cc)
              fetch_cc->kv_start_key_,
              fetch_cc->kv_end_key_,
              fetch_cc->kv_session_id_,
+             true,
              true,   // include start key
              false,  // include end key
              false,  // scan forward: false
@@ -2750,6 +2819,7 @@ DataStoreServiceClient::FetchVisibleArchive(
              fetch_cc->kv_start_key_,
              fetch_cc->kv_end_key_,
              "",
+             true,
              true,   // include start key
              false,  // include end key
              false,  // scan forward: false
@@ -2988,12 +3058,54 @@ DataStoreServiceClient::FetchRecord(
         return FetchArchives(fetch_cc);
     }
 
+    std::string_view be_bucket_id =
+        fetch_cc->table_name_.IsHashPartitioned()
+            ? EncodeBucketId(txservice::Sharder::MapKeyHashToBucketId(
+                  fetch_cc->tx_key_.Hash()))
+            : std::string_view();
+
     Read(fetch_cc->kv_table_name_,
          KvPartitionIdOf(fetch_cc->partition_id_,
                          !fetch_cc->table_name_.IsHashPartitioned()),
+         be_bucket_id,
          std::string_view(fetch_cc->tx_key_.Data(), fetch_cc->tx_key_.Size()),
          fetch_cc,
          &FetchRecordCallback);
+
+    return txservice::store::DataStoreHandler::DataStoreOpStatus::Success;
+}
+
+txservice::store::DataStoreHandler::DataStoreOpStatus
+DataStoreServiceClient::FetchBucketData(
+    txservice::FetchBucketDataCc *fetch_bucket_data_cc)
+{
+    assert(fetch_bucket_data_cc != nullptr);
+    assert(fetch_bucket_data_cc->table_name_.IsHashPartitioned());
+
+    int32_t kv_partition_id =
+        KvPartitionIdOf(txservice::Sharder::MapBucketIdToKvPartitionId(
+                            fetch_bucket_data_cc->bucket_id_),
+                        false);
+
+    auto *callback_data = new FetchBucketDataCallbackData(fetch_bucket_data_cc);
+    callback_data->bucket_kv_start_key_ = EncodeKvKeyForHashPart(
+        fetch_bucket_data_cc->bucket_id_, fetch_bucket_data_cc->start_key_);
+    callback_data->bucket_kv_end_key_ =
+        EncodeKvKeyForHashPart(fetch_bucket_data_cc->bucket_id_ + 1);
+
+    ScanNext(fetch_bucket_data_cc->kv_table_name_,
+             kv_partition_id,
+             callback_data->bucket_kv_start_key_,
+             callback_data->bucket_kv_end_key_,
+             callback_data->session_id_,
+             false,
+             fetch_bucket_data_cc->start_key_inclusive_,
+             false,
+             true,
+             fetch_bucket_data_cc->batch_size_,
+             &callback_data->search_cond_,
+             callback_data,
+             &FetchBucketDataCallback);
 
     return txservice::store::DataStoreHandler::DataStoreOpStatus::Success;
 }
@@ -3016,9 +3128,16 @@ DataStoreServiceClient::FetchSnapshot(txservice::FetchSnapshotCc *fetch_cc)
         return FetchVisibleArchive(fetch_cc);
     }
 
+    std::string_view be_bucket_id =
+        fetch_cc->table_name_.IsHashPartitioned()
+            ? EncodeBucketId(txservice::Sharder::MapKeyHashToBucketId(
+                  fetch_cc->tx_key_.Hash()))
+            : std::string_view();
+
     Read(fetch_cc->kv_table_name_,
          KvPartitionIdOf(fetch_cc->partition_id_,
                          !fetch_cc->table_name_.IsHashPartitioned()),
+         be_bucket_id,
          std::string_view(fetch_cc->tx_key_.Data(), fetch_cc->tx_key_.Size()),
          fetch_cc,
          &FetchSnapshotCallback);
@@ -3028,13 +3147,19 @@ DataStoreServiceClient::FetchSnapshot(txservice::FetchSnapshotCc *fetch_cc)
 
 void DataStoreServiceClient::Read(const std::string_view kv_table_name,
                                   const uint32_t partition_id,
+                                  std::string_view be_bucket_id,
                                   const std::string_view key,
                                   void *callback_data,
                                   DataStoreCallback callback)
 {
     ReadClosure *read_clouse = read_closure_pool_.NextObject();
-    read_clouse->Reset(
-        this, kv_table_name, partition_id, key, callback_data, callback);
+    read_clouse->Reset(this,
+                       kv_table_name,
+                       partition_id,
+                       be_bucket_id,
+                       key,
+                       callback_data,
+                       callback);
     ReadInternal(read_clouse);
 }
 
@@ -3255,6 +3380,7 @@ void DataStoreServiceClient::ScanNext(
     const std::string_view start_key,
     const std::string_view end_key,
     const std::string_view session_id,
+    bool generate_session_id,
     bool inclusive_start,
     bool inclusive_end,
     bool scan_forward,
@@ -3273,6 +3399,7 @@ void DataStoreServiceClient::ScanNext(
                    inclusive_end,
                    scan_forward,
                    session_id,
+                   generate_session_id,
                    batch_size,
                    search_conditions,
                    callback_data,
@@ -3298,6 +3425,7 @@ void DataStoreServiceClient::ScanNextInternal(
             scan_next_closure->LocalSearchConditionsPtr(),
             &scan_next_closure->LocalItemsRef(),
             &scan_next_closure->LocalSessionIdRef(),
+            scan_next_closure->GenerateSessionId(),
             &scan_next_closure->Result(),
             scan_next_closure);
     }
@@ -3341,6 +3469,7 @@ void DataStoreServiceClient::ScanClose(const std::string_view table_name,
                    false,  // inclusive_end
                    true,   // scan_forward
                    session_id,
+                   false,
                    0,  // batch_size 0 for close
                    nullptr,
                    callback_data,
@@ -4214,6 +4343,8 @@ void DataStoreServiceClient::PreparePartitionBatches(
         if (ckpt_rec.payload_status_ == txservice::RecordStatus::Normal &&
             (!ckpt_rec.Payload()->HasTTL() || ttl > now))
         {
+            batch_request.key_parts.emplace_back(EncodeBucketId(
+                txservice::Sharder::MapKeyHashToBucketId(tx_key.Hash())));
             batch_request.key_parts.emplace_back(
                 std::string_view(tx_key.Data(), tx_key.Size()));
             batch_size += tx_key.Size();
@@ -4234,6 +4365,8 @@ void DataStoreServiceClient::PreparePartitionBatches(
         }
         else
         {
+            batch_request.key_parts.emplace_back(EncodeBucketId(
+                txservice::Sharder::MapKeyHashToBucketId(tx_key.Hash())));
             batch_request.key_parts.emplace_back(
                 std::string_view(tx_key.Data(), tx_key.Size()));
             batch_size += tx_key.Size();
