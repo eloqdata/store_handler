@@ -2387,8 +2387,7 @@ void FetchSnapshotArchiveCallback(void *data,
                                   DataStoreServiceClient &client,
                                   const remote::CommonResult &result);
 
-struct CreateSnapshotForBackupCallbackData : public SyncCallbackData,
-                                             public Poolable
+struct CreateSnapshotForBackupCallbackData : public SyncCallbackData
 {
     CreateSnapshotForBackupCallbackData() = default;
 
