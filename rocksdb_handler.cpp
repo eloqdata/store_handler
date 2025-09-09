@@ -20,6 +20,8 @@
  *
  */
 
+#include "rocksdb_handler.h"
+
 #include <brpc/controller.h>
 #include <brpc/server.h>
 #include <brpc/stream.h>
@@ -68,7 +70,6 @@
 #include "redis_zset_object.h"
 #include "rocksdb/iostats_context.h"
 #include "rocksdb/rate_limiter.h"
-#include "rocksdb_handler.h"
 #include "rocksdb_scanner.h"
 #include "store_util.h"
 #include "tx_key.h"
