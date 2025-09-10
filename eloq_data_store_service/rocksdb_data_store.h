@@ -47,8 +47,7 @@ public:
      * @brief Open the cloud database.
      * @return True if open successfully, otherwise false.
      */
-    bool StartDB(std::string cookie = "",
-                 std::string prev_cookie = "") override;
+    bool StartDB() override;
 
     /**
      * @brief Close the cloud database.

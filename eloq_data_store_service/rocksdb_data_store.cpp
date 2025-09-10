@@ -88,7 +88,7 @@ void RocksDBDataStore::Shutdown()
     }
 }
 
-bool RocksDBDataStore::StartDB(std::string cookie, std::string prev_cookie)
+bool RocksDBDataStore::StartDB()
 {
     if (db_)
     {
