@@ -787,6 +787,8 @@ inline bool RocksDBCloudDataStore::GetCookieFromCloudManifestFile(
 
     // Remove the prefix "CLOUDMANIFEST" to parse the rest
     std::string suffix = manifest_part.substr(prefix.size());
+    DLOG(INFO) << "GetCookieFromCloudManifestFile, filename: "
+                << filename << ", suffix: " << suffix;
 
     // If there's no suffix
     if (suffix.empty())
@@ -814,26 +816,40 @@ inline bool RocksDBCloudDataStore::GetCookieFromCloudManifestFile(
         return false;
     }
 
-    // Find the last two hyphens which should separate cc_ng_id and term
+    // Find the hyphens in the suffix (after removing the leading one)
     auto last_hyphen_pos = suffix.rfind('-');
-    auto second_last_hyphen_pos = suffix.rfind('-', last_hyphen_pos - 1);
+    DLOG(INFO) << "GetCookieFromCloudManifestFile, last_hyphen_pos: "
+               << last_hyphen_pos << ", suffix: " << suffix;
 
-    if (last_hyphen_pos != std::string::npos &&
-        second_last_hyphen_pos != std::string::npos)
+    if (last_hyphen_pos == std::string::npos)
     {
-        // Extract the branch_name (everything before the second last
-        // hyphen)
+        // No hyphen found, this is just a branch name with no shard_id or term
+        // Format: CLOUDMANIFEST-{branch_name}
+        branch_name = suffix;
+        dss_shard_id = -1;
+        term = -1;
+        return true;
+    }
+
+    // Now check if there's another hyphen before the last one
+    auto second_last_hyphen_pos = suffix.rfind('-', last_hyphen_pos - 1);
+    DLOG(INFO) << "GetCookieFromCloudManifestFile, second_last_hyphen_pos: "
+               << second_last_hyphen_pos << ", suffix: " << suffix;
+
+    if (second_last_hyphen_pos != std::string::npos)
+    {
+        // We found two hyphens, format is: CLOUDMANIFEST-{branch_name}-{dss_shard_id}-{term}
         branch_name = suffix.substr(0, second_last_hyphen_pos);
 
-        // Extract the cc_ng_id and term
-        std::string cc_ng_id_str =
+        // Extract the dss_shard_id and term
+        std::string dss_shard_id_str =
             suffix.substr(second_last_hyphen_pos + 1,
                           last_hyphen_pos - second_last_hyphen_pos - 1);
         std::string term_str = suffix.substr(last_hyphen_pos + 1);
 
-        // Parse cc_ng_id and term
+        // Parse dss_shard_id and term
         bool res =
-            String2ll(cc_ng_id_str.c_str(), cc_ng_id_str.size(), dss_shard_id);
+            String2ll(dss_shard_id_str.c_str(), dss_shard_id_str.size(), dss_shard_id);
         if (!res)
         {
             return false;
@@ -841,28 +857,27 @@ inline bool RocksDBCloudDataStore::GetCookieFromCloudManifestFile(
         res = String2ll(term_str.c_str(), term_str.size(), term);
         return res;
     }
-    else if (last_hyphen_pos == std::string::npos)
+    else
     {
-        // This only happens when cloud manifest file is like
-        // CLOUDMANIFEST-{branch_name}
-        dss_shard_id = -1;
-        term = -1;
-        branch_name = suffix;
-        return true;
-    }
-    else if (second_last_hyphen_pos == std::string::npos)
-    {
-        // Only one hyphen found, cannot extract both cc_ng_id and term
-        // This should not happen
-        dss_shard_id = -1;
-        term = -1;
-        branch_name = suffix.substr(0, last_hyphen_pos);
-        LOG(ERROR) << "Unexpected manifest filename format in " << filename;
-        return false;
-    }
+        // Only one hyphen found, format is: CLOUDMANIFEST-{dss_shard_id}-{term}
+        // with empty branch name
+        branch_name = "";
 
-    // This should never be reached, but add a return statement for completeness
-    return false;
+        // The part before the hyphen is dss_shard_id
+        std::string dss_shard_id_str = suffix.substr(0, last_hyphen_pos);
+        // The part after the hyphen is term
+        std::string term_str = suffix.substr(last_hyphen_pos + 1);
+
+        // Parse dss_shard_id and term
+        bool res =
+            String2ll(dss_shard_id_str.c_str(), dss_shard_id_str.size(), dss_shard_id);
+        if (!res)
+        {
+            return false;
+        }
+        res = String2ll(term_str.c_str(), term_str.size(), term);
+        return res;
+    }
 }
 
 inline bool RocksDBCloudDataStore::FindMaxTermFromCloudManifestFiles(
@@ -912,7 +927,7 @@ inline bool RocksDBCloudDataStore::FindMaxTermFromCloudManifestFiles(
         shard_id = -1;
         term = -1;
         object_branch_name = "";
-        LOG(INFO) << "FindMaxTermFromCloudManifestFiles, object: " << object;
+        DLOG(INFO) << "FindMaxTermFromCloudManifestFiles, object: " << object;
         if (IsCloudManifestFile(object))
         {
             bool res = GetCookieFromCloudManifestFile(
