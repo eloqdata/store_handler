@@ -341,10 +341,8 @@ void DataStoreService::Read(::google::protobuf::RpcController *controller,
         return;
     }
 
-    IncreaseReadReqCount();
     if (shard_status_.load(std::memory_order_relaxed) == DSShardStatus::Closed)
     {
-        DecreaseReadReqCount();
         brpc::ClosureGuard done_guard(done);
         auto *result = response->mutable_result();
         result->set_error_code(::EloqDS::remote::DataStoreError::DB_NOT_OPEN);
@@ -378,10 +376,8 @@ void DataStoreService::Read(const std::string_view table_name,
         return;
     }
 
-    IncreaseReadReqCount();
     if (shard_status_.load(std::memory_order_relaxed) == DSShardStatus::Closed)
     {
-        DecreaseReadReqCount();
         brpc::ClosureGuard done_guard(done);
         record->clear();
         *ts = 0;
@@ -837,12 +833,9 @@ void DataStoreService::ScanNext(
         return;
     }
 
-    IncreaseReadReqCount();
-
     auto shard_status = shard_status_.load(std::memory_order_acquire);
     if (shard_status != DSShardStatus::ReadWrite)
     {
-        DecreaseReadReqCount();
         brpc::ClosureGuard done_guard(done);
         if (shard_status == DSShardStatus::Closed)
         {
@@ -895,12 +888,9 @@ void DataStoreService::ScanNext(::google::protobuf::RpcController *controller,
         return;
     }
 
-    IncreaseReadReqCount();
-
     auto shard_status = shard_status_.load(std::memory_order_acquire);
     if (shard_status != DSShardStatus::ReadWrite)
     {
-        DecreaseReadReqCount();
         brpc::ClosureGuard done_guard(done);
         if (shard_status == DSShardStatus::Closed)
         {
@@ -941,12 +931,9 @@ void DataStoreService::ScanClose(::google::protobuf::RpcController *controller,
         return;
     }
 
-    IncreaseReadReqCount();
-
     auto shard_status = shard_status_.load(std::memory_order_acquire);
     if (shard_status != DSShardStatus::ReadWrite)
     {
-        DecreaseReadReqCount();
         brpc::ClosureGuard done_guard(done);
         if (shard_status == DSShardStatus::Closed)
         {
@@ -986,12 +973,9 @@ void DataStoreService::ScanClose(const std::string_view table_name,
         return;
     }
 
-    IncreaseReadReqCount();
-
     auto shard_status = shard_status_.load(std::memory_order_acquire);
     if (shard_status != DSShardStatus::ReadWrite)
     {
-        DecreaseReadReqCount();
         brpc::ClosureGuard done_guard(done);
         if (shard_status == DSShardStatus::Closed)
         {
@@ -2081,7 +2065,7 @@ bool DataStoreService::SwitchReadWriteToReadOnly(uint32_t shard_id)
         return false;
     }
     // wait for all write requests to finish
-    while (write_req_cnt_.load(std::memory_order_acquire) > 0)
+    while (ongoing_write_requests_.load(std::memory_order_acquire) > 0)
     {
         bthread_usleep(1000);
     }
@@ -2117,10 +2101,10 @@ bool DataStoreService::SwitchReadOnlyToClosed(uint32_t shard_id)
         return false;
     }
     // wait for all read requests to finish
-    while (read_req_cnt_.load(std::memory_order_acquire) > 0)
-    {
-        bthread_usleep(1000);
-    }
+    // while (read_req_cnt_.load(std::memory_order_acquire) > 0)
+    // {
+    //     bthread_usleep(1000);
+    // }
     if (shard_status_.load(std::memory_order_acquire) == DSShardStatus::Closed)
     {
         cluster_manager_.SwitchShardToClosed(shard_id, expected);

@@ -699,7 +699,6 @@ public:
 
     void SetFinish(const ::EloqDS::remote::DataStoreError error_code) override
     {
-        ds_service_->DecreaseReadReqCount();
         brpc::ClosureGuard done_guard(done_);
         if (error_code == remote::DataStoreError::REQUESTED_NODE_NOT_OWNER)
         {
@@ -791,7 +790,6 @@ public:
 
     void SetFinish(const ::EloqDS::remote::DataStoreError error_code) override
     {
-        ds_service_->DecreaseReadReqCount();
         brpc::ClosureGuard done_guard(done_);
         if (error_code == remote::DataStoreError::REQUESTED_NODE_NOT_OWNER)
         {
@@ -1214,7 +1212,6 @@ public:
     void SetFinish(const ::EloqDS::remote::DataStoreError error_code,
                    const std::string error_message) override
     {
-        ds_service_->DecreaseReadReqCount();
         brpc::ClosureGuard done_guard(done_);
         if (error_code == remote::DataStoreError::REQUESTED_NODE_NOT_OWNER)
         {
@@ -1387,7 +1384,6 @@ public:
     void SetFinish(const ::EloqDS::remote::DataStoreError error_code,
                    const std::string error_message) override
     {
-        ds_service_->DecreaseReadReqCount();
         brpc::ClosureGuard done_guard(done_);
         if (error_code == remote::DataStoreError::REQUESTED_NODE_NOT_OWNER)
         {

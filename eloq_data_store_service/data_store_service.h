@@ -563,24 +563,14 @@ public:
         return data_store_factory_.get();
     }
 
-    void IncreaseReadReqCount()
-    {
-        read_req_cnt_++;
-    }
-
-    void DecreaseReadReqCount()
-    {
-        read_req_cnt_--;
-    }
-
     void IncreaseWriteReqCount()
     {
-        write_req_cnt_++;
+        ongoing_write_requests_.fetch_add(1, std::memory_order_release);
     }
 
     void DecreaseWriteReqCount()
     {
-        write_req_cnt_--;
+        ongoing_write_requests_.fetch_sub(1, std::memory_order_release);
     }
 
 private:
@@ -639,18 +629,17 @@ private:
     std::string migration_log_path_;
 
     // Now, there is only one data store shard in a DataStoreService.
-    // To avoid using mutex in read or write APIs, we use three atomic variables
-    // to control concurrency conflicts.
+    // To avoid using mutex in read or write APIs, use a atomic variable
+    // (shard_status_) to control concurrency conflicts.
     // - During migraion, we change the shard_status_ firstly, then change the
     // data_store_ after all read/write requests are finished.
-    // - In r/w functions, we increase the read_req_cnt_ or write_req_cnt_
-    // firstly and then check the shard_status_. After the request is executed
-    // or if shard_status_ is not required, decrease them.
+    // - In write functions, we increase the ongoing_write_requests_ firstly and
+    // then check the shard_status_. After the request is executed or if
+    // shard_status_ is not required, decrease them.
     uint32_t shard_id_{UINT32_MAX};
     std::unique_ptr<DataStore> data_store_{nullptr};
     std::atomic<DSShardStatus> shard_status_{DSShardStatus::Closed};
-    std::atomic<uint64_t> read_req_cnt_{0};
-    std::atomic<uint64_t> write_req_cnt_{0};
+    std::atomic<uint64_t> ongoing_write_requests_{0};
 
     // scan iterator cache
     TTLWrapperCache scan_iter_cache_;
