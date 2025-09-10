@@ -245,6 +245,9 @@ public:
     std::string EncodeRangeSliceKey(const txservice::TableName &table_name,
                                     int32_t range_id,
                                     uint32_t segment_id);
+    // Replace the segment_id part in range_slice_key with new segment_id
+    void UpdateEncodedRangeSliceKey(std::string &range_slice_key,
+                                    uint32_t new_segment_id);
 
     bool FetchTable(const txservice::TableName &table_name,
                     std::string &schema_image,
@@ -676,6 +679,7 @@ struct UpsertTableData
                     const txservice::TableSchema *new_table_schema,
                     txservice::OperationType op_type,
                     uint64_t commit_ts,
+                    std::shared_ptr<void> defer_unpin,
                     txservice::NodeGroupId ng_id,
                     int64_t tx_term,
                     txservice::CcHandlerResult<txservice::Void> *hd_res,
@@ -687,6 +691,7 @@ struct UpsertTableData
           new_table_schema_(new_table_schema),
           op_type_(op_type),
           commit_ts_(commit_ts),
+          defer_unpin_(defer_unpin),
           ng_id_(ng_id),
           tx_term_(tx_term),
           hd_res_(hd_res),
@@ -730,6 +735,7 @@ struct UpsertTableData
     const txservice::TableSchema *new_table_schema_;
     txservice::OperationType op_type_;
     uint64_t commit_ts_;
+    std::shared_ptr<void> defer_unpin_;
     txservice::NodeGroupId ng_id_;
     int64_t tx_term_;
     txservice::CcHandlerResult<txservice::Void> *hd_res_;

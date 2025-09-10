@@ -42,7 +42,7 @@ typedef void (*DataStoreCallback)(void *data,
                                   DataStoreServiceClient &client,
                                   const remote::CommonResult &result);
 
-struct SyncCallbackData
+struct SyncCallbackData : public Poolable
 {
     SyncCallbackData() : mtx_(), cv_(), finished_(false)
     {
@@ -52,7 +52,12 @@ struct SyncCallbackData
 
     void Reset()
     {
-        std::unique_lock<bthread::Mutex> lk(mtx_);
+        finished_ = false;
+        result_.Clear();
+    }
+
+    virtual void Clear() override
+    {
         finished_ = false;
         result_.Clear();
     }
@@ -92,47 +97,22 @@ private:
     remote::CommonResult result_;
 };
 
-struct SyncReadClusterConfigData
+struct SyncPutAllData : public Poolable
 {
-    SyncReadClusterConfigData(
-        std::unordered_map<uint32_t, std::vector<txservice::NodeConfig>>
-            &ng_configs,
-        uint64_t &version,
-        bool &uninitialized)
-        : ng_configs_(ng_configs),
-          version_(version),
-          uninitialized_(uninitialized)
+    void Reset()
     {
+        unfinished_request_cnt_ = 0;
+        all_request_started_ = false;
+        result_.Clear();
     }
 
-    void Notify()
+    virtual void Clear() override
     {
-        std::unique_lock<bthread::Mutex> lk(mux_);
-        finished_ = true;
-        cv_.notify_one();
+        unfinished_request_cnt_ = 0;
+        all_request_started_ = false;
+        result_.Clear();
     }
 
-    void Wait()
-    {
-        std::unique_lock<bthread::Mutex> lk(mux_);
-        while (!finished_)
-        {
-            cv_.wait(lk);
-        }
-    }
-
-    std::unordered_map<uint32_t, std::vector<txservice::NodeConfig>>
-        &ng_configs_;
-    uint64_t &version_;
-    bool &uninitialized_;
-    bthread::Mutex mux_;
-    bthread::ConditionVariable cv_;
-    bool finished_{false};
-    bool has_error_{false};
-};
-
-struct SyncPutAllData
-{
     void Finish(const remote::CommonResult &res)
     {
         std::unique_lock<bthread::Mutex> lk(mux_);
@@ -161,11 +141,6 @@ void SyncCallback(void *data,
                   ::google::protobuf::Closure *closure,
                   DataStoreServiceClient &client,
                   const remote::CommonResult &result);
-
-void SyncReadClusterConfigCallback(void *data,
-                                   ::google::protobuf::Closure *closure,
-                                   DataStoreServiceClient &client,
-                                   const remote::CommonResult &result);
 
 struct ReadBaseForArchiveCallbackData
 {
@@ -272,51 +247,6 @@ void SyncBatchReadForArchiveCallback(void *data,
                                      DataStoreServiceClient &client,
                                      const remote::CommonResult &result);
 
-class LoadRangeSliceCallbackData : public Poolable
-{
-public:
-    LoadRangeSliceCallbackData() = default;
-
-    void Reset(std::string_view kv_table_name,
-               uint32_t range_partition_id,
-               txservice::FillStoreSliceCc *fill_store_slice_req,
-               const std::string &&last_key,
-               const std::string &&end_key,
-               const std::string &session_id,
-               size_t batch_size,
-               std::shared_ptr<void> defer_unpin)
-    {
-        kv_table_name_ = kv_table_name;
-        range_partition_id_ = range_partition_id;
-        fill_store_slice_req_ = fill_store_slice_req;
-        last_key_ = std::move(last_key);
-        end_key_ = std::move(end_key);
-        sesssion_id_ = session_id;
-        batch_size_ = batch_size;
-        defer_unpin_ = defer_unpin;
-    }
-
-    void Clear() override
-    {
-        kv_table_name_ = "";
-        range_partition_id_ = 0;
-        fill_store_slice_req_ = nullptr;
-        last_key_ = "";
-        sesssion_id_ = "";
-        batch_size_ = 0;
-        defer_unpin_ = nullptr;
-    }
-
-    std::string_view kv_table_name_;
-    uint32_t range_partition_id_;
-    txservice::FillStoreSliceCc *fill_store_slice_req_;
-    std::string last_key_;
-    std::string end_key_;
-    std::string sesssion_id_;
-    size_t batch_size_{0};
-    std::shared_ptr<void> defer_unpin_;
-};
-
 void LoadRangeSliceCallback(void *data,
                             ::google::protobuf::Closure *closure,
                             DataStoreServiceClient &client,
@@ -357,8 +287,6 @@ public:
         cntl_.Reset();
         request_.Clear();
         response_.Clear();
-        cntl_.Reset();
-        channel_.reset();
         table_name_ = "";
         partition_id_ = 0;
         key_ = "";
@@ -412,15 +340,15 @@ public:
                     cntl_.ErrorCode() != EAGAIN &&
                     cntl_.ErrorCode() != brpc::ERPCTIMEDOUT)
                 {
-                    channel_ = ds_service_client_
-                                   ->UpdateDataStoreServiceChannelByPartitionId(
-                                       partition_id_);
+                    auto channel =
+                        ds_service_client_
+                            ->UpdateDataStoreServiceChannelByPartitionId(
+                                partition_id_);
 
                     // Retry
                     if (retry_count_ < ds_service_client_->retry_limit_)
                     {
                         self_guard.Release();
-                        channel_ = nullptr;
                         retry_count_++;
                         ds_service_client_->ReadInternal(this);
                         return;
@@ -432,7 +360,6 @@ public:
                     EloqDS::remote::DataStoreError::NETWORK_ERROR);
                 result.set_error_msg(cntl_.ErrorText());
                 (*callback_)(callback_data_, this, *ds_service_client_, result);
-                channel_ = nullptr;
                 return;
             }
             result = &response_.result();
@@ -454,7 +381,6 @@ public:
             if (retry_count_ < ds_service_client_->retry_limit_)
             {
                 self_guard.Release();
-                channel_ = nullptr;
                 response_.Clear();
                 cntl_.Reset();
                 retry_count_++;
@@ -479,16 +405,6 @@ public:
     EloqDS::remote::ReadRequest *ReadRequest()
     {
         return &request_;
-    }
-
-    void SetChannel(std::shared_ptr<brpc::Channel> channel)
-    {
-        channel_ = channel;
-    }
-
-    brpc::Channel *Channel()
-    {
-        return channel_.get();
     }
 
     const std::string_view TableName()
@@ -614,7 +530,6 @@ private:
     EloqDS::remote::ReadRequest request_;
     EloqDS::remote::ReadResponse response_;
     // keep channel alive
-    std::shared_ptr<brpc::Channel> channel_;
 
     // serve local call
     std::string_view table_name_;
@@ -643,7 +558,6 @@ public:
         request_.Clear();
         response_.Clear();
         cntl_.Reset();
-        channel_ = nullptr;
         ds_service_client_ = nullptr;
         retry_count_ = 0;
         is_local_request_ = false;
@@ -717,15 +631,13 @@ public:
                     cntl_.ErrorCode() != EAGAIN &&
                     cntl_.ErrorCode() != brpc::ERPCTIMEDOUT)
                 {
-                    channel_ = ds_service_client_
-                                   ->UpdateDataStoreServiceChannelByShardId(
-                                       shard_ids_.back());
+                    ds_service_client_->UpdateDataStoreServiceChannelByShardId(
+                        shard_ids_.back());
 
                     // Retry
                     if (retry_count_ < ds_service_client_->retry_limit_)
                     {
                         self_guard.Release();
-                        channel_ = nullptr;
                         retry_count_++;
                         ds_service_client_->FlushDataInternal(this);
                         return;
@@ -757,7 +669,6 @@ public:
             if (retry_count_ < ds_service_client_->retry_limit_)
             {
                 self_guard.Release();
-                channel_ = nullptr;
                 response_.Clear();
                 cntl_.Reset();
                 retry_count_++;
@@ -800,16 +711,6 @@ public:
         return &response_;
     }
 
-    brpc::Channel *GetChannel()
-    {
-        return channel_.get();
-    }
-
-    void SetChannel(std::shared_ptr<brpc::Channel> channel)
-    {
-        channel_ = channel;
-    }
-
     const std::vector<std::string> &KvTableNames()
     {
         return *kv_table_names_;
@@ -841,7 +742,6 @@ private:
     brpc::Controller cntl_;
     ::EloqDS::remote::FlushDataRequest request_;
     ::EloqDS::remote::FlushDataResponse response_;
-    std::shared_ptr<brpc::Channel> channel_;
     DataStoreServiceClient *ds_service_client_;
     uint16_t retry_count_{0};
 
@@ -870,7 +770,6 @@ public:
         request_.Clear();
         response_.Clear();
         cntl_.Reset();
-        channel_ = nullptr;
         ds_service_client_ = nullptr;
         retry_count_ = 0;
         is_local_request_ = false;
@@ -948,15 +847,14 @@ public:
                     cntl_.ErrorCode() != EAGAIN &&
                     cntl_.ErrorCode() != brpc::ERPCTIMEDOUT)
                 {
-                    channel_ = ds_service_client_
-                                   ->UpdateDataStoreServiceChannelByPartitionId(
-                                       partition_id_);
+                    ds_service_client_
+                        ->UpdateDataStoreServiceChannelByPartitionId(
+                            partition_id_);
 
                     // Retry
                     if (retry_count_ < ds_service_client_->retry_limit_)
                     {
                         self_guard.Release();
-                        channel_ = nullptr;
                         retry_count_++;
                         ds_service_client_->DeleteRangeInternal(this);
                         return;
@@ -988,7 +886,6 @@ public:
             if (retry_count_ < ds_service_client_->retry_limit_)
             {
                 self_guard.Release();
-                channel_ = nullptr;
                 response_.Clear();
                 cntl_.Reset();
                 retry_count_++;
@@ -1003,16 +900,6 @@ public:
     brpc::Controller *Controller()
     {
         return &cntl_;
-    }
-
-    brpc::Channel *GetChannel()
-    {
-        return channel_.get();
-    }
-
-    void SetChannel(std::shared_ptr<brpc::Channel> channel)
-    {
-        channel_ = channel;
     }
 
     ::EloqDS::remote::DeleteRangeRequest *DeleteRangeRequest()
@@ -1071,7 +958,6 @@ private:
     brpc::Controller cntl_;
     ::EloqDS::remote::DeleteRangeRequest request_;
     ::EloqDS::remote::DeleteRangeResponse response_;
-    std::shared_ptr<brpc::Channel> channel_;
     DataStoreServiceClient *ds_service_client_;
     uint16_t retry_count_{0};
 
@@ -1103,7 +989,6 @@ public:
         request_.Clear();
         response_.Clear();
         cntl_.Reset();
-        channel_ = nullptr;
         ds_service_client_ = nullptr;
         retry_count_ = 0;
         is_local_request_ = false;
@@ -1172,15 +1057,13 @@ public:
                     cntl_.ErrorCode() != EAGAIN &&
                     cntl_.ErrorCode() != brpc::ERPCTIMEDOUT)
                 {
-                    channel_ = ds_service_client_
-                                   ->UpdateDataStoreServiceChannelByShardId(
-                                       shard_ids_.back());
+                    ds_service_client_->UpdateDataStoreServiceChannelByShardId(
+                        shard_ids_.back());
 
                     // Retry
                     if (retry_count_ < ds_service_client_->retry_limit_)
                     {
                         self_guard.Release();
-                        channel_ = nullptr;
                         retry_count_++;
                         ds_service_client_->DropTableInternal(this);
                         return;
@@ -1212,7 +1095,6 @@ public:
             if (retry_count_ < ds_service_client_->retry_limit_)
             {
                 self_guard.Release();
-                channel_ = nullptr;
                 response_.Clear();
                 cntl_.Reset();
                 retry_count_++;
@@ -1255,16 +1137,6 @@ public:
         return &response_;
     }
 
-    brpc::Channel *GetChannel()
-    {
-        return channel_.get();
-    }
-
-    void SetChannel(std::shared_ptr<brpc::Channel> channel)
-    {
-        channel_ = channel;
-    }
-
     const std::string_view TableName()
     {
         return table_name_;
@@ -1296,7 +1168,6 @@ private:
     brpc::Controller cntl_;
     ::EloqDS::remote::DropTableRequest request_;
     ::EloqDS::remote::DropTableResponse response_;
-    std::shared_ptr<brpc::Channel> channel_;
     DataStoreServiceClient *ds_service_client_;
     uint16_t retry_count_{0};
 
@@ -1329,7 +1200,6 @@ public:
     {
         ds_service_client_ = nullptr;
         retry_count_ = 0;
-        req_shard_id_ = 0;
         is_local_request_ = false;
 
         kv_table_name_ = "";
@@ -1347,7 +1217,6 @@ public:
         request_.Clear();
         response_.Clear();
         cntl_.Reset();
-        channel_ = nullptr;
         parts_cnt_per_key_ = 1;
         parts_cnt_per_record_ = 1;
     }
@@ -1425,7 +1294,6 @@ public:
         bool need_retry = false;
         if (!is_local_request_)
         {
-            assert(channel_ != nullptr);
             if (cntl_.Failed())
             {
                 // RPC failed.
@@ -1436,11 +1304,11 @@ public:
                     cntl_.ErrorCode() != EAGAIN &&
                     cntl_.ErrorCode() != brpc::ERPCTIMEDOUT)
                 {
-                    // NOTICE(lzx): Should re-fetch the shared_id after
-                    // supporting partition migration between data shards.
-                    channel_ = ds_service_client_
-                                   ->UpdateDataStoreServiceChannelByShardId(
-                                       req_shard_id_);
+                    uint32_t req_shard_id =
+                        ds_service_client_->GetShardIdByPartitionId(
+                            partition_id_);
+                    ds_service_client_->UpdateDataStoreServiceChannelByShardId(
+                        req_shard_id);
                     need_retry = true;
                 }
                 else
@@ -1488,7 +1356,6 @@ public:
         request_.Clear();
         response_.Clear();
         is_local_request_ = false;
-        channel_ = nullptr;
 
         // make request
         request_.set_kv_table_name(kv_table_name_.data(),
@@ -1531,11 +1398,6 @@ public:
         }
     }
 
-    void SetReqShardId(uint32_t shard_id)
-    {
-        req_shard_id_ = shard_id;
-    }
-
     brpc::Controller *Controller()
     {
         return &cntl_;
@@ -1549,16 +1411,6 @@ public:
     EloqDS::remote::BatchWriteRecordsResponse *RemoteResponse()
     {
         return &response_;
-    }
-
-    void SetChannel(std::shared_ptr<brpc::Channel> channel)
-    {
-        channel_ = channel;
-    }
-
-    brpc::Channel *Channel()
-    {
-        return channel_.get();
     }
 
     remote::CommonResult &Result()
@@ -1580,9 +1432,7 @@ private:
     brpc::Controller cntl_;
     EloqDS::remote::BatchWriteRecordsRequest request_;
     EloqDS::remote::BatchWriteRecordsResponse response_;
-    std::shared_ptr<brpc::Channel> channel_;
     DataStoreServiceClient *ds_service_client_{nullptr};
-    uint32_t req_shard_id_{0};
     uint16_t retry_count_{0};
 
     std::string_view kv_table_name_;
@@ -1623,7 +1473,6 @@ public:
         request_.Clear();
         response_.Clear();
         cntl_.Reset();
-        channel_ = nullptr;
         ds_service_client_ = nullptr;
         retry_count_ = 0;
         is_local_request_ = false;
@@ -1744,15 +1593,14 @@ public:
                     cntl_.ErrorCode() != EAGAIN &&
                     cntl_.ErrorCode() != brpc::ERPCTIMEDOUT)
                 {
-                    channel_ = ds_service_client_
-                                   ->UpdateDataStoreServiceChannelByPartitionId(
-                                       partition_id_);
+                    ds_service_client_
+                        ->UpdateDataStoreServiceChannelByPartitionId(
+                            partition_id_);
 
                     // Retry
                     if (retry_count_ < ds_service_client_->retry_limit_)
                     {
                         self_guard.Release();
-                        channel_ = nullptr;
                         retry_count_++;
                         ds_service_client_->ScanNextInternal(this);
                         return;
@@ -1784,7 +1632,6 @@ public:
             if (retry_count_ < ds_service_client_->retry_limit_)
             {
                 self_guard.Release();
-                channel_ = nullptr;
                 response_.Clear();
                 cntl_.Reset();
                 retry_count_++;
@@ -1799,16 +1646,6 @@ public:
     brpc::Controller *Controller()
     {
         return &cntl_;
-    }
-
-    brpc::Channel *GetChannel()
-    {
-        return channel_.get();
-    }
-
-    void SetChannel(std::shared_ptr<brpc::Channel> channel)
-    {
-        channel_ = channel;
     }
 
     ::EloqDS::remote::ScanRequest *ScanNextRequest()
@@ -1955,7 +1792,6 @@ private:
     brpc::Controller cntl_;
     ::EloqDS::remote::ScanRequest request_;
     ::EloqDS::remote::ScanResponse response_;
-    std::shared_ptr<brpc::Channel> channel_;
     DataStoreServiceClient *ds_service_client_;
     uint16_t retry_count_{0};
 
@@ -2262,16 +2098,28 @@ void FetchTableCatalogCallback(void *data,
 
 struct FetchTableCallbackData : public SyncCallbackData
 {
-    FetchTableCallbackData(std::string &schema_image,
-                           bool &found,
-                           uint64_t &version_ts)
-        : schema_image_(schema_image), found_(found), version_ts_(version_ts)
+    FetchTableCallbackData() = default;
+    ~FetchTableCallbackData() = default;
+
+    void Reset(std::string &schema_image, bool &found, uint64_t &version_ts)
     {
+        SyncCallbackData::Reset();
+        schema_image_ = &schema_image;
+        found_ = &found;
+        version_ts_ = &version_ts;
     }
 
-    std::string &schema_image_;
-    bool &found_;
-    uint64_t &version_ts_;
+    void Clear() override
+    {
+        SyncCallbackData::Clear();
+        schema_image_ = nullptr;
+        found_ = nullptr;
+        version_ts_ = nullptr;
+    }
+
+    std::string *schema_image_;
+    bool *found_;
+    uint64_t *version_ts_;
 };
 
 void FetchTableCallback(void *data,
@@ -2286,15 +2134,28 @@ void SyncPutAllCallback(void *data,
 
 struct FetchDatabaseCallbackData : public SyncCallbackData
 {
-    FetchDatabaseCallbackData(std::string &definition,
-                              bool &found,
-                              const std::function<void()> *yield_fptr,
-                              const std::function<void()> *resume_fptr)
-        : db_definition_(definition),
-          found_(found),
-          yield_fptr_(yield_fptr),
-          resume_fptr_(resume_fptr)
+    FetchDatabaseCallbackData() = default;
+    ~FetchDatabaseCallbackData() = default;
+
+    void Reset(std::string &definition,
+               bool &found,
+               const std::function<void()> *yield_fptr,
+               const std::function<void()> *resume_fptr)
     {
+        SyncCallbackData::Reset();
+        db_definition_ = &definition;
+        found_ = &found;
+        yield_fptr_ = yield_fptr;
+        resume_fptr_ = resume_fptr;
+    }
+
+    void Clear() override
+    {
+        db_definition_ = nullptr;
+        found_ = nullptr;
+        yield_fptr_ = nullptr;
+        resume_fptr_ = nullptr;
+        SyncCallbackData::Clear();
     }
 
     void Wait() override
@@ -2321,8 +2182,8 @@ struct FetchDatabaseCallbackData : public SyncCallbackData
         }
     }
 
-    std::string &db_definition_;
-    bool &found_;
+    std::string *db_definition_;
+    bool *found_;
     const std::function<void()> *yield_fptr_;
     const std::function<void()> *resume_fptr_;
 };
@@ -2334,23 +2195,31 @@ void FetchDatabaseCallback(void *data,
 
 struct FetchAllDatabaseCallbackData : public SyncCallbackData
 {
-    FetchAllDatabaseCallbackData(const std::string_view kv_table_name,
-                                 std::vector<std::string> &dbnames,
-                                 const std::function<void()> *yield_fptr,
-                                 const std::function<void()> *resume_fptr,
-                                 int32_t partition_id,
-                                 uint32_t batch_size)
-        : kv_table_name_(kv_table_name),
-          dbnames_(dbnames),
-          yield_fptr_(yield_fptr),
-          resume_fptr_(resume_fptr),
-          search_conds_(),
-          session_id_(),
-          start_key_(),
-          end_key_(),
-          partition_id_(partition_id),
-          batch_size_(batch_size)
+    FetchAllDatabaseCallbackData() = default;
+    ~FetchAllDatabaseCallbackData() = default;
+
+    void Reset(std::vector<std::string> &dbnames,
+               const std::function<void()> *yield_fptr,
+               const std::function<void()> *resume_fptr)
     {
+        SyncCallbackData::Reset();
+        dbnames_ = &dbnames;
+        yield_fptr_ = yield_fptr;
+        resume_fptr_ = resume_fptr;
+        session_id_.clear();
+        start_key_.clear();
+        end_key_.clear();
+    }
+
+    void Clear() override
+    {
+        SyncCallbackData::Clear();
+        dbnames_ = nullptr;
+        yield_fptr_ = nullptr;
+        resume_fptr_ = nullptr;
+        session_id_.clear();
+        start_key_.clear();
+        end_key_.clear();
     }
 
     void Wait() override
@@ -2377,17 +2246,13 @@ struct FetchAllDatabaseCallbackData : public SyncCallbackData
         }
     }
 
-    const std::string_view kv_table_name_;
-    std::vector<std::string> &dbnames_;
+    std::vector<std::string> *dbnames_;
     const std::function<void()> *yield_fptr_;
     const std::function<void()> *resume_fptr_;
 
-    std::vector<remote::SearchCondition> search_conds_;
     std::string session_id_;
     std::string start_key_;
     std::string end_key_;
-    int32_t partition_id_;
-    uint32_t batch_size_;
 };
 
 void FetchAllDatabaseCallback(void *data,
@@ -2397,23 +2262,27 @@ void FetchAllDatabaseCallback(void *data,
 
 struct DiscoverAllTableNamesCallbackData : public SyncCallbackData
 {
-    DiscoverAllTableNamesCallbackData(const std::string_view kv_table_name,
-                                      std::vector<std::string> &table_names,
-                                      const std::function<void()> *yield_fptr,
-                                      const std::function<void()> *resume_fptr,
-                                      int32_t partition_id,
-                                      uint32_t batch_size)
-        : kv_table_name_(kv_table_name),
-          table_names_(table_names),
-          yield_fptr_(yield_fptr),
-          resume_fptr_(resume_fptr),
-          search_conds_(),
-          session_id_(),
-          start_key_(),
-          end_key_(),
-          partition_id_(partition_id),
-          batch_size_(batch_size)
+    DiscoverAllTableNamesCallbackData() = default;
+    ~DiscoverAllTableNamesCallbackData() = default;
+
+    void Reset(std::vector<std::string> &table_names,
+               const std::function<void()> *yield_fptr,
+               const std::function<void()> *resume_fptr)
     {
+        SyncCallbackData::Reset();
+        table_names_ = &table_names;
+        yield_fptr_ = yield_fptr;
+        resume_fptr_ = resume_fptr;
+        session_id_.clear();
+    }
+
+    void Clear() override
+    {
+        SyncCallbackData::Clear();
+        table_names_ = nullptr;
+        yield_fptr_ = nullptr;
+        resume_fptr_ = nullptr;
+        session_id_.clear();
     }
 
     void Wait() override
@@ -2440,17 +2309,11 @@ struct DiscoverAllTableNamesCallbackData : public SyncCallbackData
         }
     }
 
-    const std::string_view kv_table_name_;
-    std::vector<std::string> &table_names_;
+    std::vector<std::string> *table_names_;
     const std::function<void()> *yield_fptr_;
     const std::function<void()> *resume_fptr_;
 
-    std::vector<remote::SearchCondition> search_conds_;
     std::string session_id_;
-    std::string start_key_;
-    std::string end_key_;
-    int32_t partition_id_;
-    uint32_t batch_size_;
 };
 
 void DiscoverAllTableNamesCallback(void *data,
@@ -2458,70 +2321,10 @@ void DiscoverAllTableNamesCallback(void *data,
                                    DataStoreServiceClient &client,
                                    const remote::CommonResult &result);
 
-struct FetchTableRangesCallbackData
-{
-    FetchTableRangesCallbackData(const std::string_view kv_table_name,
-                                 txservice::FetchTableRangesCc *fetch_cc,
-                                 int32_t partition_id,
-                                 uint32_t batch_size,
-                                 std::string &&start_key,
-                                 std::string &&end_key)
-        : kv_table_name_(kv_table_name),
-          fetch_cc_(fetch_cc),
-          search_conds_(),
-          session_id_(),
-          start_key_(std::move(start_key)),
-          end_key_(std::move(end_key)),
-          partition_id_(partition_id),
-          batch_size_(batch_size)
-    {
-    }
-
-    const std::string_view kv_table_name_;
-    txservice::FetchTableRangesCc *fetch_cc_;
-
-    std::vector<remote::SearchCondition> search_conds_;
-    std::string session_id_;
-    std::string start_key_;
-    std::string end_key_;
-    int32_t partition_id_;
-    uint32_t batch_size_;
-};
-
 void FetchTableRangesCallback(void *data,
                               ::google::protobuf::Closure *closure,
                               DataStoreServiceClient &client,
                               const remote::CommonResult &result);
-
-struct FetchRangeSlicesCallbackData
-{
-    FetchRangeSlicesCallbackData(
-        const std::string_view kv_range_table_name,
-        const std::string_view kv_range_slices_table_name,
-        txservice::FetchRangeSlicesReq *fetch_cc,
-        int32_t kv_partition_id,
-        std::string &&key,
-        uint8_t step = 1)
-        : kv_range_table_name_(kv_range_table_name),
-          kv_range_slices_table_name_(kv_range_slices_table_name),
-          fetch_cc_(fetch_cc),
-          kv_partition_id_(kv_partition_id),
-          key_(std::move(key)),
-          step_(step)
-    {
-    }
-
-    const std::string_view kv_range_table_name_;
-    const std::string_view kv_range_slices_table_name_;
-    txservice::FetchRangeSlicesReq *fetch_cc_;
-    int32_t kv_partition_id_;
-
-    std::string key_{};
-    int32_t range_partition_id_;
-
-    // step-1: fetch range info; step-2: fetch all slices of range.
-    uint8_t step_{1};
-};
 
 void FetchRangeSlicesCallback(void *data,
                               ::google::protobuf::Closure *closure,
@@ -2531,34 +2334,6 @@ void FetchCurrentTableStatsCallback(void *data,
                                     ::google::protobuf::Closure *closure,
                                     DataStoreServiceClient &client,
                                     const remote::CommonResult &result);
-
-struct FetchTableStatsCallbackData
-{
-    FetchTableStatsCallbackData(txservice::FetchTableStatisticsCc *fetch_cc,
-                                const std::string_view kv_table_name,
-                                int32_t partition_id,
-                                std::string &&start_key,
-                                std::string &&end_key)
-        : fetch_cc_(fetch_cc),
-          kv_table_name_(kv_table_name),
-          partition_id_(partition_id),
-          start_key_(std::move(start_key)),
-          end_key_(std::move(end_key)),
-          session_id_(""),
-          search_conditions_()
-    {
-    }
-
-    txservice::FetchTableStatisticsCc *fetch_cc_;
-
-    const std::string_view kv_table_name_;
-    int32_t partition_id_;
-
-    std::string start_key_;
-    std::string end_key_;
-    std::string session_id_;
-    std::vector<remote::SearchCondition> search_conditions_;
-};
 
 void FetchTableStatsCallback(void *data,
                              ::google::protobuf::Closure *closure,
@@ -2602,68 +2377,17 @@ void FetchArchivesCallback(void *data,
                            DataStoreServiceClient &client,
                            const remote::CommonResult &result);
 
-struct FetchRecordArchivesCallbackData
-{
-    FetchRecordArchivesCallbackData(txservice::FetchRecordCc *fetch_cc,
-                                    const std::string_view kv_table_name,
-                                    uint32_t partition_id,
-                                    std::string &&start_key,
-                                    std::string &&end_key)
-        : fetch_cc_(fetch_cc),
-          kv_table_name_(kv_table_name),
-          partition_id_(partition_id),
-          start_key_(std::move(start_key)),
-          end_key_(std::move(end_key)),
-          session_id_("")
-    {
-    }
-
-    txservice::FetchRecordCc *fetch_cc_;
-    const std::string_view kv_table_name_;
-    const uint32_t partition_id_;
-
-    std::string start_key_;
-    std::string end_key_;
-    std::string session_id_;
-};
-
 void FetchRecordArchivesCallback(void *data,
                                  ::google::protobuf::Closure *closure,
                                  DataStoreServiceClient &client,
                                  const remote::CommonResult &result);
-
-struct FetchSnapshotArchiveCallbackData
-{
-    FetchSnapshotArchiveCallbackData(txservice::FetchSnapshotCc *fetch_cc,
-                                     const std::string_view kv_table_name,
-                                     uint32_t partition_id,
-                                     std::string &&start_key,
-                                     std::string &&end_key)
-        : fetch_cc_(fetch_cc),
-          kv_table_name_(kv_table_name),
-          partition_id_(partition_id),
-          start_key_(std::move(start_key)),
-          end_key_(std::move(end_key)),
-          session_id_("")
-    {
-    }
-
-    txservice::FetchSnapshotCc *fetch_cc_;
-    const std::string_view kv_table_name_;
-    const uint32_t partition_id_;
-
-    std::string start_key_;
-    std::string end_key_;
-    std::string session_id_;
-};
 
 void FetchSnapshotArchiveCallback(void *data,
                                   ::google::protobuf::Closure *closure,
                                   DataStoreServiceClient &client,
                                   const remote::CommonResult &result);
 
-struct CreateSnapshotForBackupCallbackData : public SyncCallbackData,
-                                             public Poolable
+struct CreateSnapshotForBackupCallbackData : public SyncCallbackData
 {
     CreateSnapshotForBackupCallbackData() = default;
 
