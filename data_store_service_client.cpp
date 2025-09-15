@@ -19,6 +19,8 @@
  *    <http://www.gnu.org/licenses/>.
  *
  */
+#include "data_store_service_client.h"
+
 #include <glog/logging.h>
 
 #include <boost/lexical_cast.hpp>
@@ -31,7 +33,6 @@
 #include <utility>
 #include <vector>
 
-#include "data_store_service_client.h"
 #include "data_store_service_client_closure.h"
 #include "data_store_service_scanner.h"
 #include "eloq_data_store_service/object_pool.h"  // ObjectPool
@@ -139,9 +140,94 @@ bool DataStoreServiceClient::PutAll(
     std::vector<uint64_t> records_ts;
     std::vector<uint64_t> records_ttl;
     std::vector<WriteOpType> op_types;
+    std::vector<size_t> record_tmp_mem_area;
+    uint64_t now = txservice::LocalCcShards::ClockTsInMillseconds();
+
+    auto PrepareObjectData =
+        [&](txservice::FlushRecord &ckpt_rec, size_t &write_batch_size)
+    {
+        txservice::TxKey tx_key = ckpt_rec.Key();
+        uint64_t ttl =
+            ckpt_rec.payload_status_ == txservice::RecordStatus::Normal
+                ? ckpt_rec.Payload()->GetTTL()
+                : 0;
+        if (ckpt_rec.payload_status_ == txservice::RecordStatus::Normal &&
+            (!ckpt_rec.Payload()->HasTTL() || ttl > now))
+        {
+            key_parts.emplace_back(
+                std::string_view(tx_key.Data(), tx_key.Size()));
+            write_batch_size += tx_key.Size();
+
+            const txservice::TxRecord *rec = ckpt_rec.Payload();
+            // Upserts a key to the k-v store
+            record_parts.emplace_back(std::string_view(rec->EncodedBlobData(),
+                                                       rec->EncodedBlobSize()));
+            write_batch_size += rec->EncodedBlobSize();
+
+            records_ts.push_back(ckpt_rec.commit_ts_);
+            write_batch_size += sizeof(uint64_t);  // commit_ts
+                                                   //
+            records_ttl.push_back(ttl);
+            write_batch_size += sizeof(uint64_t);  // ttl
+
+            op_types.push_back(WriteOpType::PUT);
+            write_batch_size += sizeof(WriteOpType);
+        }
+        else
+        {
+            key_parts.emplace_back(
+                std::string_view(tx_key.Data(), tx_key.Size()));
+            write_batch_size += tx_key.Size();
+
+            record_parts.emplace_back(std::string_view());
+
+            records_ts.push_back(ckpt_rec.commit_ts_);
+            write_batch_size += sizeof(uint64_t);  // commit_ts
+
+            records_ttl.push_back(0);              // no ttl
+            write_batch_size += sizeof(uint64_t);  // ttl
+
+            op_types.push_back(WriteOpType::DELETE);
+            write_batch_size += sizeof(WriteOpType);
+        }
+    };
+
+    auto PrepareRecordData =
+        [&](txservice::FlushRecord &ckpt_rec, size_t &write_batch_size)
+    {
+        uint64_t retired_ttl_for_deleted = now + 24 * 60 * 60 * 1000;
+        txservice::TxKey tx_key = ckpt_rec.Key();
+        bool is_deleted =
+            !(ckpt_rec.payload_status_ == txservice::RecordStatus::Normal);
+        key_parts.emplace_back(std::string_view(tx_key.Data(), tx_key.Size()));
+        write_batch_size += tx_key.Size();
+
+        const txservice::TxRecord *rec = ckpt_rec.Payload();
+        // encode is_delete, encoded_blob_data and unpack_info
+        if (is_deleted)
+        {
+            records_ttl.push_back(retired_ttl_for_deleted);
+        }
+        else
+        {
+            records_ttl.push_back(0);  // no ttl
+        }
+        write_batch_size += sizeof(uint64_t);  // ttl
+
+        op_types.push_back(WriteOpType::PUT);
+        write_batch_size += sizeof(WriteOpType);
+
+        SerializeTxRecord(is_deleted,
+                          rec,
+                          record_tmp_mem_area,
+                          record_parts,
+                          write_batch_size);
+
+        records_ts.push_back(ckpt_rec.commit_ts_);
+        write_batch_size += sizeof(uint64_t);
+    };
     // map from (table_name, partition_id) to the index of the records in the
     // batch
-    uint64_t now = txservice::LocalCcShards::ClockTsInMillseconds();
     for (auto &[kv_table_name, entries] : flush_task)
     {
         auto &table_name = entries.front()->data_sync_task_->table_name_;
@@ -198,14 +284,13 @@ bool DataStoreServiceClient::PutAll(
         PoolableGuard sync_putall_guard(sync_putall);
 
         uint16_t parts_cnt_per_key = 1;
-        uint16_t parts_cnt_per_record = table_name.IsHashPartitioned() ? 1 : 5;
+        uint16_t parts_cnt_per_record = table_name.IsObjectTable() ? 1 : 5;
 
         // Write data for hash_partitioned table
         for (auto part_it = hash_partitions_map.begin();
              part_it != hash_partitions_map.end();
              ++part_it)
         {
-            assert(table_name.Engine() == txservice::TableEngine::EloqKv);
             auto &flush_recs = part_it->second;
             size_t recs_cnt = partition_record_cnt[part_it->first];
             key_parts.reserve(recs_cnt * parts_cnt_per_key);
@@ -263,54 +348,13 @@ bool DataStoreServiceClient::PutAll(
                        ckpt_rec.payload_status_ ==
                            txservice::RecordStatus::Deleted);
 
-                assert(ckpt_rec.payload_status_ ==
-                           txservice::RecordStatus::Normal ||
-                       ckpt_rec.payload_status_ ==
-                           txservice::RecordStatus::Deleted);
-
-                uint64_t ttl =
-                    ckpt_rec.payload_status_ == txservice::RecordStatus::Normal
-                        ? ckpt_rec.Payload()->GetTTL()
-                        : 0;
-                if (ckpt_rec.payload_status_ ==
-                        txservice::RecordStatus::Normal &&
-                    (!ckpt_rec.Payload()->HasTTL() || ttl > now))
+                if (table_name.IsObjectTable())
                 {
-                    key_parts.emplace_back(
-                        std::string_view(tx_key.Data(), tx_key.Size()));
-                    write_batch_size += tx_key.Size();
-
-                    const txservice::TxRecord *rec = ckpt_rec.Payload();
-                    // Upserts a key to the k-v store
-                    record_parts.emplace_back(std::string_view(
-                        rec->EncodedBlobData(), rec->EncodedBlobSize()));
-                    write_batch_size += rec->EncodedBlobSize();
-
-                    records_ts.push_back(ckpt_rec.commit_ts_);
-                    write_batch_size += sizeof(uint64_t);  // commit_ts
-                                                           //
-                    records_ttl.push_back(ttl);
-                    write_batch_size += sizeof(uint64_t);  // ttl
-
-                    op_types.push_back(WriteOpType::PUT);
-                    write_batch_size += sizeof(WriteOpType);
+                    PrepareObjectData(ckpt_rec, write_batch_size);
                 }
                 else
                 {
-                    key_parts.emplace_back(
-                        std::string_view(tx_key.Data(), tx_key.Size()));
-                    write_batch_size += tx_key.Size();
-
-                    record_parts.emplace_back(std::string_view());
-
-                    records_ts.push_back(ckpt_rec.commit_ts_);
-                    write_batch_size += sizeof(uint64_t);  // commit_ts
-
-                    records_ttl.push_back(0);              // no ttl
-                    write_batch_size += sizeof(uint64_t);  // ttl
-
-                    op_types.push_back(WriteOpType::DELETE);
-                    write_batch_size += sizeof(WriteOpType);
+                    PrepareRecordData(ckpt_rec, write_batch_size);
                 }
             }
             // Send out the last batch
@@ -351,9 +395,6 @@ bool DataStoreServiceClient::PutAll(
              part_it != range_partitions_map.end();
              ++part_it)
         {
-            uint64_t retired_ttl_for_deleted = now + 24 * 60 * 60 * 1000;
-            std::vector<size_t> record_tmp_mem_area;
-
             size_t recs_cnt = partition_record_cnt[part_it->first];
             key_parts.reserve(recs_cnt * parts_cnt_per_key);
             record_parts.reserve(recs_cnt * parts_cnt_per_record);
@@ -412,35 +453,9 @@ bool DataStoreServiceClient::PutAll(
                            ckpt_rec.payload_status_ ==
                                txservice::RecordStatus::Deleted);
 
-                    bool is_deleted = !(ckpt_rec.payload_status_ ==
-                                        txservice::RecordStatus::Normal);
-                    key_parts.emplace_back(
-                        std::string_view(tx_key.Data(), tx_key.Size()));
-                    write_batch_size += tx_key.Size();
-
-                    const txservice::TxRecord *rec = ckpt_rec.Payload();
-                    // encode is_delete, encoded_blob_data and unpack_info
-                    if (is_deleted)
-                    {
-                        records_ttl.push_back(retired_ttl_for_deleted);
-                    }
-                    else
-                    {
-                        records_ttl.push_back(0);  // no ttl
-                    }
-                    write_batch_size += sizeof(uint64_t);  // ttl
-
-                    op_types.push_back(WriteOpType::PUT);
-                    write_batch_size += sizeof(WriteOpType);
-
-                    SerializeTxRecord(is_deleted,
-                                      rec,
-                                      record_tmp_mem_area,
-                                      record_parts,
-                                      write_batch_size);
-
-                    records_ts.push_back(ckpt_rec.commit_ts_);
-                    write_batch_size += sizeof(uint64_t);
+                    // currently there is no object table in range partitioned
+                    // table
+                    PrepareRecordData(ckpt_rec, write_batch_size);
                 }
                 // Send out the last batch
                 if (key_parts.size() > 0)
