@@ -435,25 +435,6 @@ if ((WITH_DATA_STORE STREQUAL "ELOQDSS_ROCKSDB_CLOUD_S3") OR
         INSTALL_RPATH_USE_LINK_PATH TRUE)
     install(TARGETS rocksdb_cloud_dump
             RUNTIME DESTINATION bin)
-
-    # Add improved purger utility
-    add_executable(improved_purger
-        improved_purger.cpp
-        rocksdb_data_store_common.cpp
-        rocksdb_config.cpp
-        purger_event_listener.cpp
-        purger_sliding_window.cpp
-        data_store_service_config.cpp
-        INIReader.cpp
-        ini.c
-        ds_request.pb.cc)
-    target_link_libraries(improved_purger ${DYNAMIC_LIB} ${ROCKSDB_LIBRARIES} ${GFLAGS_LIBRARY})
-    set_target_properties(improved_purger PROPERTIES
-        BUILD_RPATH "$ORIGIN/../lib"
-        INSTALL_RPATH "$ORIGIN/../lib"
-        INSTALL_RPATH_USE_LINK_PATH TRUE)
-    install(TARGETS improved_purger
-            RUNTIME DESTINATION bin)
 endif()
 
 set_target_properties(dss_server PROPERTIES

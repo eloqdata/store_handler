@@ -134,14 +134,37 @@ SlidingWindow::~SlidingWindow()
     Stop();
 }
 
-void SlidingWindow::AddFileNumber(uint64_t file_number)
+void SlidingWindow::AddFileNumber(uint64_t file_number, int thread_id, uint64_t job_id)
 {
     std::lock_guard<std::mutex> lock(window_mutex_);
 
-    window_entries_.emplace_back(file_number);
+    std::string key = GenerateKey(thread_id, job_id);
+    window_entries_.emplace(key, WindowEntry(file_number));
 
     DLOG(INFO) << "Added file number to sliding window: " << file_number
+               << ", thread_id: " << thread_id << ", job_id: " << job_id
                << ", epoch: " << epoch_ << ", window size: " << window_entries_.size();
+}
+
+void SlidingWindow::RemoveFileNumber(int thread_id, uint64_t job_id)
+{
+    std::lock_guard<std::mutex> lock(window_mutex_);
+
+    std::string key = GenerateKey(thread_id, job_id);
+    auto it = window_entries_.find(key);
+
+    if (it != window_entries_.end()) {
+        uint64_t removed_file_number = it->second.file_number;
+        window_entries_.erase(it);
+
+        DLOG(INFO) << "Removed file number from sliding window: " << removed_file_number
+                   << ", thread_id: " << thread_id << ", job_id: " << job_id
+                   << ", epoch: " << epoch_ << ", window size: " << window_entries_.size();
+    } else {
+        DLOG(WARNING) << "Attempted to remove non-existent entry from sliding window: "
+                     << "thread_id: " << thread_id << ", job_id: " << job_id
+                     << ", epoch: " << epoch_;
+    }
 }
 
 uint64_t SlidingWindow::GetSmallestFileNumber()
@@ -152,10 +175,10 @@ uint64_t SlidingWindow::GetSmallestFileNumber()
         return std::numeric_limits<uint64_t>::max();
     }
 
-    uint64_t smallest = window_entries_[0].file_number;
+    uint64_t smallest = std::numeric_limits<uint64_t>::max();
     for (const auto& entry : window_entries_) {
-        if (entry.file_number < smallest) {
-            smallest = entry.file_number;
+        if (entry.second.file_number < smallest) {
+            smallest = entry.second.file_number;
         }
     }
 
@@ -198,9 +221,6 @@ void SlidingWindow::TimerWorker()
             break;
         }
 
-        // Perform periodic tasks
-        CleanupExpiredEntries();
-
         // Release lock during S3 operation to avoid blocking AddFileNumber
         lock.unlock();
         FlushToS3();
@@ -225,26 +245,11 @@ void SlidingWindow::FlushToS3()
     }
 }
 
-void SlidingWindow::CleanupExpiredEntries()
+std::string SlidingWindow::GenerateKey(int thread_id, uint64_t job_id) const
 {
-    // This function is called with window_mutex_ already locked
-
-    auto now = std::chrono::steady_clock::now();
-    auto cutoff_time = now - window_duration_;
-
-    size_t original_size = window_entries_.size();
-
-    // Remove expired entries from the front of the deque
-    while (!window_entries_.empty() &&
-           window_entries_.front().timestamp < cutoff_time) {
-        window_entries_.pop_front();
-    }
-
-    size_t removed = original_size - window_entries_.size();
-    if (removed > 0) {
-        DLOG(INFO) << "Cleaned up " << removed << " expired entries from sliding window"
-                   << ", epoch: " << epoch_ << ", remaining: " << window_entries_.size();
-    }
+    std::ostringstream oss;
+    oss << thread_id << "-" << job_id;
+    return oss.str();
 }
 
 } // namespace EloqDS

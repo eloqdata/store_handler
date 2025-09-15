@@ -22,16 +22,16 @@
 
 #pragma once
 
+#include <glog/logging.h>
+#include <rocksdb/cloud/cloud_storage_provider.h>
+
 #include <chrono>
 #include <condition_variable>
-#include <deque>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
-
-#include <rocksdb/cloud/cloud_storage_provider.h>
-#include <glog/logging.h>
+#include <unordered_map>
 
 namespace EloqDS
 {
@@ -42,10 +42,11 @@ namespace EloqDS
 class S3FileNumberUpdater
 {
 public:
-    S3FileNumberUpdater(const std::string& bucket_name,
-                       const std::string& s3_object_path,
-                       const std::string& epoch,
-                       std::shared_ptr<rocksdb::CloudStorageProvider> storage_provider);
+    S3FileNumberUpdater(
+        const std::string &bucket_name,
+        const std::string &s3_object_path,
+        const std::string &epoch,
+        std::shared_ptr<rocksdb::CloudStorageProvider> storage_provider);
 
     ~S3FileNumberUpdater() = default;
 
@@ -76,7 +77,8 @@ private:
 };
 
 /**
- * @brief Time-based sliding window for tracking file numbers with automatic S3 updates
+ * @brief Time-based sliding window for tracking file numbers with automatic S3
+ * updates
  */
 class SlidingWindow
 {
@@ -90,12 +92,13 @@ public:
      * @param s3_object_path S3 object path
      * @param storage_provider Cloud storage provider for S3 operations
      */
-    SlidingWindow(std::chrono::milliseconds window_duration,
-                  std::chrono::milliseconds s3_update_interval,
-                  const std::string& epoch,
-                  const std::string& bucket_name,
-                  const std::string& s3_object_path,
-                  std::shared_ptr<rocksdb::CloudStorageProvider> storage_provider);
+    SlidingWindow(
+        std::chrono::milliseconds window_duration,
+        std::chrono::milliseconds s3_update_interval,
+        const std::string &epoch,
+        const std::string &bucket_name,
+        const std::string &s3_object_path,
+        std::shared_ptr<rocksdb::CloudStorageProvider> storage_provider);
 
     /**
      * @brief Destructor - stops the timer thread
@@ -105,8 +108,17 @@ public:
     /**
      * @brief Add a file number to the sliding window
      * @param file_number The file number to add
+     * @param thread_id The thread ID of the operation
+     * @param job_id The job ID of the operation
      */
-    void AddFileNumber(uint64_t file_number);
+    void AddFileNumber(uint64_t file_number, int thread_id, uint64_t job_id);
+
+    /**
+     * @brief Remove a file number entry from the sliding window
+     * @param thread_id The thread ID of the operation
+     * @param job_id The job ID of the operation
+     */
+    void RemoveFileNumber(int thread_id, uint64_t job_id);
 
     /**
      * @brief Get the smallest file number in the current window
@@ -126,10 +138,14 @@ private:
         std::chrono::steady_clock::time_point timestamp;
 
         WindowEntry(uint64_t num)
-            : file_number(num), timestamp(std::chrono::steady_clock::now()) {}
+            : file_number(num),
+              timestamp(std::chrono::steady_clock::now())
+        {
+        }
     };
 
-    std::deque<WindowEntry> window_entries_;
+    // Map of (thread_id + job_id) -> WindowEntry
+    std::unordered_map<std::string, WindowEntry> window_entries_;
     std::chrono::milliseconds window_duration_;
     std::chrono::milliseconds s3_update_interval_;
     std::string epoch_;
@@ -153,10 +169,12 @@ private:
     void FlushToS3();
 
     /**
-     * @brief Remove expired entries from the window
+     * @brief Generate a key string for the window_entries_ map
+     * @param thread_id The thread ID of the operation
+     * @param job_id The job ID of the operation
+     * @return A string key combining thread_id and job_id
      */
-    void CleanupExpiredEntries();
+    std::string GenerateKey(int thread_id, uint64_t job_id) const;
 };
 
-} // namespace EloqDS
-
+}  // namespace EloqDS
