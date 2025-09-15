@@ -121,8 +121,10 @@ private:
     /**
      * @brief Update sliding window with current max file number from DB
      * @param db Pointer to the database instance
+     * @param thread_id The thread ID of the operation (default: 0)
+     * @param job_id The job ID of the operation (default: 0)
      */
-    void UpdateSlidingWindow(rocksdb::DB* db);
+    void UpdateSlidingWindow(rocksdb::DB* db, int thread_id = 0, uint64_t job_id = 0);
 };
 
 } // namespace EloqDS

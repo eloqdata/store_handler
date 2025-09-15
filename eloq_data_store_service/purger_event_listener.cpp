@@ -81,7 +81,7 @@ void PurgerEventListener::OnFlushBegin(
     }
 
     // Update sliding window with current max file number
-    UpdateSlidingWindow(db);
+    UpdateSlidingWindow(db, flush_job_info.thread_id, flush_job_info.job_id);
 
     DLOG(INFO) << "[PurgerEventListener] OnFlushBegin processed for epoch "
                << epoch_ << ", job_id: " << flush_job_info.job_id;
@@ -110,6 +110,12 @@ void PurgerEventListener::OnFlushCompleted(
                   << ", epoch: " << epoch_;
     }
 
+    // Remove the entry from sliding window
+    if (sliding_window_)
+    {
+        sliding_window_->RemoveFileNumber(flush_job_info.thread_id, flush_job_info.job_id);
+    }
+
     DLOG(INFO) << "[PurgerEventListener] OnFlushCompleted processed for epoch "
                << epoch_ << ", job_id: " << flush_job_info.job_id;
 }
@@ -126,7 +132,7 @@ void PurgerEventListener::OnCompactionBegin(
                << ", epoch: " << epoch_;
 
     // Update sliding window with current max file number
-    UpdateSlidingWindow(db);
+    UpdateSlidingWindow(db, ci.thread_id, ci.job_id);
 
     DLOG(INFO) << "[PurgerEventListener] OnCompactionBegin processed for epoch "
                << epoch_ << ", job_id: " << ci.job_id;
@@ -143,6 +149,12 @@ void PurgerEventListener::OnCompactionCompleted(
                << ", compaction_reason: "
                << static_cast<int>(ci.compaction_reason)
                << ", epoch: " << epoch_;
+
+    // Remove the entry from sliding window
+    if (sliding_window_)
+    {
+        sliding_window_->RemoveFileNumber(ci.thread_id, ci.job_id);
+    }
 
     DLOG(INFO)
         << "[PurgerEventListener] OnCompactionCompleted processed for epoch "
@@ -194,7 +206,7 @@ std::string PurgerEventListener::GetFlushReason(
     }
 }
 
-void PurgerEventListener::UpdateSlidingWindow(rocksdb::DB *db)
+void PurgerEventListener::UpdateSlidingWindow(rocksdb::DB *db, int thread_id, uint64_t job_id)
 {
     if (!db)
     {
@@ -208,11 +220,12 @@ void PurgerEventListener::UpdateSlidingWindow(rocksdb::DB *db)
 
     if (sliding_window_)
     {
-        sliding_window_->AddFileNumber(max_file_number);
+        sliding_window_->AddFileNumber(max_file_number, thread_id, job_id);
     }
 
     DLOG(INFO) << "[PurgerEventListener] Added file number to sliding window: "
-               << max_file_number << ", epoch: " << epoch_;
+               << max_file_number << ", thread_id: " << thread_id
+               << ", job_id: " << job_id << ", epoch: " << epoch_;
 }
 
 }  // namespace EloqDS
