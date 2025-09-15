@@ -20,11 +20,11 @@
  *
  */
 
-#include "purger_event_listener.h"
-
 #include <rocksdb/db.h>
 
 #include <string>
+
+#include "purger_event_listener.h"
 
 namespace EloqDS
 {
@@ -36,16 +36,16 @@ PurgerEventListener::PurgerEventListener(
     std::shared_ptr<rocksdb::CloudStorageProvider> storage_provider,
     std::chrono::milliseconds window_duration,
     std::chrono::milliseconds s3_update_interval)
-    : epoch_(epoch), bucket_name_(bucket_name), s3_object_path_(s3_object_path)
+    : bucket_name_(bucket_name), s3_object_path_(s3_object_path)
 {
     sliding_window_ = std::make_unique<SlidingWindow>(window_duration,
                                                       s3_update_interval,
-                                                      epoch_,
+                                                      epoch,
                                                       bucket_name_,
                                                       s3_object_path_,
                                                       storage_provider);
 
-    LOG(INFO) << "PurgerEventListener created for epoch " << epoch_
+    LOG(INFO) << "PurgerEventListener created for epoch " << epoch
               << ", bucket: " << bucket_name_
               << ", object_path: " << s3_object_path_
               << ", window_duration: " << window_duration.count() << "ms"
@@ -55,6 +55,19 @@ PurgerEventListener::PurgerEventListener(
 PurgerEventListener::~PurgerEventListener()
 {
     Stop();
+}
+
+void PurgerEventListener::SetEpoch(const std::string &epoch)
+{
+    if (sliding_window_)
+    {
+        LOG(INFO) << "PurgerEventListener epoch updated from "
+                  << (sliding_window_->GetEpoch().empty()
+                          ? "empty"
+                          : sliding_window_->GetEpoch())
+                  << " to " << epoch;
+        sliding_window_->SetEpoch(epoch);
+    }
 }
 
 void PurgerEventListener::OnFlushBegin(
@@ -76,15 +89,11 @@ void PurgerEventListener::OnFlushBegin(
                   << ", smallest_seqno: " << flush_job_info.smallest_seqno
                   << ", largest_seqno: " << flush_job_info.largest_seqno
                   << ", flush_reason: "
-                  << GetFlushReason(flush_job_info.flush_reason)
-                  << ", epoch: " << epoch_;
+                  << GetFlushReason(flush_job_info.flush_reason);
     }
 
     // Update sliding window with current max file number
     UpdateSlidingWindow(db, flush_job_info.thread_id, flush_job_info.job_id);
-
-    DLOG(INFO) << "[PurgerEventListener] OnFlushBegin processed for epoch "
-               << epoch_ << ", job_id: " << flush_job_info.job_id;
 }
 
 void PurgerEventListener::OnFlushCompleted(
@@ -106,18 +115,15 @@ void PurgerEventListener::OnFlushCompleted(
                   << ", smallest_seqno: " << flush_job_info.smallest_seqno
                   << ", largest_seqno: " << flush_job_info.largest_seqno
                   << ", flush_reason: "
-                  << GetFlushReason(flush_job_info.flush_reason)
-                  << ", epoch: " << epoch_;
+                  << GetFlushReason(flush_job_info.flush_reason);
     }
 
     // Remove the entry from sliding window
     if (sliding_window_)
     {
-        sliding_window_->RemoveFileNumber(flush_job_info.thread_id, flush_job_info.job_id);
+        sliding_window_->RemoveFileNumber(flush_job_info.thread_id,
+                                          flush_job_info.job_id);
     }
-
-    DLOG(INFO) << "[PurgerEventListener] OnFlushCompleted processed for epoch "
-               << epoch_ << ", job_id: " << flush_job_info.job_id;
 }
 
 void PurgerEventListener::OnCompactionBegin(
@@ -128,14 +134,10 @@ void PurgerEventListener::OnCompactionBegin(
                << ", output_level: " << ci.output_level
                << ", input_files_size: " << ci.input_files.size()
                << ", compaction_reason: "
-               << static_cast<int>(ci.compaction_reason)
-               << ", epoch: " << epoch_;
+               << static_cast<int>(ci.compaction_reason);
 
     // Update sliding window with current max file number
     UpdateSlidingWindow(db, ci.thread_id, ci.job_id);
-
-    DLOG(INFO) << "[PurgerEventListener] OnCompactionBegin processed for epoch "
-               << epoch_ << ", job_id: " << ci.job_id;
 }
 
 void PurgerEventListener::OnCompactionCompleted(
@@ -148,17 +150,13 @@ void PurgerEventListener::OnCompactionCompleted(
                << ", output_files_size: " << ci.output_files.size()
                << ", compaction_reason: "
                << static_cast<int>(ci.compaction_reason)
-               << ", epoch: " << epoch_;
+               << ", epoch: " << sliding_window_->GetEpoch();
 
     // Remove the entry from sliding window
     if (sliding_window_)
     {
         sliding_window_->RemoveFileNumber(ci.thread_id, ci.job_id);
     }
-
-    DLOG(INFO)
-        << "[PurgerEventListener] OnCompactionCompleted processed for epoch "
-        << epoch_ << ", job_id: " << ci.job_id;
 }
 
 void PurgerEventListener::Stop()
@@ -168,8 +166,6 @@ void PurgerEventListener::Stop()
         sliding_window_->Stop();
         sliding_window_.reset();
     }
-
-    LOG(INFO) << "PurgerEventListener stopped for epoch " << epoch_;
 }
 
 std::string PurgerEventListener::GetFlushReason(
@@ -206,12 +202,13 @@ std::string PurgerEventListener::GetFlushReason(
     }
 }
 
-void PurgerEventListener::UpdateSlidingWindow(rocksdb::DB *db, int thread_id, uint64_t job_id)
+void PurgerEventListener::UpdateSlidingWindow(rocksdb::DB *db,
+                                              int thread_id,
+                                              uint64_t job_id)
 {
     if (!db)
     {
-        LOG(ERROR) << "[PurgerEventListener] DB pointer is null for epoch "
-                   << epoch_;
+        LOG(ERROR) << "[PurgerEventListener] DB pointer is null";
         return;
     }
 
@@ -222,10 +219,6 @@ void PurgerEventListener::UpdateSlidingWindow(rocksdb::DB *db, int thread_id, ui
     {
         sliding_window_->AddFileNumber(max_file_number, thread_id, job_id);
     }
-
-    DLOG(INFO) << "[PurgerEventListener] Added file number to sliding window: "
-               << max_file_number << ", thread_id: " << thread_id
-               << ", job_id: " << job_id << ", epoch: " << epoch_;
 }
 
 }  // namespace EloqDS

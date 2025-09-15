@@ -45,7 +45,6 @@ public:
     S3FileNumberUpdater(
         const std::string &bucket_name,
         const std::string &s3_object_path,
-        const std::string &epoch,
         std::shared_ptr<rocksdb::CloudStorageProvider> storage_provider);
 
     ~S3FileNumberUpdater() = default;
@@ -54,26 +53,26 @@ public:
      * @brief Update the smallest file number in S3
      * @param file_number The smallest file number to write
      */
-    void UpdateSmallestFileNumber(uint64_t file_number);
+    void UpdateSmallestFileNumber(uint64_t file_number,
+                                  const std::string &epoch);
 
     /**
      * @brief Read the smallest file number from S3
      * @return The smallest file number, or UINT64_MAX if not found
      */
-    uint64_t ReadSmallestFileNumber();
+    uint64_t ReadSmallestFileNumber(const std::string &epoch);
 
     /**
      * @brief Write no activity marker (UINT64_MAX) to S3
      */
-    void WriteNoActivityMarker();
+    void WriteNoActivityMarker(const std::string &epoch);
 
 private:
     std::string bucket_name_;
     std::string s3_object_path_;
-    std::string epoch_;
     std::shared_ptr<rocksdb::CloudStorageProvider> storage_provider_;
 
-    std::string GetS3ObjectKey() const;
+    std::string GetS3ObjectKey(const std::string &epoch) const;
 };
 
 /**
@@ -104,6 +103,10 @@ public:
      * @brief Destructor - stops the timer thread
      */
     ~SlidingWindow();
+
+    void SetEpoch(const std::string &epoch);
+
+    std::string GetEpoch();
 
     /**
      * @brief Add a file number to the sliding window
@@ -138,8 +141,7 @@ private:
         std::chrono::steady_clock::time_point timestamp;
 
         WindowEntry(uint64_t num)
-            : file_number(num),
-              timestamp(std::chrono::steady_clock::now())
+            : file_number(num), timestamp(std::chrono::steady_clock::now())
         {
         }
     };

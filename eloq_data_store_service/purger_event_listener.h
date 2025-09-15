@@ -68,6 +68,12 @@ public:
     ~PurgerEventListener();
 
     /**
+     * @brief Update the epoch string
+     * @param epoch The new epoch string
+     */
+    void SetEpoch(const std::string& epoch);
+
+    /**
      * @brief Called when a flush operation begins
      * @param db Pointer to the database instance
      * @param flush_job_info Information about the flush operation
@@ -112,7 +118,6 @@ public:
     std::string GetFlushReason(rocksdb::FlushReason flush_reason);
 
 private:
-    std::string epoch_;
     std::string bucket_name_;
     std::string s3_object_path_;
 
