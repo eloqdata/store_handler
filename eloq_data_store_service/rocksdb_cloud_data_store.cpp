@@ -628,6 +628,10 @@ bool RocksDBCloudDataStore::OpenCloudDB(
         return false;
     }
 
+    // Stop background work - memtable flush and compaction
+    // before blocking purger
+    db_->PauseBackgroundWork();
+
     // set epoch for purger event listener
     std::string current_epoch;
     status = db_->GetCurrentEpoch(&current_epoch);
@@ -639,6 +643,10 @@ bool RocksDBCloudDataStore::OpenCloudDB(
     }
     assert(!current_epoch.empty());
     db_event_listener->SetEpoch(current_epoch);
+    db_event_listener->BlockPurger();
+
+    // Resume background work
+    db_->ContinueBackgroundWork();
 
     if (cloud_config_.warm_up_thread_num_ != 0)
     {

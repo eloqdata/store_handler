@@ -34,11 +34,11 @@ PurgerEventListener::PurgerEventListener(
     const std::string &bucket_name,
     const std::string &s3_object_path,
     std::shared_ptr<rocksdb::CloudStorageProvider> storage_provider,
-    std::chrono::milliseconds window_duration,
+    std::chrono::milliseconds entry_duration,
     std::chrono::milliseconds s3_update_interval)
     : bucket_name_(bucket_name), s3_object_path_(s3_object_path)
 {
-    sliding_window_ = std::make_unique<SlidingWindow>(window_duration,
+    sliding_window_ = std::make_unique<SlidingWindow>(entry_duration,
                                                       s3_update_interval,
                                                       epoch,
                                                       bucket_name_,
@@ -48,7 +48,7 @@ PurgerEventListener::PurgerEventListener(
     LOG(INFO) << "PurgerEventListener created for epoch " << epoch
               << ", bucket: " << bucket_name_
               << ", object_path: " << s3_object_path_
-              << ", window_duration: " << window_duration.count() << "ms"
+              << ", window_duration: " << entry_duration.count() << "ms"
               << ", s3_update_interval: " << s3_update_interval.count() << "ms";
 }
 
@@ -67,6 +67,14 @@ void PurgerEventListener::SetEpoch(const std::string &epoch)
                           : sliding_window_->GetEpoch())
                   << " to " << epoch;
         sliding_window_->SetEpoch(epoch);
+    }
+}
+
+void PurgerEventListener::BlockPurger()
+{
+    if (sliding_window_)
+    {
+        sliding_window_->BlockPurger();
     }
 }
 
