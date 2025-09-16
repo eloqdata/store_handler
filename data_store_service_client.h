@@ -207,13 +207,10 @@ public:
     txservice::store::DataStoreHandler::DataStoreOpStatus FetchBucketData(
         txservice::FetchBucketDataCc *fetch_bucket_data_cc) override;
 
-<<<<<<< HEAD
     txservice::store::DataStoreHandler::DataStoreOpStatus FetchBucketData(
         std::vector<txservice::FetchBucketDataCc *> fetch_bucket_data_ccs)
         override;
 
-=======
->>>>>>> Change data format (#51)
     DataStoreOpStatus FetchRecord(
         txservice::FetchRecordCc *fetch_cc,
         txservice::FetchSnapshotCc *fetch_snapshot_cc = nullptr) override;
