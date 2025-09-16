@@ -893,7 +893,8 @@ void FetchRangeSlicesCallback(void *data,
 
                 client.Read(kv_range_slices_table_name,
                             fetch_req->kv_partition_id_,
-                            "".fetch_req->kv_start_key_,
+                            "",
+                            fetch_req->kv_start_key_,
                             fetch_req,
                             &FetchRangeSlicesCallback);
             }
@@ -1206,9 +1207,10 @@ void LoadRangeSliceCallback(void *data,
                         fill_store_slice_req->kv_start_key_,
                         fill_store_slice_req->kv_end_key_,
                         fill_store_slice_req->kv_session_id_,
-                        true false,  // include start_key
-                        false,       // include end_key
-                        true,        // scan forward
+                        true,
+                        false,  // include start_key
+                        false,  // include end_key
+                        true,   // scan forward
                         1000,
                         nullptr,
                         fill_store_slice_req,
