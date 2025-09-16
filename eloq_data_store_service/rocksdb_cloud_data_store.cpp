@@ -578,7 +578,7 @@ bool RocksDBCloudDataStore::OpenCloudDB(
     std::string bucket_name =
         cloud_config_.bucket_prefix_ + cloud_config_.bucket_name_;
     auto db_event_listener =
-        std::make_shared<PurgerEventListener>("",
+        std::make_shared<PurgerEventListener>("", /*We still don't know the epoch now*/
                                               bucket_name,
                                               cloud_config_.object_path_,
                                               cfs_impl->GetStorageProvider());
