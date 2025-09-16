@@ -22,13 +22,13 @@
 
 #pragma once
 
+#include <glog/logging.h>
+#include <rocksdb/cloud/cloud_storage_provider.h>
+#include <rocksdb/listener.h>
+
 #include <memory>
 #include <mutex>
 #include <string>
-
-#include <rocksdb/listener.h>
-#include <rocksdb/cloud/cloud_storage_provider.h>
-#include <glog/logging.h>
 
 #include "purger_sliding_window.h"
 
@@ -36,7 +36,8 @@ namespace EloqDS
 {
 
 /**
- * @brief Enhanced EventListener for tracking file numbers to improve purger safety
+ * @brief Enhanced EventListener for tracking file numbers to improve purger
+ * safety
  *
  * This listener subscribes to FlushBegin and CompactionBegin events to capture
  * the maximum file number at the time of these operations. The file numbers are
@@ -52,15 +53,21 @@ public:
      * @param bucket_name S3 bucket name
      * @param s3_object_path S3 object path
      * @param storage_provider Cloud storage provider for S3 operations
-     * @param window_duration Duration to keep entries in sliding window (default: 5 minutes)
-     * @param s3_update_interval Interval for updating S3 file (default: 1 minute)
+     * @param entry_duration Duration to keep entries in sliding window even it
+     * is deleted (default: 15 seconds, should be less than purger interval,
+     * indicating the minimum update frequency, it prevents too frequent
+     * updates)
+     * @param s3_update_interval Interval for updating S3 file (default: 30
+     * seconds, indicating the maximum update frequency)
      */
-    PurgerEventListener(const std::string& epoch,
-                       const std::string& bucket_name,
-                       const std::string& s3_object_path,
-                       std::shared_ptr<rocksdb::CloudStorageProvider> storage_provider,
-                       std::chrono::milliseconds window_duration = std::chrono::minutes(5),
-                       std::chrono::milliseconds s3_update_interval = std::chrono::minutes(1));
+    PurgerEventListener(
+        const std::string &epoch,
+        const std::string &bucket_name,
+        const std::string &s3_object_path,
+        std::shared_ptr<rocksdb::CloudStorageProvider> storage_provider,
+        std::chrono::milliseconds entry_duration = std::chrono::seconds(15),
+        std::chrono::milliseconds s3_update_interval =
+            std::chrono::seconds(30));
 
     /**
      * @brief Destructor - stops the sliding window
@@ -71,39 +78,41 @@ public:
      * @brief Update the epoch string
      * @param epoch The new epoch string
      */
-    void SetEpoch(const std::string& epoch);
+    void SetEpoch(const std::string &epoch);
+
+    void BlockPurger();
 
     /**
      * @brief Called when a flush operation begins
      * @param db Pointer to the database instance
      * @param flush_job_info Information about the flush operation
      */
-    void OnFlushBegin(rocksdb::DB* db,
-                      const rocksdb::FlushJobInfo& flush_job_info) override;
+    void OnFlushBegin(rocksdb::DB *db,
+                      const rocksdb::FlushJobInfo &flush_job_info) override;
 
     /**
      * @brief Called when a flush operation completes
      * @param db Pointer to the database instance
      * @param flush_job_info Information about the flush operation
      */
-    void OnFlushCompleted(rocksdb::DB* db,
-                          const rocksdb::FlushJobInfo& flush_job_info) override;
+    void OnFlushCompleted(rocksdb::DB *db,
+                          const rocksdb::FlushJobInfo &flush_job_info) override;
 
     /**
      * @brief Called when a compaction operation begins
      * @param db Pointer to the database instance
      * @param ci Information about the compaction operation
      */
-    void OnCompactionBegin(rocksdb::DB* db,
-                           const rocksdb::CompactionJobInfo& ci) override;
+    void OnCompactionBegin(rocksdb::DB *db,
+                           const rocksdb::CompactionJobInfo &ci) override;
 
     /**
      * @brief Called when a compaction operation completes
      * @param db Pointer to the database instance
      * @param ci Information about the compaction operation
      */
-    void OnCompactionCompleted(rocksdb::DB* db,
-                               const rocksdb::CompactionJobInfo& ci) override;
+    void OnCompactionCompleted(rocksdb::DB *db,
+                               const rocksdb::CompactionJobInfo &ci) override;
 
     /**
      * @brief Stop the event listener and cleanup resources
@@ -129,8 +138,9 @@ private:
      * @param thread_id The thread ID of the operation (default: 0)
      * @param job_id The job ID of the operation (default: 0)
      */
-    void UpdateSlidingWindow(rocksdb::DB* db, int thread_id = 0, uint64_t job_id = 0);
+    void UpdateSlidingWindow(rocksdb::DB *db,
+                             int thread_id = 0,
+                             uint64_t job_id = 0);
 };
 
-} // namespace EloqDS
-
+}  // namespace EloqDS

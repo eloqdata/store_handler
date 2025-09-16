@@ -57,15 +57,9 @@ public:
                                   const std::string &epoch);
 
     /**
-     * @brief Read the smallest file number from S3
-     * @return The smallest file number, or UINT64_MAX if not found
+     * @brief Block purger temporarily
      */
-    uint64_t ReadSmallestFileNumber(const std::string &epoch);
-
-    /**
-     * @brief Write no activity marker (UINT64_MAX) to S3
-     */
-    void WriteNoActivityMarker(const std::string &epoch);
+    void BlockPurger(const std::string &epoch);
 
 private:
     std::string bucket_name_;
@@ -92,7 +86,7 @@ public:
      * @param storage_provider Cloud storage provider for S3 operations
      */
     SlidingWindow(
-        std::chrono::milliseconds window_duration,
+        std::chrono::milliseconds entry_duration,
         std::chrono::milliseconds s3_update_interval,
         const std::string &epoch,
         const std::string &bucket_name,
@@ -130,6 +124,11 @@ public:
     uint64_t GetSmallestFileNumber();
 
     /**
+     * @brief Block purger temporarily
+     */
+    void BlockPurger();
+
+    /**
      * @brief Stop the sliding window and cleanup
      */
     void Stop();
@@ -137,18 +136,21 @@ public:
 private:
     struct WindowEntry
     {
-        uint64_t file_number;
-        std::chrono::steady_clock::time_point timestamp;
+        uint64_t file_number_;
+        std::chrono::steady_clock::time_point timestamp_;
+        bool deleted_;
 
         WindowEntry(uint64_t num)
-            : file_number(num), timestamp(std::chrono::steady_clock::now())
+            : file_number_(num),
+              timestamp_(std::chrono::steady_clock::now()),
+              deleted_(false)
         {
         }
     };
 
     // Map of (thread_id + job_id) -> WindowEntry
     std::unordered_map<std::string, WindowEntry> window_entries_;
-    std::chrono::milliseconds window_duration_;
+    std::chrono::milliseconds entry_duration_;
     std::chrono::milliseconds s3_update_interval_;
     std::string epoch_;
 
@@ -168,7 +170,7 @@ private:
     /**
      * @brief Flush current minimum file number to S3
      */
-    void FlushToS3();
+    void FlushToS3(uint64_t smallest);
 
     /**
      * @brief Generate a key string for the window_entries_ map
