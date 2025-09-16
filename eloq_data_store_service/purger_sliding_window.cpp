@@ -66,7 +66,7 @@ void S3FileNumberUpdater::UpdateSmallestFileNumber(uint64_t file_number,
     std::string time_id = std::to_string(
         std::chrono::steady_clock::now().time_since_epoch().count());
     std::string temp_file_path =
-        "/tmp/smallest_file_number_" + epoch + "_" + time_id + ".txt";
+        "/tmp/smallest_file_number_" + epoch + "_" + time_id + "_upload.txt";
     std::ofstream temp_file(temp_file_path);
     if (!temp_file.is_open())
     {
