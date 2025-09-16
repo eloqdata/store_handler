@@ -43,6 +43,7 @@
 #include <csignal>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <ios>
 #include <iostream>
 #include <map>
@@ -1220,6 +1221,117 @@ rocksdb::ColumnFamilyHandle *RocksDBHandler::GetColumnFamilyHandler(
         return cfh_ptr.get();
     }
     return nullptr;
+}
+
+txservice::store::DataStoreHandler::DataStoreOpStatus
+RocksDBHandler::FetchBucketData(
+    std::vector<txservice::FetchBucketDataCc *> fetch_bucket_data_ccs)
+{
+    std::vector<std::function<void()>> work;
+    for (auto *fetch_bucket_data_cc : fetch_bucket_data_ccs)
+    {
+        work.push_back(
+            [this, fetch_bucket_data_cc]()
+            {
+                std::shared_lock<std::shared_mutex> db_lk(db_mux_);
+                auto db = GetDBPtr();
+                if (!db)
+                {
+                    fetch_bucket_data_cc->SetFinish(static_cast<int32_t>(
+                        txservice::CcErrorCode::DATA_STORE_ERR));
+                    return;
+                }
+
+                rocksdb::ColumnFamilyHandle *cfh = GetColumnFamilyHandler(
+                    fetch_bucket_data_cc->kv_table_name_);
+
+                if (cfh == nullptr)
+                {
+                    LOG(ERROR) << "Failed to get column family, cf name: "
+                               << fetch_bucket_data_cc->kv_table_name_;
+                    fetch_bucket_data_cc->SetFinish(static_cast<int32_t>(
+                        txservice::CcErrorCode::DATA_STORE_ERR));
+                    return;
+                }
+
+                assert(cfh != nullptr);
+
+                std::string kv_bucket_start_key =
+                    EncodeToKvKey(fetch_bucket_data_cc->bucket_id_,
+                                  fetch_bucket_data_cc->start_key_);
+                std::string kv_bucket_end_key =
+                    EncodeToKvKey(fetch_bucket_data_cc->bucket_id_ + 1);
+
+                rocksdb::ReadOptions read_options;
+                // NOTICE: do not enable async_io if compiling rocksdbcloud
+                // without iouring.
+                read_options.async_io = false;
+                rocksdb::Iterator *iter = db->NewIterator(read_options, cfh);
+                rocksdb::Slice key(kv_bucket_start_key);
+                iter->Seek(key);
+                if (!fetch_bucket_data_cc->start_key_inclusive_ &&
+                    iter->Valid())
+                {
+                    rocksdb::Slice curr_key = iter->key();
+                    if (curr_key == key)
+                    {
+                        iter->Next();
+                    }
+                }
+
+                size_t record_count = 0;
+                while (iter->Valid() &&
+                       record_count < fetch_bucket_data_cc->batch_size_)
+                {
+                    if (iter->key().ToStringView() >= kv_bucket_end_key)
+                    {
+                        break;
+                    }
+
+                    // TODO(lokax): support search condition pushdown
+
+                    bool is_deleted = false;
+                    int64_t version_ts = 0;
+                    std::string rec_str;
+                    std::string key_str = DecodeTxKeyFromKvKey(
+                        iter->key().data(), iter->key().size());
+                    DeserializeRecord(iter->value().data(),
+                                      iter->value().size(),
+                                      rec_str,
+                                      is_deleted,
+                                      version_ts);
+
+                    fetch_bucket_data_cc->AddDataItem(std::move(key_str),
+                                                      std::move(rec_str),
+                                                      version_ts,
+                                                      is_deleted);
+                    iter->Next();
+                    record_count++;
+                }
+
+                delete iter;
+
+                if (record_count < fetch_bucket_data_cc->batch_size_)
+                {
+                    // no more data
+                    fetch_bucket_data_cc->is_drained_ = true;
+                }
+                else
+                {
+                    fetch_bucket_data_cc->is_drained_ = false;
+                }
+
+                fetch_bucket_data_cc->SetFinish(
+                    static_cast<int32_t>(txservice::CcErrorCode::NO_ERROR));
+            });
+    }
+
+    if (work.size() > 0)
+    {
+        query_worker_pool_->BulkSubmitWorkl(std::move(work));
+    }
+
+    return DataStoreOpStatus::Success;
 }
 
 txservice::store::DataStoreHandler::DataStoreOpStatus
