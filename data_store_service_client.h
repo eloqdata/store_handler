@@ -33,6 +33,7 @@
 #include "eloq_data_store_service/ds_request.pb.h"
 #include "eloq_data_store_service/thread_worker_pool.h"
 #include "tx_service/include/cc/cc_shard.h"
+#include "tx_service/include/eloq_basic_catalog_factory.h"
 #include "tx_service/include/sequences/sequences.h"
 #include "tx_service/include/sharder.h"
 #include "tx_service/include/store/data_store_handler.h"
@@ -62,18 +63,18 @@ typedef void (*DataStoreCallback)(void *data,
 class DataStoreServiceClient : public txservice::store::DataStoreHandler
 {
 public:
-    // DataStoreServiceClient();
     ~DataStoreServiceClient();
 
     DataStoreServiceClient(
-        txservice::CatalogFactory *catalog_factory[4],
+        txservice::CatalogFactory *catalog_factory[3],
         const DataStoreServiceClusterManager &cluster_manager,
         DataStoreService *data_store_service = nullptr)
         : ds_serv_shutdown_indicator_(false),
           catalog_factory_array_{catalog_factory[0],
                                  catalog_factory[1],
                                  catalog_factory[2],
-                                 catalog_factory[3]},
+                                 &range_catalog_factory_,
+                                 &hash_catalog_factory_},
           cluster_manager_(cluster_manager),
           data_store_service_(data_store_service),
           flying_remote_fetch_count_(0)
@@ -636,9 +637,7 @@ private:
     const txservice::CatalogFactory *GetCatalogFactory(
         txservice::TableEngine table_engine)
     {
-        assert(catalog_factory_array_.at(static_cast<int>(table_engine)) !=
-               nullptr);
-        return catalog_factory_array_.at(static_cast<int>(table_engine));
+        return catalog_factory_array_.at(static_cast<int>(table_engine) - 1);
     }
 
     /**
@@ -652,7 +651,11 @@ private:
     bthread::ConditionVariable ds_service_cv_;
     std::atomic<bool> ds_serv_shutdown_indicator_;
 
-    std::array<const txservice::CatalogFactory *, 4> catalog_factory_array_;
+    txservice::EloqHashCatalogFactory hash_catalog_factory_{};
+    txservice::EloqRangeCatalogFactory range_catalog_factory_{};
+    // TODO(lzx): define a global catalog factory array that used by
+    // EngineServer TxService and DataStoreHandler
+    std::array<const txservice::CatalogFactory *, 5> catalog_factory_array_;
 
     // remote data store service configuration
     DataStoreServiceClusterManager cluster_manager_;
