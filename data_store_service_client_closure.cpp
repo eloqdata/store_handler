@@ -639,6 +639,10 @@ void FetchTableRangesCallback(void *data,
         mi_heap_t *prev_heap =
             mi_heap_set_default(shards->GetTableRangesHeap());
 
+        auto catalog_factory =
+            client.GetCatalogFactory(fetch_range_cc->table_name_.Engine());
+        assert(catalog_factory != nullptr);
+
         uint32_t items_size = scan_next_closure->ItemsSize();
         std::string key;
         std::string value;
@@ -670,18 +674,16 @@ void FetchTableRangesCallback(void *data,
             // (see EloqKey::PackedNegativeInfinity)
             if (start_key_sv.size() > 1 || start_key_sv[0] != 0x00)
             {
-                txservice::TxKey start_key =
-                    txservice::TxKeyFactory::CreateTxKey(start_key_sv.data(),
-                                                         start_key_sv.size());
+                txservice::TxKey start_key = catalog_factory->CreateTxKey(
+                    start_key_sv.data(), start_key_sv.size());
                 range_vec.emplace_back(
                     std::move(start_key), partition_id, range_version);
             }
             else
             {
-                range_vec.emplace_back(
-                    txservice::TxKeyFactory::NegInfTxKey()->GetShallowCopy(),
-                    partition_id,
-                    range_version);
+                range_vec.emplace_back(catalog_factory->NegativeInfKey(),
+                                       partition_id,
+                                       range_version);
             }
         }
 
@@ -706,7 +708,7 @@ void FetchTableRangesCallback(void *data,
             if (range_vec.empty() && fetch_range_cc->EmptyRanges())
             {
                 range_vec.emplace_back(
-                    txservice::TxKeyFactory::NegInfTxKey()->GetShallowCopy(),
+                    catalog_factory->NegativeInfKey(),
                     txservice::Sequences::InitialRangePartitionIdOf(
                         fetch_range_cc->table_name_),
                     1);
@@ -865,13 +867,17 @@ void FetchRangeSlicesCallback(void *data,
             mi_heap_t *prev_heap =
                 mi_heap_set_default(shards->GetTableRangesHeap());
 
+            auto catalog_factory =
+                client.GetCatalogFactory(fetch_req->table_name_.Engine());
+            assert(catalog_factory != nullptr);
+
             while (offset < read_val.size())
             {
                 uint32_t key_len = *(reinterpret_cast<const uint32_t *>(buf));
                 buf += sizeof(uint32_t);
 
                 txservice::TxKey tx_key =
-                    txservice::TxKeyFactory::CreateTxKey(buf, key_len);
+                    catalog_factory->CreateTxKey(buf, key_len);
                 buf += key_len;
 
                 uint32_t slice_size =
@@ -1006,15 +1012,18 @@ void FetchTableStatsCallback(void *data,
             }
             std::vector<txservice::TxKey> samplekeys;
 
+            auto catalog_factory =
+                client.GetCatalogFactory(fetch_cc->CatalogName().Engine());
+            assert(catalog_factory != nullptr);
+
             while (offset < value_size)
             {
                 uint32_t samplekey_len =
                     *(reinterpret_cast<const uint32_t *>(value_buf + offset));
                 offset += sizeof(uint32_t);
 
-                txservice::TxKey samplekey =
-                    txservice::TxKeyFactory::CreateTxKey(value_buf + offset,
-                                                         samplekey_len);
+                txservice::TxKey samplekey = catalog_factory->CreateTxKey(
+                    value_buf + offset, samplekey_len);
                 offset += samplekey_len;
                 samplekeys.emplace_back(std::move(samplekey));
             }
@@ -1070,15 +1079,18 @@ void LoadRangeSliceCallback(void *data,
     const txservice::TableName &table_name = fill_store_slice_req->TblName();
     uint32_t items_size = scan_next_closure->ItemsSize();
 
+    auto catalog_factory = client.GetCatalogFactory(table_name.Engine());
+    assert(catalog_factory != nullptr);
+
     std::string key_str, value_str;
     uint64_t ts, ttl;
     for (uint32_t i = 0; i < items_size; i++)
     {
         scan_next_closure->GetItem(i, key_str, value_str, ts, ttl);
-        txservice::TxKey key = txservice::TxKeyFactory::CreateTxKey(
-            key_str.data(), key_str.size());
+        txservice::TxKey key =
+            catalog_factory->CreateTxKey(key_str.data(), key_str.size());
         std::unique_ptr<txservice::TxRecord> record =
-            txservice::TxRecordFactory::CreateTxRecord();
+            catalog_factory->CreateTxRecord();
         bool is_deleted = false;
         if (table_name.Engine() == txservice::TableEngine::EloqKv)
         {

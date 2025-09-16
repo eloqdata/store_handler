@@ -206,6 +206,7 @@ template <bool ScanForward>
 DataStoreServiceHashPartitionScanner<ScanForward>::
     DataStoreServiceHashPartitionScanner(
         DataStoreServiceClient *client,
+        const txservice::CatalogFactory *catalog_factory,
         const txservice::KeySchema *key_sch,
         const txservice::RecordSchema *rec_sch,
         const txservice::TableName &table_name,
@@ -221,6 +222,7 @@ DataStoreServiceHashPartitionScanner<ScanForward>::
                               "",         // end_key
                               ScanForward,
                               batch_size),
+      catalog_factory_(catalog_factory),
       key_sch_(key_sch),
       rec_sch_(rec_sch),
       kv_info_(kv_info),
@@ -230,11 +232,8 @@ DataStoreServiceHashPartitionScanner<ScanForward>::
       initialized_(false)
 {
     assert(client_ != nullptr);
-    const txservice::TxKey *neg_inf_key =
-        txservice::TxKeyFactory::NegInfTxKey();
-    const txservice::TxKey *pos_inf_key =
-        txservice::TxKeyFactory::PosInfTxKey();
-    if (start_key == *neg_inf_key || start_key == *pos_inf_key)
+    if (start_key.Type() == txservice::KeyType::NegativeInf ||
+        start_key.Type() == txservice::KeyType::PositiveInf)
     {
         start_key_ = "";
     }
@@ -446,7 +445,10 @@ void DataStoreServiceHashPartitionScanner<ScanForward>::AddScanTuple(
 {
     assert(part_scanner);
     auto &part_scan_tuple = part_scanner->NextScanTuple();
-    ScanHeapTuple<txservice::TxKey, txservice::TxRecord> scan_tuple(part_id);
+    ScanHeapTuple<txservice::TxKey, txservice::TxRecord> scan_tuple(
+        part_id,
+        std::make_unique<txservice::TxKey>(catalog_factory_->CreateTxKey()),
+        catalog_factory_->CreateTxRecord());
 
     scan_tuple.key_->SetPackedKey(part_scan_tuple.key_.data(),
                                   part_scan_tuple.key_.size());
