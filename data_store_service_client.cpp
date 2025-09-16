@@ -3077,6 +3077,18 @@ DataStoreServiceClient::FetchRecord(
 
 txservice::store::DataStoreHandler::DataStoreOpStatus
 DataStoreServiceClient::FetchBucketData(
+    std::vector<txservice::FetchBucketDataCc *> fetch_bucket_data_ccs)
+{
+    for (txservice::FetchBucketDataCc *fetch_cc : fetch_bucket_data_ccs)
+    {
+        FetchBucketData(fetch_cc);
+    }
+
+    return txservice::store::DataStoreHandler::DataStoreOpStatus::Success;
+}
+
+txservice::store::DataStoreHandler::DataStoreOpStatus
+DataStoreServiceClient::FetchBucketData(
     txservice::FetchBucketDataCc *fetch_bucket_data_cc)
 {
     assert(fetch_bucket_data_cc != nullptr);

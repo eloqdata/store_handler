@@ -273,6 +273,15 @@ void FetchBucketDataCallback(void *data,
         }
     }
 
+    if (items_size < fetch_bucket_data_cc->batch_size_)
+    {
+        fetch_bucket_data_cc->is_drained_ = true;
+    }
+    else
+    {
+        fetch_bucket_data_cc->is_drained_ = false;
+    }
+
     // callback_data->session_id_ = scan_next_closure->GetSessionId();
     fetch_bucket_data_cc->SetFinish(
         static_cast<int32_t>(txservice::CcErrorCode::NO_ERROR));

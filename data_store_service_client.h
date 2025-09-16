@@ -207,6 +207,10 @@ public:
     txservice::store::DataStoreHandler::DataStoreOpStatus FetchBucketData(
         txservice::FetchBucketDataCc *fetch_bucket_data_cc) override;
 
+    txservice::store::DataStoreHandler::DataStoreOpStatus FetchBucketData(
+        std::vector<txservice::FetchBucketDataCc *> fetch_bucket_data_ccs)
+        override;
+
     DataStoreOpStatus FetchRecord(
         txservice::FetchRecordCc *fetch_cc,
         txservice::FetchSnapshotCc *fetch_snapshot_cc = nullptr) override;
