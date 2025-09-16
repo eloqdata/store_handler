@@ -43,6 +43,7 @@
 #include "error_messages.h"
 #include "kv_store.h"
 #include "rocksdb/compaction_filter.h"
+#include "sharder.h"
 #include "tx_key.h"
 #if (defined(ROCKSDB_CLOUD_FS_TYPE) &&                                         \
      (ROCKSDB_CLOUD_FS_TYPE == ROCKSDB_CLOUD_FS_TYPE_S3 ||                     \
@@ -379,6 +380,10 @@ public:
         txservice::FetchSnapshotCc *fetch_snapshot_cc = nullptr) override;
 
     rocksdb::ColumnFamilyHandle *GetColumnFamilyHandler(const std::string &cf);
+
+    txservice::store::DataStoreHandler::DataStoreOpStatus FetchBucketData(
+        std::vector<txservice::FetchBucketDataCc *> fetch_bucket_data_ccs)
+        override;
 
     txservice::store::DataStoreHandler::DataStoreOpStatus FetchBucketData(
         txservice::FetchBucketDataCc *fetch_bucket_data_cc) override;
