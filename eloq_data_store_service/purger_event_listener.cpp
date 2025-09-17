@@ -157,8 +157,7 @@ void PurgerEventListener::OnCompactionCompleted(
                << ", input_files_size: " << ci.input_files.size()
                << ", output_files_size: " << ci.output_files.size()
                << ", compaction_reason: "
-               << static_cast<int>(ci.compaction_reason)
-               << ", epoch: " << sliding_window_->GetEpoch();
+               << static_cast<int>(ci.compaction_reason);
 
     // Remove the entry from sliding window
     if (sliding_window_)
