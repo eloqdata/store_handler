@@ -28,7 +28,8 @@
 
 #include <chrono>
 #include <condition_variable>
-#include <fstream>
+#include <cstdio>
+#include <cstdlib>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -37,6 +38,7 @@
 #include <thread>
 #include <unordered_map>
 #include <utility>
+#include <unistd.h>
 
 #include "purger_sliding_window.h"
 
@@ -209,7 +211,7 @@ void SlidingWindow::AddFileNumber(uint64_t file_number,
                << ", window size: " << window_entries_.size();
 }
 
-void SlidingWindow::RemoveFileNumber(int thread_id, uint64_t job_id)
+void SlidingWindow::RemoveFileNumber(uint64_t thread_id, uint64_t job_id)
 {
     std::lock_guard<std::mutex> lock(window_mutex_);
 

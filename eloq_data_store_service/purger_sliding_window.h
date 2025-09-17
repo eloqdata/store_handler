@@ -27,6 +27,7 @@
 
 #include <chrono>
 #include <condition_variable>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -120,7 +121,7 @@ public:
      * @param thread_id The thread ID of the operation
      * @param job_id The job ID of the operation
      */
-    void RemoveFileNumber(int thread_id, uint64_t job_id);
+    void RemoveFileNumber(uint64_t thread_id, uint64_t job_id);
 
     /**
      * @brief Get the smallest file number in the current window
