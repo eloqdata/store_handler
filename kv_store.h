@@ -62,14 +62,6 @@ struct ScanHeapTuple<txservice::TxKey, txservice::TxRecord>
 {
     ScanHeapTuple() = delete;
 
-    // explicit ScanHeapTuple(uint32_t shard_id)
-    //     : key_(std::make_unique<txservice::TxKey>(
-    //           txservice::TxKeyFactory::CreateDefaultTxKey())),
-    //       rec_(txservice::TxRecordFactory::CreateTxRecord()),
-    //       sid_(shard_id)
-    // {
-    // }
-
     explicit ScanHeapTuple(uint32_t shard_id,
                            std::unique_ptr<txservice::TxKey> key,
                            std::unique_ptr<txservice::TxRecord> rec)
