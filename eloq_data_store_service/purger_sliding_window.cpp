@@ -189,7 +189,7 @@ std::string SlidingWindow::GetEpoch()
 }
 
 void SlidingWindow::AddFileNumber(uint64_t file_number,
-                                  int thread_id,
+                                  uint64_t thread_id,
                                   uint64_t job_id)
 {
     std::lock_guard<std::mutex> lock(window_mutex_);
@@ -357,7 +357,8 @@ void SlidingWindow::FlushToS3(uint64_t smallest)
                << ", epoch: " << epoch_;
 }
 
-std::string SlidingWindow::GenerateKey(int thread_id, uint64_t job_id) const
+std::string SlidingWindow::GenerateKey(uint64_t thread_id,
+                                       uint64_t job_id) const
 {
     std::ostringstream oss;
     oss << thread_id << "-" << job_id;

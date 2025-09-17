@@ -113,7 +113,7 @@ public:
      * @param thread_id The thread ID of the operation
      * @param job_id The job ID of the operation
      */
-    void AddFileNumber(uint64_t file_number, int thread_id, uint64_t job_id);
+    void AddFileNumber(uint64_t file_number, uint64_t thread_id, uint64_t job_id);
 
     /**
      * @brief Remove a file number entry from the sliding window
@@ -186,7 +186,7 @@ private:
      * @param job_id The job ID of the operation
      * @return A string key combining thread_id and job_id
      */
-    std::string GenerateKey(int thread_id, uint64_t job_id) const;
+    std::string GenerateKey(uint64_t thread_id, uint64_t job_id) const;
 };
 
 }  // namespace EloqDS
