@@ -28,11 +28,17 @@
 #include <memory>
 #include <string>
 #include <utility>
+#include <queue>
 #include <vector>
 
 #include "data_store_service_client.h"
-#include "data_store_service_scanner.h"
 #include "eloq_data_store_service/object_pool.h"
+#include "eloq_data_store_service/data_store_service.h"
+
+// Forward declarations
+namespace EloqDS {
+class DataStoreServiceClient;
+}
 
 namespace EloqDS
 {
@@ -143,6 +149,10 @@ struct SyncPutAllData : public Poolable
         unfinished_request_cnt_ = 0;
         all_request_started_ = false;
         result_.Clear();
+        // Clear partition states if using new concurrent approach
+        partition_states_.clear();
+        completed_partitions_ = 0;
+        total_partitions_ = 0;
     }
 
     virtual void Clear() override
@@ -150,6 +160,9 @@ struct SyncPutAllData : public Poolable
         unfinished_request_cnt_ = 0;
         all_request_started_ = false;
         result_.Clear();
+        partition_states_.clear();
+        completed_partitions_ = 0;
+        total_partitions_ = 0;
     }
 
     void Finish(const remote::CommonResult &res)
@@ -169,12 +182,138 @@ struct SyncPutAllData : public Poolable
         }
     }
 
+    // New method for per-partition coordination
+    void OnPartitionCompleted()
+    {
+        std::unique_lock<bthread::Mutex> lk(mux_);
+        completed_partitions_++;
+        if (completed_partitions_ >= total_partitions_) {
+            cv_.notify_one();
+        }
+    }
     // NOTICE: "unfinished_request_cnt_" must use signed integer.
     int32_t unfinished_request_cnt_{0};
     bool all_request_started_{false};
     remote::CommonResult result_;
-    bthread::Mutex mux_;
+    mutable bthread::Mutex mux_;
     bthread::ConditionVariable cv_;
+    
+    // New fields for per-partition coordination
+    std::vector<std::unique_ptr<PartitionFlushState>> partition_states_;
+    int32_t completed_partitions_{0};
+    int32_t total_partitions_{0};
+};
+
+/**
+ * @brief Represents a single batch request for a partition
+ */
+struct PartitionBatchRequest {
+    std::vector<std::string_view> key_parts;
+    std::vector<std::string_view> record_parts;
+    std::vector<uint64_t> records_ts;
+    std::vector<uint64_t> records_ttl;
+    std::vector<WriteOpType> op_types;
+    uint16_t parts_cnt_per_key;
+    uint16_t parts_cnt_per_record;
+    
+    PartitionBatchRequest() = default;
+    
+    PartitionBatchRequest(std::vector<std::string_view>&& keys,
+                         std::vector<std::string_view>&& records,
+                         std::vector<uint64_t>&& ts,
+                         std::vector<uint64_t>&& ttl,
+                         std::vector<WriteOpType>&& ops,
+                         uint16_t key_parts_count,
+                         uint16_t record_parts_count)
+        : key_parts(std::move(keys))
+        , record_parts(std::move(records))
+        , records_ts(std::move(ts))
+        , records_ttl(std::move(ttl))
+        , op_types(std::move(ops))
+        , parts_cnt_per_key(key_parts_count)
+        , parts_cnt_per_record(record_parts_count) {}
+};
+
+/**
+ * @brief Per-partition state management for concurrent flushing
+ */
+struct PartitionFlushState {
+    int32_t partition_id;
+    std::queue<PartitionBatchRequest> pending_batches;
+    bool has_inflight_request = false;
+    bool completed = false;
+    bool failed = false;
+    remote::CommonResult result;
+    mutable bthread::Mutex mux;
+    
+    PartitionFlushState(int32_t pid) : partition_id(pid) {
+        result.Clear();
+    }
+    
+    void Reset() {
+        std::unique_lock<bthread::Mutex> lk(mux);
+        while (!pending_batches.empty()) {
+            pending_batches.pop();
+        }
+        has_inflight_request = false;
+        completed = false;
+        failed = false;
+        result.Clear();
+    }
+    
+    bool HasMoreBatches() const {
+        std::unique_lock<bthread::Mutex> lk(mux);
+        return !pending_batches.empty() || has_inflight_request;
+    }
+    
+    bool IsCompleted() const {
+        std::unique_lock<bthread::Mutex> lk(mux);
+        return completed;
+    }
+    
+    bool IsFailed() const {
+        std::unique_lock<bthread::Mutex> lk(mux);
+        return failed;
+    }
+    
+    void MarkCompleted() {
+        std::unique_lock<bthread::Mutex> lk(mux);
+        completed = true;
+    }
+    
+    void MarkFailed(const remote::CommonResult& error) {
+        std::unique_lock<bthread::Mutex> lk(mux);
+        failed = true;
+        result.set_error_code(error.error_code());
+        result.set_error_msg(error.error_msg());
+    }
+    
+    bool GetNextBatch(PartitionBatchRequest& batch) {
+        std::unique_lock<bthread::Mutex> lk(mux);
+        if (pending_batches.empty()) {
+            return false;
+        }
+        batch = std::move(pending_batches.front());
+        pending_batches.pop();
+        return true;
+    }
+    
+    void AddBatch(PartitionBatchRequest&& batch) {
+        std::unique_lock<bthread::Mutex> lk(mux);
+        pending_batches.push(std::move(batch));
+    }
+};
+
+/**
+ * @brief Wrapper for partition callback data that includes global coordinator
+ */
+struct PartitionCallbackData {
+    PartitionFlushState* partition_state;
+    SyncPutAllData* global_coordinator;
+    std::string table_name;
+    
+    PartitionCallbackData(PartitionFlushState* ps, SyncPutAllData* gc, const std::string& tn)
+        : partition_state(ps), global_coordinator(gc), table_name(tn) {}
 };
 /**
  * Generic synchronous callback adapter invoked by closures to signal
@@ -2290,6 +2429,17 @@ void SyncPutAllCallback(void *data,
                         ::google::protobuf::Closure *closure,
                         DataStoreServiceClient &client,
                         const remote::CommonResult &result);
+
+/**
+ * Callback for per-partition batch operations in concurrent PutAll.
+ * 
+ * Handles the completion of a single batch for a partition and chains
+ * to the next batch if available, or marks the partition as completed.
+ */
+void PartitionBatchCallback(void *data,
+                           ::google::protobuf::Closure *closure,
+                           DataStoreServiceClient &client,
+                           const remote::CommonResult &result);
 
 /**
  * Callback data for fetching database information.

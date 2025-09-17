@@ -405,6 +405,48 @@ void SyncPutAllCallback(void *data,
     callback_data->Finish(result);
 }
 
+void PartitionBatchCallback(void *data,
+                           ::google::protobuf::Closure *closure,
+                           DataStoreServiceClient &client,
+                           const remote::CommonResult &result)
+{
+    auto *callback_data = reinterpret_cast<PartitionCallbackData *>(data);
+    auto *partition_state = callback_data->partition_state;
+    auto *global_coordinator = callback_data->global_coordinator;
+    
+    // Check if the batch failed
+    if (result.error_code() != remote::DataStoreError::NO_ERROR) {
+        partition_state->MarkFailed(result);
+        // Notify the global coordinator that this partition failed
+        global_coordinator->OnPartitionCompleted();
+        return;
+    }
+    
+    // Try to get the next batch for this partition
+    PartitionBatchRequest next_batch;
+    if (partition_state->GetNextBatch(next_batch)) {
+        // Send the next batch
+        client.BatchWriteRecords(
+            callback_data->table_name,
+            partition_state->partition_id,
+            std::move(next_batch.key_parts),
+            std::move(next_batch.record_parts),
+            std::move(next_batch.records_ts),
+            std::move(next_batch.records_ttl),
+            std::move(next_batch.op_types),
+            true, // skip_wal
+            callback_data,
+            PartitionBatchCallback,
+            next_batch.parts_cnt_per_key,
+            next_batch.parts_cnt_per_record);
+    } else {
+        // No more batches, mark partition as completed
+        partition_state->MarkCompleted();
+        // Notify the global coordinator that this partition completed
+        global_coordinator->OnPartitionCompleted();
+    }
+}
+
 void FetchDatabaseCallback(void *data,
                            ::google::protobuf::Closure *closure,
                            DataStoreServiceClient &client,

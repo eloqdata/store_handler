@@ -20,6 +20,7 @@
  *
  */
 #include "data_store_service_client.h"
+#include "data_store_service_client_closure.h"
 
 #include <glog/logging.h>
 
@@ -33,7 +34,6 @@
 #include <utility>
 #include <vector>
 
-#include "data_store_service_client_closure.h"
 #include "data_store_service_scanner.h"
 #include "eloq_data_store_service/object_pool.h"  // ObjectPool
 #include "eloq_data_store_service/thread_worker_pool.h"
@@ -183,107 +183,19 @@ bool DataStoreServiceClient::PutAll(
                        std::vector<std::unique_ptr<txservice::FlushTaskEntry>>>
         &flush_task)
 {
-    std::vector<std::string_view> key_parts;
-    std::vector<std::string_view> record_parts;
-    std::vector<uint64_t> records_ts;
-    std::vector<uint64_t> records_ttl;
-    std::vector<WriteOpType> op_types;
-    std::vector<size_t> record_tmp_mem_area;
     uint64_t now = txservice::LocalCcShards::ClockTsInMillseconds();
 
-    auto PrepareObjectData =
-        [&](txservice::FlushRecord &ckpt_rec, size_t &write_batch_size)
-    {
-        txservice::TxKey tx_key = ckpt_rec.Key();
-        uint64_t ttl =
-            ckpt_rec.payload_status_ == txservice::RecordStatus::Normal
-                ? ckpt_rec.Payload()->GetTTL()
-                : 0;
-        if (ckpt_rec.payload_status_ == txservice::RecordStatus::Normal &&
-            (!ckpt_rec.Payload()->HasTTL() || ttl > now))
-        {
-            key_parts.emplace_back(
-                std::string_view(tx_key.Data(), tx_key.Size()));
-            write_batch_size += tx_key.Size();
-
-            const txservice::TxRecord *rec = ckpt_rec.Payload();
-            // Upserts a key to the k-v store
-            record_parts.emplace_back(std::string_view(rec->EncodedBlobData(),
-                                                       rec->EncodedBlobSize()));
-            write_batch_size += rec->EncodedBlobSize();
-
-            records_ts.push_back(ckpt_rec.commit_ts_);
-            write_batch_size += sizeof(uint64_t);  // commit_ts
-                                                   //
-            records_ttl.push_back(ttl);
-            write_batch_size += sizeof(uint64_t);  // ttl
-
-            op_types.push_back(WriteOpType::PUT);
-            write_batch_size += sizeof(WriteOpType);
-        }
-        else
-        {
-            key_parts.emplace_back(
-                std::string_view(tx_key.Data(), tx_key.Size()));
-            write_batch_size += tx_key.Size();
-
-            record_parts.emplace_back(std::string_view());
-
-            records_ts.push_back(ckpt_rec.commit_ts_);
-            write_batch_size += sizeof(uint64_t);  // commit_ts
-
-            records_ttl.push_back(0);              // no ttl
-            write_batch_size += sizeof(uint64_t);  // ttl
-
-            op_types.push_back(WriteOpType::DELETE);
-            write_batch_size += sizeof(WriteOpType);
-        }
-    };
-
-    auto PrepareRecordData =
-        [&](txservice::FlushRecord &ckpt_rec, size_t &write_batch_size)
-    {
-        uint64_t retired_ttl_for_deleted = now + 24 * 60 * 60 * 1000;
-        txservice::TxKey tx_key = ckpt_rec.Key();
-        bool is_deleted =
-            !(ckpt_rec.payload_status_ == txservice::RecordStatus::Normal);
-        key_parts.emplace_back(std::string_view(tx_key.Data(), tx_key.Size()));
-        write_batch_size += tx_key.Size();
-
-        const txservice::TxRecord *rec = ckpt_rec.Payload();
-        // encode is_delete, encoded_blob_data and unpack_info
-        if (is_deleted)
-        {
-            records_ttl.push_back(retired_ttl_for_deleted);
-        }
-        else
-        {
-            records_ttl.push_back(0);  // no ttl
-        }
-        write_batch_size += sizeof(uint64_t);  // ttl
-
-        op_types.push_back(WriteOpType::PUT);
-        write_batch_size += sizeof(WriteOpType);
-
-        SerializeTxRecord(is_deleted,
-                          rec,
-                          record_tmp_mem_area,
-                          record_parts,
-                          write_batch_size);
-
-        records_ts.push_back(ckpt_rec.commit_ts_);
-        write_batch_size += sizeof(uint64_t);
-    };
-    // map from (table_name, partition_id) to the index of the records in the
-    // batch
+    // Process each table
     for (auto &[kv_table_name, entries] : flush_task)
     {
         auto &table_name = entries.front()->data_sync_task_->table_name_;
+        
+        // Group records by partition
         std::unordered_map<uint32_t, std::vector<std::pair<size_t, size_t>>>
             hash_partitions_map;
         std::unordered_map<uint32_t, std::vector<size_t>> range_partitions_map;
         std::unordered_map<uint32_t, size_t> partition_record_cnt;
-        size_t write_batch_size = 0;
+        
         size_t flush_task_entry_idx = 0;
         for (auto &entry : entries)
         {
@@ -315,8 +227,7 @@ bool DataStoreServiceClient::PutAll(
             }
             else
             {
-                // All records in the batch are in the same partition for range
-                // table.
+                // All records in the batch are in the same partition for range table
                 uint32_t parition_id =
                     KvPartitionIdOf(batch[0].partition_id_, true);
                 auto [it, inserted] =
@@ -328,6 +239,7 @@ bool DataStoreServiceClient::PutAll(
             flush_task_entry_idx++;
         }
 
+        // Create global coordinator
         SyncPutAllData *sync_putall = sync_putall_data_pool_.NextObject();
         PoolableGuard sync_putall_guard(sync_putall);
         sync_putall->Reset();
@@ -335,218 +247,91 @@ bool DataStoreServiceClient::PutAll(
         uint16_t parts_cnt_per_key = 1;
         uint16_t parts_cnt_per_record = table_name.IsObjectTable() ? 1 : 5;
 
-        // Write data for hash_partitioned table
-        for (auto part_it = hash_partitions_map.begin();
-             part_it != hash_partitions_map.end();
-             ++part_it)
+        // Create partition states and prepare batches
+        std::vector<std::unique_ptr<PartitionFlushState>> partition_states;
+        std::vector<std::unique_ptr<PartitionCallbackData>> callback_data_list;
+        
+        // Process hash partitions
+        for (auto &[partition_id, flush_recs] : hash_partitions_map)
         {
-            auto &flush_recs = part_it->second;
-            size_t recs_cnt = partition_record_cnt[part_it->first];
-            key_parts.reserve(recs_cnt * parts_cnt_per_key);
-            record_parts.reserve(recs_cnt * parts_cnt_per_record);
-            records_ts.reserve(recs_cnt);
-            records_ttl.reserve(recs_cnt);
-            op_types.reserve(recs_cnt);
-            for (auto idx : flush_recs)
-            {
-                txservice::FlushRecord &ckpt_rec =
-                    entries.at(idx.first)->data_sync_vec_->at(idx.second);
-                txservice::TxKey tx_key = ckpt_rec.Key();
+            auto partition_state = std::make_unique<PartitionFlushState>(partition_id);
+            auto callback_data = std::make_unique<PartitionCallbackData>(
+                partition_state.get(), sync_putall, std::string(kv_table_name));
+            
+            // Prepare batches for this partition
+            PreparePartitionBatches(*partition_state, flush_recs, entries, 
+                                  table_name, parts_cnt_per_key, parts_cnt_per_record, now);
+            
+            partition_states.push_back(std::move(partition_state));
+            callback_data_list.push_back(std::move(callback_data));
+        }
+        
+        // Process range partitions
+        for (auto &[partition_id, flush_recs] : range_partitions_map)
+        {
+            auto partition_state = std::make_unique<PartitionFlushState>(partition_id);
+            auto callback_data = std::make_unique<PartitionCallbackData>(
+                partition_state.get(), sync_putall, std::string(kv_table_name));
+            
+            // Prepare batches for this partition
+            PrepareRangePartitionBatches(*partition_state, flush_recs, entries,
+                                       table_name, parts_cnt_per_key, parts_cnt_per_record, now);
+            
+            partition_states.push_back(std::move(partition_state));
+            callback_data_list.push_back(std::move(callback_data));
+        }
 
-                // Start a new batch if done with current partition.
-                if (write_batch_size >= MAX_WRITE_BATCH_SIZE)
-                {
-                    BatchWriteRecords(kv_table_name,
-                                      part_it->first,
-                                      std::move(key_parts),
-                                      std::move(record_parts),
-                                      std::move(records_ts),
-                                      std::move(records_ttl),
-                                      std::move(op_types),
-                                      true,
-                                      sync_putall,
-                                      SyncPutAllCallback,
-                                      parts_cnt_per_key,
-                                      parts_cnt_per_record);
-                    // Wait for in-flight requests to decrease if limit reached
-                    {
-                        std::unique_lock<bthread::Mutex> lk(sync_putall->mux_);
-                        sync_putall->unfinished_request_cnt_++;
-                        while (sync_putall->unfinished_request_cnt_ >=
-                               SyncPutAllData::max_flying_write_count)
-                        {
-                            sync_putall->cv_.wait(lk);
-                        }
-                    }
-                    key_parts.clear();
-                    record_parts.clear();
-                    records_ts.clear();
-                    records_ttl.clear();
-                    op_types.clear();
-                    key_parts.reserve(recs_cnt * parts_cnt_per_key);
-                    record_parts.reserve(recs_cnt * parts_cnt_per_record);
-                    records_ts.reserve(recs_cnt);
-                    records_ttl.reserve(recs_cnt);
-                    op_types.reserve(recs_cnt);
-                    write_batch_size = 0;
-                }
+        // Set up global coordinator
+        sync_putall->total_partitions_ = partition_states.size();
+        sync_putall->partition_states_ = std::move(partition_states);
 
-                assert(ckpt_rec.payload_status_ ==
-                           txservice::RecordStatus::Normal ||
-                       ckpt_rec.payload_status_ ==
-                           txservice::RecordStatus::Deleted);
-
-                if (table_name.IsObjectTable())
-                {
-                    PrepareObjectData(ckpt_rec, write_batch_size);
-                }
-                else
-                {
-                    PrepareRecordData(ckpt_rec, write_batch_size);
-                }
-            }
-            // Send out the last batch
-            if (key_parts.size() > 0)
-            {
-                BatchWriteRecords(kv_table_name,
-                                  part_it->first,
-                                  std::move(key_parts),
-                                  std::move(record_parts),
-                                  std::move(records_ts),
-                                  std::move(records_ttl),
-                                  std::move(op_types),
-                                  true,
-                                  sync_putall,
-                                  SyncPutAllCallback,
-                                  parts_cnt_per_key,
-                                  parts_cnt_per_record);
-                {
-                    std::unique_lock<bthread::Mutex> lk(sync_putall->mux_);
-                    sync_putall->unfinished_request_cnt_++;
-                }
-                key_parts.clear();
-                record_parts.clear();
-                records_ts.clear();
-                records_ttl.clear();
-                op_types.clear();
-                write_batch_size = 0;
+        // Start concurrent processing for each partition
+        for (size_t i = 0; i < callback_data_list.size(); ++i)
+        {
+            auto* partition_state = sync_putall->partition_states_[i].get();
+            auto* callback_data = callback_data_list[i].get();
+            
+            // Start the first batch for this partition
+            PartitionBatchRequest first_batch;
+            if (partition_state->GetNextBatch(first_batch)) {
+                BatchWriteRecords(
+                    callback_data->table_name,
+                    partition_state->partition_id,
+                    std::move(first_batch.key_parts),
+                    std::move(first_batch.record_parts),
+                    std::move(first_batch.records_ts),
+                    std::move(first_batch.records_ttl),
+                    std::move(first_batch.op_types),
+                    true, // skip_wal
+                    callback_data,
+                    PartitionBatchCallback,
+                    first_batch.parts_cnt_per_key,
+                    first_batch.parts_cnt_per_record);
+            } else {
+                // No batches for this partition, mark as completed
+                partition_state->MarkCompleted();
+                sync_putall->OnPartitionCompleted();
             }
         }
 
-        // Write data for range_partitioned table
-        for (auto part_it = range_partitions_map.begin();
-             part_it != range_partitions_map.end();
-             ++part_it)
-        {
-            size_t recs_cnt = partition_record_cnt[part_it->first];
-            key_parts.reserve(recs_cnt * parts_cnt_per_key);
-            record_parts.reserve(recs_cnt * parts_cnt_per_record);
-            records_ts.reserve(recs_cnt);
-            records_ttl.reserve(recs_cnt);
-            op_types.reserve(recs_cnt);
-            record_tmp_mem_area.reserve(recs_cnt * 2);
-            for (auto idx : part_it->second)
-            {
-                for (auto &ckpt_rec : *entries.at(idx)->data_sync_vec_)
-                {
-                    txservice::TxKey tx_key = ckpt_rec.Key();
-
-                    // Start a new batch if done with current partition.
-                    if (write_batch_size >= MAX_WRITE_BATCH_SIZE)
-                    {
-                        BatchWriteRecords(kv_table_name,
-                                          part_it->first,
-                                          std::move(key_parts),
-                                          std::move(record_parts),
-                                          std::move(records_ts),
-                                          std::move(records_ttl),
-                                          std::move(op_types),
-                                          true,
-                                          sync_putall,
-                                          SyncPutAllCallback,
-                                          parts_cnt_per_key,
-                                          parts_cnt_per_record);
-                        record_tmp_mem_area.clear();
-                        key_parts.clear();
-                        record_parts.clear();
-                        records_ts.clear();
-                        records_ttl.clear();
-                        op_types.clear();
-                        key_parts.reserve(recs_cnt * parts_cnt_per_key);
-                        record_parts.reserve(recs_cnt * parts_cnt_per_record);
-                        records_ts.reserve(recs_cnt);
-                        records_ttl.reserve(recs_cnt);
-                        op_types.reserve(recs_cnt);
-                        write_batch_size = 0;
-                        // Wait for in-flight requests to decrease if limit
-                        // reached
-                        {
-                            std::unique_lock<bthread::Mutex> lk(
-                                sync_putall->mux_);
-                            sync_putall->unfinished_request_cnt_++;
-                            while (sync_putall->unfinished_request_cnt_ >=
-                                   SyncPutAllData::max_flying_write_count)
-                            {
-                                sync_putall->cv_.wait(lk);
-                            }
-                        }
-                    }
-
-                    assert(ckpt_rec.payload_status_ ==
-                               txservice::RecordStatus::Normal ||
-                           ckpt_rec.payload_status_ ==
-                               txservice::RecordStatus::Deleted);
-
-                    // currently there is no object table in range partitioned
-                    // table
-                    PrepareRecordData(ckpt_rec, write_batch_size);
-                }
-                // Send out the last batch
-                if (key_parts.size() > 0)
-                {
-                    BatchWriteRecords(kv_table_name,
-                                      part_it->first,
-                                      std::move(key_parts),
-                                      std::move(record_parts),
-                                      std::move(records_ts),
-                                      std::move(records_ttl),
-                                      std::move(op_types),
-                                      true,
-                                      sync_putall,
-                                      SyncPutAllCallback,
-                                      parts_cnt_per_key,
-                                      parts_cnt_per_record);
-                    record_tmp_mem_area.clear();
-                    key_parts.clear();
-                    record_parts.clear();
-                    records_ts.clear();
-                    records_ttl.clear();
-                    op_types.clear();
-                    write_batch_size = 0;
-                    {
-                        std::unique_lock<bthread::Mutex> lk(sync_putall->mux_);
-                        sync_putall->unfinished_request_cnt_++;
-                    }
-                }
-            }
-        }
-
-        // Wait for all requests to complete
+        // Wait for all partitions to complete
         {
             std::unique_lock<bthread::Mutex> lk(sync_putall->mux_);
-            sync_putall->all_request_started_ = true;
-            while (sync_putall->unfinished_request_cnt_ != 0)
+            while (sync_putall->completed_partitions_ < sync_putall->total_partitions_)
             {
                 sync_putall->cv_.wait(lk);
             }
         }
 
-        if (sync_putall->result_.error_code() !=
-            remote::DataStoreError::NO_ERROR)
+        // Check for errors
+        for (auto& partition_state : sync_putall->partition_states_)
         {
-            LOG(ERROR) << "PutAll failed for error: "
-                       << sync_putall->result_.error_msg();
+            if (partition_state->IsFailed())
+            {
+                LOG(ERROR) << "PutAll failed for partition " << partition_state->partition_id 
+                           << " with error: " << partition_state->result.error_msg();
             return false;
+            }
         }
     }
     return true;
@@ -4323,6 +4108,259 @@ bool DataStoreServiceClient::DeleteCatalog(
     }
 
     return true;
+}
+
+void DataStoreServiceClient::PreparePartitionBatches(
+    EloqDS::PartitionFlushState& partition_state,
+    const std::vector<std::pair<size_t, size_t>>& flush_recs,
+    const std::vector<std::unique_ptr<txservice::FlushTaskEntry>>& entries,
+    const txservice::TableName& table_name,
+    uint16_t parts_cnt_per_key,
+    uint16_t parts_cnt_per_record,
+    uint64_t now)
+{
+    std::vector<std::string_view> key_parts;
+    std::vector<std::string_view> record_parts;
+    std::vector<uint64_t> records_ts;
+    std::vector<uint64_t> records_ttl;
+    std::vector<WriteOpType> op_types;
+    std::vector<size_t> record_tmp_mem_area;
+    size_t write_batch_size = 0;
+
+    auto PrepareObjectData =
+        [&](txservice::FlushRecord &ckpt_rec, size_t &batch_size)
+    {
+        txservice::TxKey tx_key = ckpt_rec.Key();
+        uint64_t ttl =
+            ckpt_rec.payload_status_ == txservice::RecordStatus::Normal
+                ? ckpt_rec.Payload()->GetTTL()
+                : 0;
+        if (ckpt_rec.payload_status_ == txservice::RecordStatus::Normal &&
+            (!ckpt_rec.Payload()->HasTTL() || ttl > now))
+        {
+            key_parts.emplace_back(
+                std::string_view(tx_key.Data(), tx_key.Size()));
+            batch_size += tx_key.Size();
+
+            const txservice::TxRecord *rec = ckpt_rec.Payload();
+            record_parts.emplace_back(std::string_view(rec->EncodedBlobData(),
+                                                       rec->EncodedBlobSize()));
+            batch_size += rec->EncodedBlobSize();
+
+            records_ts.push_back(ckpt_rec.commit_ts_);
+            batch_size += sizeof(uint64_t);
+
+            records_ttl.push_back(ttl);
+            batch_size += sizeof(uint64_t);
+
+            op_types.push_back(WriteOpType::PUT);
+            batch_size += sizeof(WriteOpType);
+        }
+        else
+        {
+            key_parts.emplace_back(
+                std::string_view(tx_key.Data(), tx_key.Size()));
+            batch_size += tx_key.Size();
+
+            record_parts.emplace_back(std::string_view());
+            batch_size += 0;
+
+            records_ts.push_back(ckpt_rec.commit_ts_);
+            batch_size += sizeof(uint64_t);
+
+            records_ttl.push_back(0);
+            batch_size += sizeof(uint64_t);
+
+            op_types.push_back(WriteOpType::DELETE);
+            batch_size += sizeof(WriteOpType);
+        }
+    };
+
+    auto PrepareRecordData =
+        [&](txservice::FlushRecord &ckpt_rec, size_t &batch_size)
+    {
+        uint64_t retired_ttl_for_deleted = now + 24 * 60 * 60 * 1000;
+        txservice::TxKey tx_key = ckpt_rec.Key();
+        bool is_deleted =
+            !(ckpt_rec.payload_status_ == txservice::RecordStatus::Normal);
+        key_parts.emplace_back(std::string_view(tx_key.Data(), tx_key.Size()));
+        batch_size += tx_key.Size();
+
+        const txservice::TxRecord *rec = ckpt_rec.Payload();
+        if (is_deleted)
+        {
+            records_ttl.push_back(retired_ttl_for_deleted);
+        }
+        else
+        {
+            records_ttl.push_back(0);
+        }
+        batch_size += sizeof(uint64_t);
+
+        op_types.push_back(WriteOpType::PUT);
+        batch_size += sizeof(WriteOpType);
+
+        SerializeTxRecord(is_deleted,
+                          rec,
+                          record_tmp_mem_area,
+                          record_parts,
+                          batch_size);
+
+        records_ts.push_back(ckpt_rec.commit_ts_);
+        batch_size += sizeof(uint64_t);
+    };
+
+    // Process records and create batches
+    for (auto idx : flush_recs)
+    {
+        txservice::FlushRecord &ckpt_rec =
+            entries.at(idx.first)->data_sync_vec_->at(idx.second);
+
+        // Start a new batch if size limit reached
+        if (write_batch_size >= MAX_WRITE_BATCH_SIZE)
+        {
+            partition_state.AddBatch(PartitionBatchRequest(
+                std::move(key_parts),
+                std::move(record_parts),
+                std::move(records_ts),
+                std::move(records_ttl),
+                std::move(op_types),
+                parts_cnt_per_key,
+                parts_cnt_per_record));
+            
+            key_parts.clear();
+            record_parts.clear();
+            records_ts.clear();
+            records_ttl.clear();
+            op_types.clear();
+            record_tmp_mem_area.clear();
+            write_batch_size = 0;
+        }
+
+        assert(ckpt_rec.payload_status_ == txservice::RecordStatus::Normal ||
+               ckpt_rec.payload_status_ == txservice::RecordStatus::Deleted);
+
+        if (table_name.IsObjectTable())
+        {
+            PrepareObjectData(ckpt_rec, write_batch_size);
+        }
+        else
+        {
+            PrepareRecordData(ckpt_rec, write_batch_size);
+        }
+    }
+
+    // Add the last batch if it has data
+    if (key_parts.size() > 0)
+    {
+        partition_state.AddBatch(PartitionBatchRequest(
+            std::move(key_parts),
+            std::move(record_parts),
+            std::move(records_ts),
+            std::move(records_ttl),
+            std::move(op_types),
+            parts_cnt_per_key,
+            parts_cnt_per_record));
+    }
+}
+
+void DataStoreServiceClient::PrepareRangePartitionBatches(
+    EloqDS::PartitionFlushState& partition_state,
+    const std::vector<size_t>& flush_recs,
+    const std::vector<std::unique_ptr<txservice::FlushTaskEntry>>& entries,
+    const txservice::TableName& table_name,
+    uint16_t parts_cnt_per_key,
+    uint16_t parts_cnt_per_record,
+    uint64_t now)
+{
+    std::vector<std::string_view> key_parts;
+    std::vector<std::string_view> record_parts;
+    std::vector<uint64_t> records_ts;
+    std::vector<uint64_t> records_ttl;
+    std::vector<WriteOpType> op_types;
+    std::vector<size_t> record_tmp_mem_area;
+    size_t write_batch_size = 0;
+
+    auto PrepareRecordData =
+        [&](txservice::FlushRecord &ckpt_rec, size_t &batch_size)
+    {
+        uint64_t retired_ttl_for_deleted = now + 24 * 60 * 60 * 1000;
+        txservice::TxKey tx_key = ckpt_rec.Key();
+        bool is_deleted =
+            !(ckpt_rec.payload_status_ == txservice::RecordStatus::Normal);
+        key_parts.emplace_back(std::string_view(tx_key.Data(), tx_key.Size()));
+        batch_size += tx_key.Size();
+
+        const txservice::TxRecord *rec = ckpt_rec.Payload();
+        if (is_deleted)
+        {
+            records_ttl.push_back(retired_ttl_for_deleted);
+        }
+        else
+        {
+            records_ttl.push_back(0);
+        }
+        batch_size += sizeof(uint64_t);
+
+        op_types.push_back(WriteOpType::PUT);
+        batch_size += sizeof(WriteOpType);
+
+        SerializeTxRecord(is_deleted,
+                          rec,
+                          record_tmp_mem_area,
+                          record_parts,
+                          batch_size);
+
+        records_ts.push_back(ckpt_rec.commit_ts_);
+        batch_size += sizeof(uint64_t);
+    };
+
+    // Process records and create batches
+    for (auto idx : flush_recs)
+    {
+        for (auto &ckpt_rec : *entries.at(idx)->data_sync_vec_)
+        {
+            // Start a new batch if size limit reached
+            if (write_batch_size >= MAX_WRITE_BATCH_SIZE)
+            {
+                partition_state.AddBatch(PartitionBatchRequest(
+                    std::move(key_parts),
+                    std::move(record_parts),
+                    std::move(records_ts),
+                    std::move(records_ttl),
+                    std::move(op_types),
+                    parts_cnt_per_key,
+                    parts_cnt_per_record));
+                
+                key_parts.clear();
+                record_parts.clear();
+                records_ts.clear();
+                records_ttl.clear();
+                op_types.clear();
+                record_tmp_mem_area.clear();
+                write_batch_size = 0;
+            }
+
+            assert(ckpt_rec.payload_status_ == txservice::RecordStatus::Normal ||
+                   ckpt_rec.payload_status_ == txservice::RecordStatus::Deleted);
+
+            // Currently there is no object table in range partitioned table
+            PrepareRecordData(ckpt_rec, write_batch_size);
+        }
+    }
+
+    // Add the last batch if it has data
+    if (key_parts.size() > 0)
+    {
+        partition_state.AddBatch(PartitionBatchRequest(
+            std::move(key_parts),
+            std::move(record_parts),
+            std::move(records_ts),
+            std::move(records_ttl),
+            std::move(op_types),
+            parts_cnt_per_key,
+            parts_cnt_per_record));
+    }
 }
 
 }  // namespace EloqDS
