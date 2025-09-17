@@ -286,7 +286,6 @@ bool DataStoreServiceClient::PutAll(
 
         uint16_t parts_cnt_per_key = 1;
         uint16_t parts_cnt_per_record = table_name.IsObjectTable() ? 1 : 5;
-        uint32_t batch_cnt = 0;
 
         // Write data for hash_partitioned table
         for (auto part_it = hash_partitions_map.begin();
@@ -307,18 +306,8 @@ bool DataStoreServiceClient::PutAll(
                 txservice::TxKey tx_key = ckpt_rec.Key();
 
                 // Start a new batch if done with current partition.
-                if (write_batch_size >= SyncPutAllData::max_flying_write_count)
+                if (write_batch_size >= MAX_WRITE_BATCH_SIZE)
                 {
-                    // Wait for in-flight requests to decrease if limit reached
-                    {
-                        std::unique_lock<bthread::Mutex> lk(sync_putall->mux_);
-                        while (sync_putall->unfinished_request_cnt_ >=
-                               SyncPutAllData::max_flying_write_count)
-                        {
-                            sync_putall->cv_.wait(lk);
-                        }
-                    }
-
                     BatchWriteRecords(kv_table_name,
                                       part_it->first,
                                       std::move(key_parts),
@@ -331,6 +320,16 @@ bool DataStoreServiceClient::PutAll(
                                       SyncPutAllCallback,
                                       parts_cnt_per_key,
                                       parts_cnt_per_record);
+                    // Wait for in-flight requests to decrease if limit reached
+                    {
+                        std::unique_lock<bthread::Mutex> lk(sync_putall->mux_);
+                        sync_putall->unfinished_request_cnt_++;
+                        while (sync_putall->unfinished_request_cnt_ >=
+                               SyncPutAllData::max_flying_write_count)
+                        {
+                            sync_putall->cv_.wait(lk);
+                        }
+                    }
                     key_parts.clear();
                     record_parts.clear();
                     records_ts.clear();
@@ -342,7 +341,6 @@ bool DataStoreServiceClient::PutAll(
                     records_ttl.reserve(recs_cnt);
                     op_types.reserve(recs_cnt);
                     write_batch_size = 0;
-                    ++batch_cnt;
                 }
 
                 assert(ckpt_rec.payload_status_ ==
@@ -374,13 +372,16 @@ bool DataStoreServiceClient::PutAll(
                                   SyncPutAllCallback,
                                   parts_cnt_per_key,
                                   parts_cnt_per_record);
+                {
+                    std::unique_lock<bthread::Mutex> lk(sync_putall->mux_);
+                    sync_putall->unfinished_request_cnt_++;
+                }
                 key_parts.clear();
                 record_parts.clear();
                 records_ts.clear();
                 records_ttl.clear();
                 op_types.clear();
                 write_batch_size = 0;
-                ++batch_cnt;
             }
         }
 
@@ -403,21 +404,8 @@ bool DataStoreServiceClient::PutAll(
                     txservice::TxKey tx_key = ckpt_rec.Key();
 
                     // Start a new batch if done with current partition.
-                    if (write_batch_size >=
-                        SyncPutAllData::max_flying_write_count)
+                    if (write_batch_size >= MAX_WRITE_BATCH_SIZE)
                     {
-                        // Wait for in-flight requests to decrease if limit
-                        // reached
-                        {
-                            std::unique_lock<bthread::Mutex> lk(
-                                sync_putall->mux_);
-                            while (sync_putall->unfinished_request_cnt_ >=
-                                   SyncPutAllData::max_flying_write_count)
-                            {
-                                sync_putall->cv_.wait(lk);
-                            }
-                        }
-
                         BatchWriteRecords(kv_table_name,
                                           part_it->first,
                                           std::move(key_parts),
@@ -442,7 +430,18 @@ bool DataStoreServiceClient::PutAll(
                         records_ttl.reserve(recs_cnt);
                         op_types.reserve(recs_cnt);
                         write_batch_size = 0;
-                        ++batch_cnt;
+                        // Wait for in-flight requests to decrease if limit
+                        // reached
+                        {
+                            std::unique_lock<bthread::Mutex> lk(
+                                sync_putall->mux_);
+                            sync_putall->unfinished_request_cnt_++;
+                            while (sync_putall->unfinished_request_cnt_ >=
+                                   SyncPutAllData::max_flying_write_count)
+                            {
+                                sync_putall->cv_.wait(lk);
+                            }
+                        }
                     }
 
                     assert(ckpt_rec.payload_status_ ==
@@ -476,7 +475,10 @@ bool DataStoreServiceClient::PutAll(
                     records_ttl.clear();
                     op_types.clear();
                     write_batch_size = 0;
-                    ++batch_cnt;
+                    {
+                        std::unique_lock<bthread::Mutex> lk(sync_putall->mux_);
+                        sync_putall->unfinished_request_cnt_++;
+                    }
                 }
             }
         }
@@ -484,7 +486,6 @@ bool DataStoreServiceClient::PutAll(
         // Wait for all requests to complete
         {
             std::unique_lock<bthread::Mutex> lk(sync_putall->mux_);
-            sync_putall->unfinished_request_cnt_ += batch_cnt;
             sync_putall->all_request_started_ = true;
             while (sync_putall->unfinished_request_cnt_ != 0)
             {
@@ -1932,7 +1933,6 @@ bool DataStoreServiceClient::PutArchivesAll(
         SyncPutAllData *sync_putall = sync_putall_data_pool_.NextObject();
         PoolableGuard guard(sync_putall);
         sync_putall->Reset();
-        uint32_t batch_cnt = 0;
 
         size_t recs_cnt = archive_ptrs.size();
         keys.reserve(recs_cnt * parts_cnt_per_key);
@@ -1949,6 +1949,7 @@ bool DataStoreServiceClient::PutArchivesAll(
                 // Wait for in-flight requests to decrease if limit reached
                 {
                     std::unique_lock<bthread::Mutex> lk(sync_putall->mux_);
+                    sync_putall->unfinished_request_cnt_++;
                     while (sync_putall->unfinished_request_cnt_ >=
                            SyncPutAllData::max_flying_write_count)
                     {
@@ -1979,7 +1980,6 @@ bool DataStoreServiceClient::PutArchivesAll(
                 records_ttl.reserve(recs_cnt);
                 op_types.reserve(recs_cnt);
                 write_batch_size = 0;
-                ++batch_cnt;
             }
 
             txservice::FlushRecord &ckpt_rec = *archive_ptrs[i].second;
@@ -2056,13 +2056,15 @@ bool DataStoreServiceClient::PutArchivesAll(
             records_ttl.reserve(recs_cnt);
             op_types.reserve(recs_cnt);
             write_batch_size = 0;
-            ++batch_cnt;
+            {
+                std::unique_lock<bthread::Mutex> lk(sync_putall->mux_);
+                sync_putall->unfinished_request_cnt_++;
+            }
         }
 
         // Wait the result.
         {
             std::unique_lock<bthread::Mutex> lk(sync_putall->mux_);
-            sync_putall->unfinished_request_cnt_ += batch_cnt;
             sync_putall->all_request_started_ = true;
             while (sync_putall->unfinished_request_cnt_ != 0)
             {
