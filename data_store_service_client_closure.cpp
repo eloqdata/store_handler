@@ -425,7 +425,7 @@ void PartitionBatchCallback(void *data,
     }
 
     // Try to get the next batch for this partition
-    PartitionBatchRequest next_batch;
+    PartitionBatchRequest &next_batch = callback_data->inflight_batch;
     if (partition_state->GetNextBatch(next_batch))
     {
         // Send the next batch

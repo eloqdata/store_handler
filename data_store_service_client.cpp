@@ -315,7 +315,7 @@ bool DataStoreServiceClient::PutAll(
             auto *callback_data = callback_data_list[i];
 
             // Start the first batch for this partition
-            PartitionBatchRequest first_batch;
+            auto &first_batch = callback_data->inflight_batch;
             if (partition_state->GetNextBatch(first_batch))
             {
                 BatchWriteRecords(callback_data->table_name,

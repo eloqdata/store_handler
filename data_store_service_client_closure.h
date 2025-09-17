@@ -333,10 +333,23 @@ struct PartitionBatchRequest
           record_parts(std::move(records)),
           records_ts(std::move(ts)),
           records_ttl(std::move(ttl)),
+          record_tmp_mem_area(std::move(record_tmp_mem_area)),
           op_types(std::move(ops)),
           parts_cnt_per_key(key_parts_count),
           parts_cnt_per_record(record_parts_count)
     {
+    }
+
+    void Clear()
+    {
+        key_parts.clear();
+        record_parts.clear();
+        records_ts.clear();
+        records_ttl.clear();
+        record_tmp_mem_area.clear();
+        op_types.clear();
+        parts_cnt_per_key = 1;
+        parts_cnt_per_record = 1;
     }
 };
 /**
@@ -347,6 +360,7 @@ struct PartitionCallbackData : public Poolable
     PartitionFlushState *partition_state;
     SyncPutAllData *global_coordinator;
     std::string_view table_name;
+    PartitionBatchRequest inflight_batch;
 
     PartitionCallbackData()
         : partition_state(nullptr), global_coordinator(nullptr), table_name("")
