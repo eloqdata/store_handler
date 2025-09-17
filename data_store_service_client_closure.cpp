@@ -20,11 +20,12 @@
  *
  */
 
+#include "data_store_service_client_closure.h"
+
 #include <memory>
 #include <string>
 #include <utility>
 
-#include "data_store_service_client_closure.h"
 #include "store_util.h"  // host_to_big_endian
 #include "tx_service/include/cc/cc_request.h"
 #include "tx_service/include/cc/local_cc_shards.h"
@@ -173,8 +174,8 @@ void FetchRecordCallback(void *data,
             if (!DataStoreServiceClient::DeserializeTxRecordStr(
                     val, is_deleted, offset))
             {
-                LOG(ERROR) << "====fetch record===decode error=="
-                           << " key: " << read_closure->Key()
+                LOG(ERROR) << "====fetch record===decode error==" << " key: "
+                           << read_closure->Key()
                            << " status: " << (int) fetch_cc->rec_status_;
                 std::abort();
             }
@@ -396,52 +397,53 @@ void FetchTableCallback(void *data,
     fetch_table_data->Notify();
 }
 
-void SyncPutAllCallback(void *data,
-                        ::google::protobuf::Closure *closure,
-                        DataStoreServiceClient &client,
-                        const remote::CommonResult &result)
+void SyncConcurrentRequestCallback(void *data,
+                                   ::google::protobuf::Closure *closure,
+                                   DataStoreServiceClient &client,
+                                   const remote::CommonResult &result)
 {
-    auto *callback_data = reinterpret_cast<SyncPutAllData *>(data);
+    auto *callback_data = reinterpret_cast<SyncConcurrentRequest *>(data);
     callback_data->Finish(result);
 }
 
 void PartitionBatchCallback(void *data,
-                           ::google::protobuf::Closure *closure,
-                           DataStoreServiceClient &client,
-                           const remote::CommonResult &result)
+                            ::google::protobuf::Closure *closure,
+                            DataStoreServiceClient &client,
+                            const remote::CommonResult &result)
 {
     auto *callback_data = reinterpret_cast<PartitionCallbackData *>(data);
     auto *partition_state = callback_data->partition_state;
     auto *global_coordinator = callback_data->global_coordinator;
-    
+
     // Check if the batch failed
-    if (result.error_code() != remote::DataStoreError::NO_ERROR) {
+    if (result.error_code() != remote::DataStoreError::NO_ERROR)
+    {
         partition_state->MarkFailed(result);
         // Notify the global coordinator that this partition failed
         global_coordinator->OnPartitionCompleted();
         return;
     }
-    
+
     // Try to get the next batch for this partition
     PartitionBatchRequest next_batch;
-    if (partition_state->GetNextBatch(next_batch)) {
+    if (partition_state->GetNextBatch(next_batch))
+    {
         // Send the next batch
-        client.BatchWriteRecords(
-            callback_data->table_name,
-            partition_state->partition_id,
-            std::move(next_batch.key_parts),
-            std::move(next_batch.record_parts),
-            std::move(next_batch.records_ts),
-            std::move(next_batch.records_ttl),
-            std::move(next_batch.op_types),
-            true, // skip_wal
-            callback_data,
-            PartitionBatchCallback,
-            next_batch.parts_cnt_per_key,
-            next_batch.parts_cnt_per_record);
-    } else {
-        // No more batches, mark partition as completed
-        partition_state->MarkCompleted();
+        client.BatchWriteRecords(callback_data->table_name,
+                                 partition_state->partition_id,
+                                 std::move(next_batch.key_parts),
+                                 std::move(next_batch.record_parts),
+                                 std::move(next_batch.records_ts),
+                                 std::move(next_batch.records_ttl),
+                                 std::move(next_batch.op_types),
+                                 true,  // skip_wal
+                                 callback_data,
+                                 PartitionBatchCallback,
+                                 next_batch.parts_cnt_per_key,
+                                 next_batch.parts_cnt_per_record);
+    }
+    else
+    {
         // Notify the global coordinator that this partition completed
         global_coordinator->OnPartitionCompleted();
     }
@@ -1427,5 +1429,17 @@ void CreateSnapshotForBackupCallback(void *data,
     }
 
     backup_callback_data->Notify();
+}
+
+bool PartitionFlushState::GetNextBatch(PartitionBatchRequest &batch)
+{
+    std::unique_lock<bthread::Mutex> lk(mux);
+    if (pending_batches.empty())
+    {
+        return false;
+    }
+    batch = std::move(pending_batches.front());
+    pending_batches.pop();
+    return true;
 }
 }  // namespace EloqDS

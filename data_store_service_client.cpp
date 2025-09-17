@@ -20,7 +20,6 @@
  *
  */
 #include "data_store_service_client.h"
-#include "data_store_service_client_closure.h"
 
 #include <glog/logging.h>
 
@@ -34,6 +33,7 @@
 #include <utility>
 #include <vector>
 
+#include "data_store_service_client_closure.h"
 #include "data_store_service_scanner.h"
 #include "eloq_data_store_service/object_pool.h"  // ObjectPool
 #include "eloq_data_store_service/thread_worker_pool.h"
@@ -65,6 +65,9 @@ thread_local ObjectPool<FetchAllDatabaseCallbackData>
 thread_local ObjectPool<DiscoverAllTableNamesCallbackData>
     discover_all_tables_callback_data_pool_;
 thread_local ObjectPool<SyncPutAllData> sync_putall_data_pool_;
+thread_local ObjectPool<SyncConcurrentRequest> sync_concurrent_request_pool_;
+thread_local ObjectPool<PartitionFlushState> partition_flush_state_pool_;
+thread_local ObjectPool<PartitionCallbackData> partition_callback_data_pool_;
 
 static const uint64_t MAX_WRITE_BATCH_SIZE = 64 * 1024 * 1024;  // 64MB
 
@@ -93,13 +96,15 @@ DataStoreServiceClient::~DataStoreServiceClient()
 }
 
 /**
- * @brief Configures the data store service client with cluster manager information.
+ * @brief Configures the data store service client with cluster manager
+ * information.
  *
- * Initializes the client with cluster configuration including node hostnames and ports.
- * Logs all node information for debugging purposes and stores the cluster manager
- * reference for future use.
+ * Initializes the client with cluster configuration including node hostnames
+ * and ports. Logs all node information for debugging purposes and stores the
+ * cluster manager reference for future use.
  *
- * @param cluster_manager Reference to the cluster manager containing shard and node information.
+ * @param cluster_manager Reference to the cluster manager containing shard and
+ * node information.
  */
 void DataStoreServiceClient::SetupConfig(
     const DataStoreServiceClusterManager &cluster_manager)
@@ -119,8 +124,8 @@ void DataStoreServiceClient::SetupConfig(
  * @brief Establishes connection to the data store service.
  *
  * Attempts to connect to the data store service with retry logic. Initializes
- * pre-built tables and retries up to 5 times with 1-second delays between attempts.
- * Returns true if connection succeeds, false otherwise.
+ * pre-built tables and retries up to 5 times with 1-second delays between
+ * attempts. Returns true if connection succeeds, false otherwise.
  *
  * @return true if connection is successful, false if all retry attempts fail.
  */
@@ -145,9 +150,9 @@ bool DataStoreServiceClient::Connect()
 /**
  * @brief Schedules timer-based tasks for the data store service.
  *
- * Currently not implemented. This method is a placeholder for future timer-based
- * functionality such as periodic cleanup, health checks, or maintenance tasks.
- * Will assert and log an error if called.
+ * Currently not implemented. This method is a placeholder for future
+ * timer-based functionality such as periodic cleanup, health checks, or
+ * maintenance tasks. Will assert and log an error if called.
  */
 void DataStoreServiceClient::ScheduleTimerTasks()
 {
@@ -156,26 +161,33 @@ void DataStoreServiceClient::ScheduleTimerTasks()
 }
 
 /**
- * @brief Batch-writes a set of flush tasks into KV tables.
+ * @brief Batch-writes a set of flush tasks into KV tables using concurrent
+ * partition processing.
  *
  * Processes the provided flush tasks grouped by table and partition, serializes
  * each record (object tables use raw encoded blobs; non-object tables encode
  * tx-records with unpack info), and issues batched PUT/DELETE operations via
- * BatchWriteRecords. Batches are emitted per KV-partition and sized according
- * to SyncPutAllData::max_flying_write_count; the method blocks as necessary to
- * respect the global in-flight write limit and waits for all dispatched
- * requests to complete before returning.
+ * BatchWriteRecords. The method uses a concurrent approach where different
+ * partitions can flush simultaneously, but each partition maintains
+ * serialization (only one request in-flight per partition at a time).
+ *
+ * Key features:
+ * - Concurrent processing across different partitions
+ * - Per-partition serialization to respect KV store constraints
+ * - Automatic batching based on MAX_WRITE_BATCH_SIZE (64MB)
+ * - Chained callbacks within each partition for sequential processing
+ * - Global coordination to wait for all partitions to complete
  *
  * The function distinguishes hash- and range-partitioned tables, computes
  * per-partition batches, and updates per-record timestamps/TTLs and operation
- * types. Partial batches are flushed at partition boundaries. On any remote or
- * batch-level error the function logs the failure and returns false.
+ * types. On any partition-level error, the function logs the failure and
+ * returns false.
  *
  * @param flush_task Mapping from KV table name to a vector of flush task
  *                   entries containing the records to write. Each entry's
  *                   data_sync_vec_ provides the sequence of records for that
  *                   flush task.
- * @return true if all batches completed successfully; false if any batch
+ * @return true if all partitions completed successfully; false if any partition
  *         reported an error.
  */
 bool DataStoreServiceClient::PutAll(
@@ -189,13 +201,13 @@ bool DataStoreServiceClient::PutAll(
     for (auto &[kv_table_name, entries] : flush_task)
     {
         auto &table_name = entries.front()->data_sync_task_->table_name_;
-        
+
         // Group records by partition
         std::unordered_map<uint32_t, std::vector<std::pair<size_t, size_t>>>
             hash_partitions_map;
         std::unordered_map<uint32_t, std::vector<size_t>> range_partitions_map;
         std::unordered_map<uint32_t, size_t> partition_record_cnt;
-        
+
         size_t flush_task_entry_idx = 0;
         for (auto &entry : entries)
         {
@@ -227,7 +239,8 @@ bool DataStoreServiceClient::PutAll(
             }
             else
             {
-                // All records in the batch are in the same partition for range table
+                // All records in the batch are in the same partition for range
+                // table
                 uint32_t parition_id =
                     KvPartitionIdOf(batch[0].partition_id_, true);
                 auto [it, inserted] =
@@ -248,68 +261,79 @@ bool DataStoreServiceClient::PutAll(
         uint16_t parts_cnt_per_record = table_name.IsObjectTable() ? 1 : 5;
 
         // Create partition states and prepare batches
-        std::vector<std::unique_ptr<PartitionFlushState>> partition_states;
-        std::vector<std::unique_ptr<PartitionCallbackData>> callback_data_list;
-        
+        std::vector<PartitionCallbackData *> callback_data_list;
+
         // Process hash partitions
         for (auto &[partition_id, flush_recs] : hash_partitions_map)
         {
-            auto partition_state = std::make_unique<PartitionFlushState>(partition_id);
-            auto callback_data = std::make_unique<PartitionCallbackData>(
-                partition_state.get(), sync_putall, std::string(kv_table_name));
-            
+            auto partition_state = partition_flush_state_pool_.NextObject();
+            partition_state->Reset(partition_id);
+            auto callback_data = partition_callback_data_pool_.NextObject();
+            callback_data->Reset(partition_state, sync_putall, kv_table_name);
+
             // Prepare batches for this partition
-            PreparePartitionBatches(*partition_state, flush_recs, entries, 
-                                  table_name, parts_cnt_per_key, parts_cnt_per_record, now);
-            
-            partition_states.push_back(std::move(partition_state));
-            callback_data_list.push_back(std::move(callback_data));
+            PreparePartitionBatches(*partition_state,
+                                    flush_recs,
+                                    entries,
+                                    table_name,
+                                    parts_cnt_per_key,
+                                    parts_cnt_per_record,
+                                    now);
+
+            sync_putall->partition_states_.push_back(partition_state);
+            callback_data_list.push_back(callback_data);
         }
-        
+
         // Process range partitions
         for (auto &[partition_id, flush_recs] : range_partitions_map)
         {
-            auto partition_state = std::make_unique<PartitionFlushState>(partition_id);
-            auto callback_data = std::make_unique<PartitionCallbackData>(
-                partition_state.get(), sync_putall, std::string(kv_table_name));
-            
+            auto partition_state = partition_flush_state_pool_.NextObject();
+            partition_state->Reset(partition_id);
+            auto callback_data = partition_callback_data_pool_.NextObject();
+            callback_data->Reset(partition_state, sync_putall, kv_table_name);
+
             // Prepare batches for this partition
-            PrepareRangePartitionBatches(*partition_state, flush_recs, entries,
-                                       table_name, parts_cnt_per_key, parts_cnt_per_record, now);
-            
-            partition_states.push_back(std::move(partition_state));
-            callback_data_list.push_back(std::move(callback_data));
+            PrepareRangePartitionBatches(*partition_state,
+                                         flush_recs,
+                                         entries,
+                                         table_name,
+                                         parts_cnt_per_key,
+                                         parts_cnt_per_record,
+                                         now);
+
+            sync_putall->partition_states_.push_back(partition_state);
+            callback_data_list.push_back(callback_data);
         }
 
         // Set up global coordinator
-        sync_putall->total_partitions_ = partition_states.size();
-        sync_putall->partition_states_ = std::move(partition_states);
+        sync_putall->total_partitions_ = sync_putall->partition_states_.size();
 
         // Start concurrent processing for each partition
         for (size_t i = 0; i < callback_data_list.size(); ++i)
         {
-            auto* partition_state = sync_putall->partition_states_[i].get();
-            auto* callback_data = callback_data_list[i].get();
-            
+            auto *partition_state = sync_putall->partition_states_[i];
+            auto *callback_data = callback_data_list[i];
+
             // Start the first batch for this partition
             PartitionBatchRequest first_batch;
-            if (partition_state->GetNextBatch(first_batch)) {
-                BatchWriteRecords(
-                    callback_data->table_name,
-                    partition_state->partition_id,
-                    std::move(first_batch.key_parts),
-                    std::move(first_batch.record_parts),
-                    std::move(first_batch.records_ts),
-                    std::move(first_batch.records_ttl),
-                    std::move(first_batch.op_types),
-                    true, // skip_wal
-                    callback_data,
-                    PartitionBatchCallback,
-                    first_batch.parts_cnt_per_key,
-                    first_batch.parts_cnt_per_record);
-            } else {
+            if (partition_state->GetNextBatch(first_batch))
+            {
+                BatchWriteRecords(callback_data->table_name,
+                                  partition_state->partition_id,
+                                  std::move(first_batch.key_parts),
+                                  std::move(first_batch.record_parts),
+                                  std::move(first_batch.records_ts),
+                                  std::move(first_batch.records_ttl),
+                                  std::move(first_batch.op_types),
+                                  true,  // skip_wal
+                                  callback_data,
+                                  PartitionBatchCallback,
+                                  first_batch.parts_cnt_per_key,
+                                  first_batch.parts_cnt_per_record);
+            }
+            else
+            {
                 // No batches for this partition, mark as completed
-                partition_state->MarkCompleted();
                 sync_putall->OnPartitionCompleted();
             }
         }
@@ -317,21 +341,29 @@ bool DataStoreServiceClient::PutAll(
         // Wait for all partitions to complete
         {
             std::unique_lock<bthread::Mutex> lk(sync_putall->mux_);
-            while (sync_putall->completed_partitions_ < sync_putall->total_partitions_)
+            while (sync_putall->completed_partitions_ <
+                   sync_putall->total_partitions_)
             {
                 sync_putall->cv_.wait(lk);
             }
         }
 
         // Check for errors
-        for (auto& partition_state : sync_putall->partition_states_)
+        for (auto &partition_state : sync_putall->partition_states_)
         {
             if (partition_state->IsFailed())
             {
-                LOG(ERROR) << "PutAll failed for partition " << partition_state->partition_id 
-                           << " with error: " << partition_state->result.error_msg();
-            return false;
+                LOG(ERROR) << "PutAll failed for partition "
+                           << partition_state->partition_id << " with error: "
+                           << partition_state->result.error_msg();
+                return false;
             }
+        }
+
+        for (auto &callback_data : callback_data_list)
+        {
+            callback_data->Clear();
+            callback_data->Free();
         }
     }
     return true;
@@ -341,11 +373,12 @@ bool DataStoreServiceClient::PutAll(
  * @brief Persists data from specified KV tables to storage.
  *
  * Flushes data from the provided KV table names to persistent storage using
- * asynchronous flush operations. Waits for completion and returns success/failure
- * status. Logs warnings on failure and debug info on success.
+ * asynchronous flush operations. Waits for completion and returns
+ * success/failure status. Logs warnings on failure and debug info on success.
  *
  * @param kv_table_names Vector of KV table names to persist.
- * @return true if all tables are persisted successfully, false if any operation fails.
+ * @return true if all tables are persisted successfully, false if any operation
+ * fails.
  */
 bool DataStoreServiceClient::PersistKV(
     const std::vector<std::string> &kv_table_names)
@@ -374,16 +407,19 @@ bool DataStoreServiceClient::PersistKV(
  * Handles table creation, modification, and deletion operations by updating
  * table schema information in the data store. Validates leadership, processes
  * the operation asynchronously, and sets appropriate error codes on failure.
- * Supports various operation types including CREATE, DROP, and ALTER operations.
+ * Supports various operation types including CREATE, DROP, and ALTER
+ * operations.
  *
- * @param old_table_schema Pointer to the existing table schema (nullptr for CREATE).
+ * @param old_table_schema Pointer to the existing table schema (nullptr for
+ * CREATE).
  * @param new_table_schema Pointer to the new table schema.
  * @param op_type Type of operation (CREATE, DROP, ALTER, etc.).
  * @param commit_ts Commit timestamp for the operation.
  * @param ng_id Node group ID for the operation.
  * @param tx_term Transaction term for consistency.
  * @param hd_res Handler result object to store operation outcome.
- * @param alter_table_info Information about table alterations (nullptr if not applicable).
+ * @param alter_table_info Information about table alterations (nullptr if not
+ * applicable).
  * @param cc_req CC request base object.
  * @param ccs CC shard reference.
  * @param err_code Error code output parameter.
@@ -442,11 +478,13 @@ void DataStoreServiceClient::UpsertTable(
  * @brief Fetches table catalog information from the data store.
  *
  * Retrieves catalog information for the specified table by reading from the
- * KV table catalogs storage. Uses partition ID 0 and the catalog name as the key.
- * The operation is performed asynchronously with a callback for completion handling.
+ * KV table catalogs storage. Uses partition ID 0 and the catalog name as the
+ * key. The operation is performed asynchronously with a callback for completion
+ * handling.
  *
  * @param ccm_table_name The table name to fetch catalog information for.
- * @param fetch_cc Fetch catalog CC object to store the result and handle completion.
+ * @param fetch_cc Fetch catalog CC object to store the result and handle
+ * completion.
  */
 void DataStoreServiceClient::FetchTableCatalog(
     const txservice::TableName &ccm_table_name,
@@ -465,11 +503,13 @@ void DataStoreServiceClient::FetchTableCatalog(
  * @brief Fetches current table statistics from the data store.
  *
  * Retrieves the current version of table statistics for the specified table.
- * Determines the appropriate KV partition ID and reads from the table statistics
- * version storage. The operation is performed asynchronously with callback handling.
+ * Determines the appropriate KV partition ID and reads from the table
+ * statistics version storage. The operation is performed asynchronously with
+ * callback handling.
  *
  * @param ccm_table_name The table name to fetch statistics for.
- * @param fetch_cc Fetch table statistics CC object to store the result and handle completion.
+ * @param fetch_cc Fetch table statistics CC object to store the result and
+ * handle completion.
  */
 void DataStoreServiceClient::FetchCurrentTableStatistics(
     const txservice::TableName &ccm_table_name,
@@ -491,11 +531,13 @@ void DataStoreServiceClient::FetchCurrentTableStatistics(
  *
  * Retrieves table statistics for a specific version by constructing key ranges
  * based on the table name and version number. Clears previous key ranges and
- * session information, then constructs start and end keys for the version-specific
- * statistics. The operation is performed asynchronously with callback handling.
+ * session information, then constructs start and end keys for the
+ * version-specific statistics. The operation is performed asynchronously with
+ * callback handling.
  *
  * @param ccm_table_name The table name to fetch statistics for.
- * @param fetch_cc Fetch table statistics CC object containing version information and result storage.
+ * @param fetch_cc Fetch table statistics CC object containing version
+ * information and result storage.
  */
 void DataStoreServiceClient::FetchTableStatistics(
     const txservice::TableName &ccm_table_name,
@@ -572,15 +614,18 @@ std::string EncodeTableStatsKey(const txservice::TableName &base_table_name,
 /**
  * @brief Upserts table statistics to the data store.
  *
- * Stores table statistics by splitting sample keys into segments and writing them
- * to the KV storage. Each segment contains index type, record count, and sample keys.
- * Also updates the checkpoint version for the table statistics. Uses batch write
- * operations for efficiency and handles both local and remote storage paths.
+ * Stores table statistics by splitting sample keys into segments and writing
+ * them to the KV storage. Each segment contains index type, record count, and
+ * sample keys. Also updates the checkpoint version for the table statistics.
+ * Uses batch write operations for efficiency and handles both local and remote
+ * storage paths.
  *
  * @param ccm_table_name The table name to store statistics for.
- * @param sample_pool_map Map of index names to sample pools containing record counts and sample keys.
+ * @param sample_pool_map Map of index names to sample pools containing record
+ * counts and sample keys.
  * @param version The version number for the statistics.
- * @return true if all statistics are stored successfully, false if any operation fails.
+ * @return true if all statistics are stored successfully, false if any
+ * operation fails.
  */
 bool DataStoreServiceClient::UpsertTableStatistics(
     const txservice::TableName &ccm_table_name,
@@ -762,12 +807,13 @@ bool DataStoreServiceClient::UpsertTableStatistics(
 /**
  * @brief Fetches table ranges from the data store.
  *
- * Retrieves range information for the specified table by scanning the range table
- * storage. Constructs start and end keys based on the table name and performs
- * a scan operation with pagination support. The operation is performed asynchronously
- * with callback handling for completion.
+ * Retrieves range information for the specified table by scanning the range
+ * table storage. Constructs start and end keys based on the table name and
+ * performs a scan operation with pagination support. The operation is performed
+ * asynchronously with callback handling for completion.
  *
- * @param fetch_cc Fetch table ranges CC object containing table name and result storage.
+ * @param fetch_cc Fetch table ranges CC object containing table name and result
+ * storage.
  */
 void DataStoreServiceClient::FetchTableRanges(
     txservice::FetchTableRangesCc *fetch_cc)
@@ -801,7 +847,8 @@ void DataStoreServiceClient::FetchTableRanges(
  * for reading range information. The operation is performed asynchronously
  * with callback handling for completion.
  *
- * @param fetch_cc Fetch range slices request object containing table name, range entry, and result storage.
+ * @param fetch_cc Fetch range slices request object containing table name,
+ * range entry, and result storage.
  */
 void DataStoreServiceClient::FetchRangeSlices(
     txservice::FetchRangeSlicesReq *fetch_cc)
@@ -835,8 +882,8 @@ void DataStoreServiceClient::FetchRangeSlices(
  *
  * Removes data from the KV table that falls outside the specified range.
  * Constructs the appropriate start key based on the provided parameters and
- * performs a delete range operation. Handles special cases for negative infinity
- * keys and constructs proper key boundaries for the deletion.
+ * performs a delete range operation. Handles special cases for negative
+ * infinity keys and constructs proper key boundaries for the deletion.
  *
  * @param table_name The table name to delete data from.
  * @param partition_id The partition ID for the operation.
@@ -917,9 +964,9 @@ bool DataStoreServiceClient::Read(const txservice::TableName &table_name,
 /**
  * @brief Creates a scanner for forward or backward scanning of table data.
  *
- * Creates and initializes a data store scanner for iterating over records in a table.
- * Supports both forward and backward scanning with configurable search conditions.
- * The scanner is initialized before returning.
+ * Creates and initializes a data store scanner for iterating over records in a
+ * table. Supports both forward and backward scanning with configurable search
+ * conditions. The scanner is initialized before returning.
  *
  * @param table_name The table name to scan.
  * @param ng_id Node group ID for the operation.
@@ -1128,7 +1175,8 @@ std::string DataStoreServiceClient::EncodeRangeValue(int32_t range_id,
  *
  * Creates a composite key by combining table name, range ID, and segment ID.
  * Uses little-endian encoding for numeric values since range slice operations
- * are point reads rather than scans, optimizing for direct key lookup performance.
+ * are point reads rather than scans, optimizing for direct key lookup
+ * performance.
  *
  * @param table_name The table name for the range slice.
  * @param range_id The range identifier.
@@ -1174,11 +1222,11 @@ void DataStoreServiceClient::UpdateEncodedRangeSliceKey(
 /**
  * @brief Updates range slices for a table partition.
  *
- * Stores range slice information by segmenting the slices into manageable chunks
- * and writing them to the KV storage system. Handles slice serialization with
- * proper key encoding and batch size management. Also updates the range information
- * with the new version and segment count. Uses both local and remote storage paths
- * based on configuration.
+ * Stores range slice information by segmenting the slices into manageable
+ * chunks and writing them to the KV storage system. Handles slice serialization
+ * with proper key encoding and batch size management. Also updates the range
+ * information with the new version and segment count. Uses both local and
+ * remote storage paths based on configuration.
  *
  * @param table_name The table name for the range slices.
  * @param version The version number for the slices.
@@ -1186,7 +1234,8 @@ void DataStoreServiceClient::UpdateEncodedRangeSliceKey(
  * @param slices Vector of store slices to update.
  * @param partition_id The partition ID for the range.
  * @param range_version The version of the range.
- * @return true if all slices are updated successfully, false if any operation fails.
+ * @return true if all slices are updated successfully, false if any operation
+ * fails.
  */
 bool DataStoreServiceClient::UpdateRangeSlices(
     const txservice::TableName &table_name,
@@ -1341,15 +1390,16 @@ bool DataStoreServiceClient::UpdateRangeSlices(
 /**
  * @brief Upserts range information for a table.
  *
- * Updates range slices for multiple ranges by calling UpdateRangeSlices for each
- * range in the provided vector. After updating all ranges, flushes the range table
- * data to ensure persistence. Validates that the table name is not empty and
- * handles errors from individual range updates.
+ * Updates range slices for multiple ranges by calling UpdateRangeSlices for
+ * each range in the provided vector. After updating all ranges, flushes the
+ * range table data to ensure persistence. Validates that the table name is not
+ * empty and handles errors from individual range updates.
  *
  * @param table_name The table name for the ranges.
  * @param range_info Vector of split range information to upsert.
  * @param version The version number for the ranges.
- * @return true if all ranges are updated and flushed successfully, false if any operation fails.
+ * @return true if all ranges are updated and flushed successfully, false if any
+ * operation fails.
  */
 bool DataStoreServiceClient::UpsertRanges(
     const txservice::TableName &table_name,
@@ -1431,14 +1481,17 @@ bool DataStoreServiceClient::FetchTable(const txservice::TableName &table_name,
 /**
  * @brief Discovers all table names in the data store.
  *
- * Scans the table catalogs to discover all available table names. Uses pagination
- * with session management and supports cooperative scheduling through yield/resume
- * function pointers. Performs the scan asynchronously and waits for completion.
+ * Scans the table catalogs to discover all available table names. Uses
+ * pagination with session management and supports cooperative scheduling
+ * through yield/resume function pointers. Performs the scan asynchronously and
+ * waits for completion.
  *
  * @param norm_name_vec Output vector to store the discovered table names.
- * @param yield_fptr Optional function pointer for yielding control during pagination.
+ * @param yield_fptr Optional function pointer for yielding control during
+ * pagination.
  * @param resume_fptr Optional function pointer for resuming after yielding.
- * @return true if the discovery operation completes successfully, false if any error occurs.
+ * @return true if the discovery operation completes successfully, false if any
+ * error occurs.
  */
 bool DataStoreServiceClient::DiscoverAllTableNames(
     std::vector<std::string> &norm_name_vec,
@@ -1471,13 +1524,14 @@ bool DataStoreServiceClient::DiscoverAllTableNames(
  * @brief Upserts database definition to the data store.
  *
  * Stores database definition information in the KV storage system. The storage
- * format uses the database name as the key and the database definition as the value.
- * Uses current timestamp for versioning and performs the operation asynchronously
- * with synchronous waiting for completion.
+ * format uses the database name as the key and the database definition as the
+ * value. Uses current timestamp for versioning and performs the operation
+ * asynchronously with synchronous waiting for completion.
  *
  * @param db The database name to upsert.
  * @param definition The database definition to store.
- * @return true if the database is upserted successfully, false if any operation fails.
+ * @return true if the database is upserted successfully, false if any operation
+ * fails.
  */
 bool DataStoreServiceClient::UpsertDatabase(std::string_view db,
                                             std::string_view definition)
@@ -1527,12 +1581,14 @@ bool DataStoreServiceClient::UpsertDatabase(std::string_view db,
 /**
  * @brief Drops a database from the data store.
  *
- * Removes a database definition from the KV storage system by performing a DELETE
- * operation on the database catalog. Uses current timestamp for versioning and
- * performs the operation asynchronously with synchronous waiting for completion.
+ * Removes a database definition from the KV storage system by performing a
+ * DELETE operation on the database catalog. Uses current timestamp for
+ * versioning and performs the operation asynchronously with synchronous waiting
+ * for completion.
  *
  * @param db The database name to drop.
- * @return true if the database is dropped successfully, false if any operation fails.
+ * @return true if the database is dropped successfully, false if any operation
+ * fails.
  */
 bool DataStoreServiceClient::DropDatabase(std::string_view db)
 {
@@ -1590,7 +1646,8 @@ bool DataStoreServiceClient::DropDatabase(std::string_view db)
  * @param found Output parameter indicating if the database was found.
  * @param yield_fptr Optional function pointer for yielding control.
  * @param resume_fptr Optional function pointer for resuming after yielding.
- * @return true if the fetch operation completes successfully, false if any error occurs.
+ * @return true if the fetch operation completes successfully, false if any
+ * error occurs.
  */
 bool DataStoreServiceClient::FetchDatabase(
     std::string_view db,
@@ -1870,14 +1927,17 @@ void DataStoreServiceClient::EncodeArchiveKey(
  * @brief Decodes an archive key to extract its components.
  *
  * Parses an archive key string to extract the table name, transaction key,
- * and commit timestamp. The archive key format is: "log:item:{table_name}:{key}:{commit_ts}".
- * Validates the key format and extracts each component using string separators.
+ * and commit timestamp. The archive key format is:
+ * "log:item:{table_name}:{key}:{commit_ts}". Validates the key format and
+ * extracts each component using string separators.
  *
  * @param archive_key The archive key string to decode.
  * @param table_name Output parameter for the extracted table name.
  * @param key Output parameter for the extracted transaction key.
- * @param be_commit_ts Output parameter for the extracted commit timestamp (big-endian).
- * @return true if the key is successfully decoded, false if the format is invalid.
+ * @param be_commit_ts Output parameter for the extracted commit timestamp
+ * (big-endian).
+ * @return true if the key is successfully decoded, false if the format is
+ * invalid.
  */
 bool DataStoreServiceClient::DecodeArchiveKey(const std::string &archive_key,
                                               std::string &table_name,
@@ -1993,24 +2053,36 @@ void DataStoreServiceClient::DecodeArchiveValue(
 }
 
 /**
- * @brief Writes multiple MVCC archive records to the MVCC archive KV table in partitioned batches.
+ * @brief Writes multiple MVCC archive records to the MVCC archive KV table
+ * using sequential batch processing.
  *
- * Groups archive entries from the provided flush tasks by archive partition, serializes keys
- * and values into batch write requests, and dispatches those requests (possibly concurrently)
- * to the KV layer. Batches are split to respect MAX_WRITE_BATCH_SIZE and an internal limit on
- * in-flight write requests; the method waits for all dispatched batches for each partition to
- * complete before returning.
+ * Groups archive entries from the provided flush tasks by archive partition,
+ * serializes keys and values into batch write requests, and dispatches those
+ * requests sequentially within each partition. Uses SyncConcurrentRequest for
+ * global concurrency control to limit the total number of in-flight requests
+ * across all partitions.
+ *
+ * Key features:
+ * - Sequential processing within each partition to maintain ordering
+ * - Global concurrency control with max_flying_write_count limit (32)
+ * - Automatic batching based on MAX_WRITE_BATCH_SIZE (64MB)
+ * - Flow control to prevent overwhelming the system
+ *
+ * The method waits for all dispatched batches for each partition to complete
+ * before returning.
  *
  * Side effects:
- * - Commits serialized archive records to kv_mvcc_archive_name with a default TTL of 1 day.
- * - Converts per-record commit timestamps to big-endian form as part of key encoding (the
- *   in-memory commit_ts field of those records is mutated during processing).
+ * - Commits serialized archive records to kv_mvcc_archive_name with a default
+ * TTL of 1 day.
+ * - Converts per-record commit timestamps to big-endian form as part of key
+ * encoding (the in-memory commit_ts field of those records is mutated during
+ * processing).
  *
- * @param flush_task Map from KV table name to a vector of FlushTaskEntry pointers whose
- *                   archive vectors contain the FlushRecord entries to write. Only entries
- *                   with non-empty archive vectors are processed.
- * @return true if all batches for all partitions completed successfully; false if any batch
- *         failed (an error will be logged).
+ * @param flush_task Map from KV table name to a vector of FlushTaskEntry
+ * pointers whose archive vectors contain the FlushRecord entries to write. Only
+ * entries with non-empty archive vectors are processed.
+ * @return true if all batches for all partitions completed successfully; false
+ * if any batch failed (an error will be logged).
  */
 bool DataStoreServiceClient::PutArchivesAll(
     std::unordered_map<std::string_view,
@@ -2060,7 +2132,7 @@ bool DataStoreServiceClient::PutArchivesAll(
         std::vector<WriteOpType> op_types;
         // temporary storage for the records in between batch
         // for keeping record upack info and encoded blob sizes
-        std::vector<uint64_t> record_tmp_mem_area;
+        std::vector<size_t> record_tmp_mem_area;
         record_tmp_mem_area.resize(archive_ptrs.size() *
                                    2);  // unpack_info_size + encoded_blob_size
         size_t write_batch_size = 0;
@@ -2073,9 +2145,10 @@ bool DataStoreServiceClient::PutArchivesAll(
         uint16_t parts_cnt_per_record = 5;
 
         // Send the batch request
-        SyncPutAllData *sync_putall = sync_putall_data_pool_.NextObject();
-        PoolableGuard guard(sync_putall);
-        sync_putall->Reset();
+        SyncConcurrentRequest *sync_concurrent =
+            sync_concurrent_request_pool_.NextObject();
+        PoolableGuard guard(sync_concurrent);
+        sync_concurrent->Reset();
 
         size_t recs_cnt = archive_ptrs.size();
         keys.reserve(recs_cnt * parts_cnt_per_key);
@@ -2091,13 +2164,13 @@ bool DataStoreServiceClient::PutArchivesAll(
             {
                 // Wait for in-flight requests to decrease if limit reached
                 {
-                    std::unique_lock<bthread::Mutex> lk(sync_putall->mux_);
-                    sync_putall->unfinished_request_cnt_++;
-                    while (sync_putall->unfinished_request_cnt_ >=
-                           SyncPutAllData::max_flying_write_count)
+                    std::unique_lock<bthread::Mutex> lk(sync_concurrent->mux_);
+                    while (sync_concurrent->unfinished_request_cnt_ >=
+                           SyncConcurrentRequest::max_flying_write_count)
                     {
-                        sync_putall->cv_.wait(lk);
+                        sync_concurrent->cv_.wait(lk);
                     }
+                    sync_concurrent->unfinished_request_cnt_++;
                 }
                 BatchWriteRecords(kv_mvcc_archive_name,
                                   partition_id,
@@ -2107,8 +2180,8 @@ bool DataStoreServiceClient::PutArchivesAll(
                                   std::move(records_ttl),
                                   std::move(op_types),
                                   true,
-                                  sync_putall,
-                                  SyncPutAllCallback,
+                                  sync_concurrent,
+                                  SyncConcurrentRequestCallback,
                                   parts_cnt_per_key,
                                   parts_cnt_per_record);
                 keys.clear();
@@ -2183,8 +2256,8 @@ bool DataStoreServiceClient::PutArchivesAll(
                               std::move(records_ttl),
                               std::move(op_types),
                               true,
-                              sync_putall,
-                              SyncPutAllCallback,
+                              sync_concurrent,
+                              SyncConcurrentRequestCallback,
                               parts_cnt_per_key,
                               parts_cnt_per_record);
             keys.clear();
@@ -2200,26 +2273,26 @@ bool DataStoreServiceClient::PutArchivesAll(
             op_types.reserve(recs_cnt);
             write_batch_size = 0;
             {
-                std::unique_lock<bthread::Mutex> lk(sync_putall->mux_);
-                sync_putall->unfinished_request_cnt_++;
+                std::unique_lock<bthread::Mutex> lk(sync_concurrent->mux_);
+                sync_concurrent->unfinished_request_cnt_++;
             }
         }
 
         // Wait the result.
         {
-            std::unique_lock<bthread::Mutex> lk(sync_putall->mux_);
-            sync_putall->all_request_started_ = true;
-            while (sync_putall->unfinished_request_cnt_ != 0)
+            std::unique_lock<bthread::Mutex> lk(sync_concurrent->mux_);
+            sync_concurrent->all_request_started_ = true;
+            while (sync_concurrent->unfinished_request_cnt_ != 0)
             {
-                sync_putall->cv_.wait(lk);
+                sync_concurrent->cv_.wait(lk);
             }
         }
 
-        if (sync_putall->result_.error_code() !=
+        if (sync_concurrent->result_.error_code() !=
             remote::DataStoreError::NO_ERROR)
         {
             LOG(ERROR) << "PutArchivesAll failed for error: "
-                       << sync_putall->result_.error_msg();
+                       << sync_concurrent->result_.error_msg();
             return false;
         }
     }
@@ -2235,8 +2308,10 @@ bool DataStoreServiceClient::PutArchivesAll(
  * handles both hash and range partitioned tables. Uses archive-specific
  * encoding and TTL settings for the copied data.
  *
- * @param flush_task Map of table names to flush task entries containing base records to copy.
- * @return true if all records are successfully copied to archive, false if any operation fails.
+ * @param flush_task Map of table names to flush task entries containing base
+ * records to copy.
+ * @return true if all records are successfully copied to archive, false if any
+ * operation fails.
  */
 bool DataStoreServiceClient::CopyBaseToArchive(
     std::unordered_map<std::string_view,
@@ -2408,8 +2483,9 @@ bool DataStoreServiceClient::CopyBaseToArchive(
  * @brief Fetches archive records for a specific key from a given timestamp.
  *
  * Retrieves archived versions of a record from the MVCC archive storage.
- * Scans the archive table for records matching the specified key and timestamp range.
- * Currently asserts false as this functionality is not fully implemented.
+ * Scans the archive table for records matching the specified key and timestamp
+ * range. Currently asserts false as this functionality is not fully
+ * implemented.
  *
  * @param table_name The table name to fetch archives for.
  * @param kv_info KV catalog information for the table.
@@ -2611,7 +2687,8 @@ bool DataStoreServiceClient::FetchVisibleArchive(
  * initiates a scan operation to fetch all relevant archive versions.
  * Sets up the fetch CC object with the necessary scan parameters.
  *
- * @param fetch_cc Fetch record CC object containing key, timestamp, and result storage.
+ * @param fetch_cc Fetch record CC object containing key, timestamp, and result
+ * storage.
  * @return DataStoreOpStatus indicating the operation status.
  */
 txservice::store::DataStoreHandler::DataStoreOpStatus
@@ -2694,7 +2771,8 @@ DataStoreServiceClient::FetchVisibleArchive(
  * @param backup_name The name for the backup snapshot.
  * @param backup_files Output vector to store the generated backup file paths.
  * @param backup_ts The timestamp for the backup.
- * @return true if the snapshot is created successfully, false if any operation fails.
+ * @return true if the snapshot is created successfully, false if any operation
+ * fails.
  */
 bool DataStoreServiceClient::CreateSnapshotForBackup(
     const std::string &backup_name,
@@ -2789,9 +2867,9 @@ void DataStoreServiceClient::CreateSnapshotForBackupInternal(
 /**
  * @brief Determines if range copying is needed.
  *
- * Currently always returns true, indicating that range copying is always required.
- * This method is used to determine whether range data needs to be copied during
- * certain operations.
+ * Currently always returns true, indicating that range copying is always
+ * required. This method is used to determine whether range data needs to be
+ * copied during certain operations.
  *
  * @return Always returns true.
  */
@@ -2835,7 +2913,8 @@ bool DataStoreServiceClient::OnLeaderStart(uint32_t *next_leader_node)
  * @brief Handles start following event.
  *
  * Currently empty implementation. This method is called when the node starts
- * following another leader and can be used to perform follower-specific initialization.
+ * following another leader and can be used to perform follower-specific
+ * initialization.
  */
 void DataStoreServiceClient::OnStartFollowing()
 {
@@ -2844,8 +2923,8 @@ void DataStoreServiceClient::OnStartFollowing()
 /**
  * @brief Handles shutdown event.
  *
- * Currently empty implementation. This method is called when the node is shutting
- * down and can be used to perform cleanup operations.
+ * Currently empty implementation. This method is called when the node is
+ * shutting down and can be used to perform cleanup operations.
  */
 void DataStoreServiceClient::OnShutdown()
 {
@@ -4111,10 +4190,10 @@ bool DataStoreServiceClient::DeleteCatalog(
 }
 
 void DataStoreServiceClient::PreparePartitionBatches(
-    EloqDS::PartitionFlushState& partition_state,
-    const std::vector<std::pair<size_t, size_t>>& flush_recs,
-    const std::vector<std::unique_ptr<txservice::FlushTaskEntry>>& entries,
-    const txservice::TableName& table_name,
+    EloqDS::PartitionFlushState &partition_state,
+    const std::vector<std::pair<size_t, size_t>> &flush_recs,
+    const std::vector<std::unique_ptr<txservice::FlushTaskEntry>> &entries,
+    const txservice::TableName &table_name,
     uint16_t parts_cnt_per_key,
     uint16_t parts_cnt_per_record,
     uint64_t now)
@@ -4200,11 +4279,8 @@ void DataStoreServiceClient::PreparePartitionBatches(
         op_types.push_back(WriteOpType::PUT);
         batch_size += sizeof(WriteOpType);
 
-        SerializeTxRecord(is_deleted,
-                          rec,
-                          record_tmp_mem_area,
-                          record_parts,
-                          batch_size);
+        SerializeTxRecord(
+            is_deleted, rec, record_tmp_mem_area, record_parts, batch_size);
 
         records_ts.push_back(ckpt_rec.commit_ts_);
         batch_size += sizeof(uint64_t);
@@ -4219,15 +4295,16 @@ void DataStoreServiceClient::PreparePartitionBatches(
         // Start a new batch if size limit reached
         if (write_batch_size >= MAX_WRITE_BATCH_SIZE)
         {
-            partition_state.AddBatch(PartitionBatchRequest(
-                std::move(key_parts),
-                std::move(record_parts),
-                std::move(records_ts),
-                std::move(records_ttl),
-                std::move(op_types),
-                parts_cnt_per_key,
-                parts_cnt_per_record));
-            
+            partition_state.AddBatch(
+                PartitionBatchRequest(std::move(key_parts),
+                                      std::move(record_parts),
+                                      std::move(records_ts),
+                                      std::move(records_ttl),
+                                      std::move(record_tmp_mem_area),
+                                      std::move(op_types),
+                                      parts_cnt_per_key,
+                                      parts_cnt_per_record));
+
             key_parts.clear();
             record_parts.clear();
             records_ts.clear();
@@ -4253,22 +4330,23 @@ void DataStoreServiceClient::PreparePartitionBatches(
     // Add the last batch if it has data
     if (key_parts.size() > 0)
     {
-        partition_state.AddBatch(PartitionBatchRequest(
-            std::move(key_parts),
-            std::move(record_parts),
-            std::move(records_ts),
-            std::move(records_ttl),
-            std::move(op_types),
-            parts_cnt_per_key,
-            parts_cnt_per_record));
+        partition_state.AddBatch(
+            PartitionBatchRequest(std::move(key_parts),
+                                  std::move(record_parts),
+                                  std::move(records_ts),
+                                  std::move(records_ttl),
+                                  std::move(record_tmp_mem_area),
+                                  std::move(op_types),
+                                  parts_cnt_per_key,
+                                  parts_cnt_per_record));
     }
 }
 
 void DataStoreServiceClient::PrepareRangePartitionBatches(
-    EloqDS::PartitionFlushState& partition_state,
-    const std::vector<size_t>& flush_recs,
-    const std::vector<std::unique_ptr<txservice::FlushTaskEntry>>& entries,
-    const txservice::TableName& table_name,
+    EloqDS::PartitionFlushState &partition_state,
+    const std::vector<size_t> &flush_recs,
+    const std::vector<std::unique_ptr<txservice::FlushTaskEntry>> &entries,
+    const txservice::TableName &table_name,
     uint16_t parts_cnt_per_key,
     uint16_t parts_cnt_per_record,
     uint64_t now)
@@ -4305,11 +4383,8 @@ void DataStoreServiceClient::PrepareRangePartitionBatches(
         op_types.push_back(WriteOpType::PUT);
         batch_size += sizeof(WriteOpType);
 
-        SerializeTxRecord(is_deleted,
-                          rec,
-                          record_tmp_mem_area,
-                          record_parts,
-                          batch_size);
+        SerializeTxRecord(
+            is_deleted, rec, record_tmp_mem_area, record_parts, batch_size);
 
         records_ts.push_back(ckpt_rec.commit_ts_);
         batch_size += sizeof(uint64_t);
@@ -4323,15 +4398,16 @@ void DataStoreServiceClient::PrepareRangePartitionBatches(
             // Start a new batch if size limit reached
             if (write_batch_size >= MAX_WRITE_BATCH_SIZE)
             {
-                partition_state.AddBatch(PartitionBatchRequest(
-                    std::move(key_parts),
-                    std::move(record_parts),
-                    std::move(records_ts),
-                    std::move(records_ttl),
-                    std::move(op_types),
-                    parts_cnt_per_key,
-                    parts_cnt_per_record));
-                
+                partition_state.AddBatch(
+                    PartitionBatchRequest(std::move(key_parts),
+                                          std::move(record_parts),
+                                          std::move(records_ts),
+                                          std::move(records_ttl),
+                                          std::move(record_tmp_mem_area),
+                                          std::move(op_types),
+                                          parts_cnt_per_key,
+                                          parts_cnt_per_record));
+
                 key_parts.clear();
                 record_parts.clear();
                 records_ts.clear();
@@ -4341,8 +4417,9 @@ void DataStoreServiceClient::PrepareRangePartitionBatches(
                 write_batch_size = 0;
             }
 
-            assert(ckpt_rec.payload_status_ == txservice::RecordStatus::Normal ||
-                   ckpt_rec.payload_status_ == txservice::RecordStatus::Deleted);
+            assert(
+                ckpt_rec.payload_status_ == txservice::RecordStatus::Normal ||
+                ckpt_rec.payload_status_ == txservice::RecordStatus::Deleted);
 
             // Currently there is no object table in range partitioned table
             PrepareRecordData(ckpt_rec, write_batch_size);
@@ -4352,14 +4429,15 @@ void DataStoreServiceClient::PrepareRangePartitionBatches(
     // Add the last batch if it has data
     if (key_parts.size() > 0)
     {
-        partition_state.AddBatch(PartitionBatchRequest(
-            std::move(key_parts),
-            std::move(record_parts),
-            std::move(records_ts),
-            std::move(records_ttl),
-            std::move(op_types),
-            parts_cnt_per_key,
-            parts_cnt_per_record));
+        partition_state.AddBatch(
+            PartitionBatchRequest(std::move(key_parts),
+                                  std::move(record_parts),
+                                  std::move(records_ts),
+                                  std::move(records_ttl),
+                                  std::move(record_tmp_mem_area),
+                                  std::move(op_types),
+                                  parts_cnt_per_key,
+                                  parts_cnt_per_record));
     }
 }
 
