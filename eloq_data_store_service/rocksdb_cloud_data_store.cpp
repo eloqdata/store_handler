@@ -577,11 +577,11 @@ bool RocksDBCloudDataStore::OpenCloudDB(
     }
     std::string bucket_name =
         cloud_config_.bucket_prefix_ + cloud_config_.bucket_name_;
-    auto db_event_listener =
-        std::make_shared<PurgerEventListener>("", /*We still don't know the epoch now*/
-                                              bucket_name,
-                                              cloud_config_.object_path_,
-                                              cfs_impl->GetStorageProvider());
+    auto db_event_listener = std::make_shared<PurgerEventListener>(
+        "", /*We still don't know the epoch now*/
+        bucket_name,
+        cloud_config_.object_path_,
+        cfs_impl->GetStorageProvider());
     options.listeners.emplace_back(db_event_listener);
 
     // set ttl compaction filter
@@ -637,7 +637,14 @@ bool RocksDBCloudDataStore::OpenCloudDB(
 
     // Stop background work - memtable flush and compaction
     // before blocking purger
-    db_->PauseBackgroundWork();
+    status = db_->PauseBackgroundWork();
+    if (!status.ok())
+    {
+        LOG(ERROR) << "Fail to pause background work, error: "
+                   << status.ToString();
+        db_->ContinueBackgroundWork();
+        return false;
+    }
 
     // set epoch for purger event listener
     std::string current_epoch;
@@ -646,9 +653,15 @@ bool RocksDBCloudDataStore::OpenCloudDB(
     {
         LOG(ERROR) << "Fail to get current epoch from db, error: "
                    << status.ToString();
+        db_->ContinueBackgroundWork();
         return false;
     }
-    assert(!current_epoch.empty());
+    if (current_epoch.empty())
+    {
+        LOG(ERROR) << "Current epoch from db is empty";
+        db_->ContinueBackgroundWork();
+        return false;
+    }
     db_event_listener->SetEpoch(current_epoch);
     db_event_listener->BlockPurger();
 

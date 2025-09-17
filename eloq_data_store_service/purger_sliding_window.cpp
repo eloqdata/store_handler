@@ -88,6 +88,17 @@ void S3FileNumberUpdater::UpdateSmallestFileNumber(uint64_t file_number,
     }
     close(fd);  // We will open it later for reading
 
+    if (!storage_provider_)
+    {
+        LOG(ERROR) << "Cloud storage provider is not initialized";
+        // Remove the temp file
+        if (std::remove(temp_file_path.c_str()) != 0)
+        {
+            LOG(WARNING) << "Failed to remove temp file: " << temp_file_path;
+        }
+        return;
+    }
+
     rocksdb::IOStatus s = storage_provider_->PutCloudObject(
         temp_file_path, bucket_name_, object_key);
 
@@ -117,6 +128,8 @@ void S3FileNumberUpdater::BlockPurger(const std::string &epoch)
 {
     DLOG(INFO) << "Wrote 0 as file number to S3 to block purger";
     UpdateSmallestFileNumber(std::numeric_limits<uint64_t>::min(), epoch);
+    // Don't update last_published_smallest_ in sliding window,
+    // so that future smaller file number can still be updated
 }
 
 std::string S3FileNumberUpdater::GetS3ObjectKey(const std::string &epoch) const
@@ -143,6 +156,7 @@ SlidingWindow::SlidingWindow(
     : entry_duration_(entry_duration),
       s3_update_interval_(s3_update_interval),
       epoch_(epoch),
+      last_published_smallest_(std::numeric_limits<uint64_t>::max()),
       should_stop_(false)
 {
     s3_updater_ = std::make_unique<S3FileNumberUpdater>(
@@ -178,27 +192,31 @@ void SlidingWindow::AddFileNumber(uint64_t file_number,
                                   int thread_id,
                                   uint64_t job_id)
 {
-    std::lock_guard<std::mutex> lock(window_mutex_);
-
-    uint64_t smallest = GetSmallestFileNumber();
-    if (file_number < smallest)
+    std::string epoch_copy;
+    bool do_immediate_update = false;
     {
-        DLOG(WARNING) << "New file number " << file_number
-                      << " is smaller than current smallest " << smallest
-                      << " update smallest file number in S3 immediately"
-                      << ", thread_id: " << thread_id << ", job_id: " << job_id
-                      << ", epoch: " << epoch_;
-        // The purger must seem the smallest file number before seeing
-        // any larger file number, so update S3 immediately
-        s3_updater_->UpdateSmallestFileNumber(file_number, epoch_);
+        std::lock_guard<std::mutex> lock(window_mutex_);
+        do_immediate_update =
+            (file_number < last_published_smallest_) && !epoch_.empty();
+        epoch_copy = epoch_;
+        std::string key = GenerateKey(thread_id, job_id);
+        window_entries_.emplace(key, WindowEntry(file_number));
+        DLOG(INFO) << "Added file number to sliding window: " << file_number
+                   << ", thread_id: " << thread_id << ", job_id: " << job_id
+                   << ", epoch: " << epoch_
+                   << ", window size: " << window_entries_.size();
     }
-    std::string key = GenerateKey(thread_id, job_id);
-    window_entries_.emplace(key, WindowEntry(file_number));
 
-    DLOG(INFO) << "Added file number to sliding window: " << file_number
-               << ", thread_id: " << thread_id << ", job_id: " << job_id
-               << ", epoch: " << epoch_
-               << ", window size: " << window_entries_.size();
+    if (do_immediate_update)
+    {
+        DLOG(INFO) << "Immediate S3 update with smaller file number: "
+                   << file_number << ", thread_id: " << thread_id
+                   << ", job_id: " << job_id << ", epoch: " << epoch_copy;
+        std::lock_guard<std::mutex> g(window_mutex_);
+        s3_updater_->UpdateSmallestFileNumber(file_number, epoch_copy);
+        last_published_smallest_ =
+            std::min(last_published_smallest_, file_number);
+    }
 }
 
 void SlidingWindow::RemoveFileNumber(int thread_id, uint64_t job_id)
@@ -335,10 +353,7 @@ void SlidingWindow::TimerWorker()
         DLOG(INFO) << "SlidingWindow timer processing for epoch " << epoch_;
 
         uint64_t smallest = GetSmallestFileNumber();
-        // Release lock during S3 operation to avoid blocking AddFileNumber
-        lock.unlock();
         FlushToS3(smallest);
-        lock.lock();
     }
 
     DLOG(INFO) << "SlidingWindow timer thread exiting for epoch " << epoch_;
@@ -347,6 +362,7 @@ void SlidingWindow::TimerWorker()
 void SlidingWindow::FlushToS3(uint64_t smallest)
 {
     s3_updater_->UpdateSmallestFileNumber(smallest, epoch_);
+    last_published_smallest_ = smallest;
     DLOG(INFO) << "Updated S3 with smallest file number: " << smallest
                << ", epoch: " << epoch_;
 }

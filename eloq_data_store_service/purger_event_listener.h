@@ -139,7 +139,7 @@ private:
      * @param job_id The job ID of the operation (default: 0)
      */
     void UpdateSlidingWindow(rocksdb::DB *db,
-                             int thread_id = 0,
+                             uint64_t thread_id = 0,
                              uint64_t job_id = 0);
 };
 

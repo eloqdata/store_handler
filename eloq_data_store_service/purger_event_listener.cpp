@@ -211,7 +211,7 @@ std::string PurgerEventListener::GetFlushReason(
 }
 
 void PurgerEventListener::UpdateSlidingWindow(rocksdb::DB *db,
-                                              int thread_id,
+                                              uint64_t thread_id,
                                               uint64_t job_id)
 {
     if (!db)

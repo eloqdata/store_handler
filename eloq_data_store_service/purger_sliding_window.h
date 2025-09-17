@@ -98,6 +98,11 @@ public:
      */
     ~SlidingWindow();
 
+    SlidingWindow(const SlidingWindow&) = delete;
+    SlidingWindow& operator=(const SlidingWindow&) = delete;
+    SlidingWindow(SlidingWindow&&) = delete;
+    SlidingWindow& operator=(SlidingWindow&&) = delete;
+
     void SetEpoch(const std::string &epoch);
 
     std::string GetEpoch();
@@ -153,6 +158,9 @@ private:
     std::chrono::milliseconds entry_duration_;
     std::chrono::milliseconds s3_update_interval_;
     std::string epoch_;
+
+    // Last published smallest file number to avoid conflicting updates
+    uint64_t last_published_smallest_{std::numeric_limits<uint64_t>::max()};
 
     std::unique_ptr<S3FileNumberUpdater> s3_updater_;
 
