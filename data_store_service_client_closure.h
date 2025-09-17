@@ -34,103 +34,35 @@
 #include "data_store_service_scanner.h"
 #include "eloq_data_store_service/object_pool.h"
 
-/**
-     * Callback type invoked on completion of a datastore operation.
-     *
-     * Parameters:
-     *  - data: user-provided context pointer passed through the async call.
-     *  - closure: protobuf closure associated with the RPC (may be nullptr for local paths).
-     *  - client: reference to the DataStoreServiceClient that executed the operation.
-     *  - result: operation result detail (error code/message and any operation-specific fields).
-     */
-    
-    /**
-     * Synchronization helper used to wait for an asynchronous datastore operation to complete.
-     *
-     * Provides a mutex/condition variable pair and a CommonResult to store the outcome.
-     * Typical usage: Reset() before issuing the async operation, Notify() from the async
-     * completion callback, and Wait() from the waiting thread. HasError() reports whether
-     * the stored result represents an error other than NO_ERROR or KEY_NOT_FOUND.
-     */
-    
-    /**
-     * Aggregation and flow-control helper for coordinating many concurrent put-all writes.
-     *
-     * - unfinished_request_cnt_: signed count of outstanding write requests (must be signed).
-     * - all_request_started_: set to true once all requests have been launched.
-     * - max_flying_write_count: upper bound on concurrent in-flight writes (32).
-     *
-     * Finish(res) will merge the first non-NO_ERROR result into `result_`, decrement the
-     * unfinished request count, and notify a waiter when either:
-     *  - all requests have been started and the unfinished count reaches zero, or
-     *  - the unfinished count falls to (max_flying_write_count - 1), enabling flow control
-     *    to allow launching further requests while keeping in-flight writes bounded.
-     */
-    
-    /**
-     * Generic synchronous callback adapter invoked by closures to signal completion.
-     *
-     * Parameters:
-     *  - data: user-provided context pointer passed through the async call.
-     *  - closure: protobuf closure associated with the RPC (may be nullptr for local paths).
-     *  - client: reference to the DataStoreServiceClient that executed the operation.
-     *  - result: operation result detail (error code/message and any operation-specific fields).
-     */
-    
-    /**
-     * Shared helper used when reading archived records concurrently.
-     *
-     * Holds references to external synchronization primitives and counters:
-     *  - mtx_, cv_: external mutex and condition variable used to guard flying_read_cnt_.
-     *  - flying_read_cnt_: reference to the shared in-flight read counter.
-     *  - error_code_: reference to an integer used to capture the first observed error.
-     *
-     * Also stores the most recent read result (partition_id_, key_str_, value_str_, ts_, ttl_).
-     * Thread-safe: methods that mutate or read shared resources acquire the provided mutex.
-     */
-    
-    /**
-     * Callback invoked for batch archive reads to aggregate or forward results.
-     *
-     * Parameters:
-     *  - data: user-provided context pointer passed through the async call.
-     *  - closure: protobuf closure associated with the RPC (may be nullptr for local paths).
-     *  - client: reference to the DataStoreServiceClient that executed the operation.
-     *  - result: operation result detail (error code/message and any operation-specific fields).
-     */
-    
-    /**
-     * Callback invoked to load a range slice (archive or otherwise).
-     *
-     * Parameters:
-     *  - data: user-provided context pointer passed through the async call.
-     *  - closure: protobuf closure associated with the RPC (may be nullptr for local paths).
-     *  - client: reference to the DataStoreServiceClient that executed the operation.
-     *  - result: operation result detail (error code/message and any operation-specific fields).
-     */
-    
-    /**
-     * Closure implementing a datastore Read operation supporting both local and remote paths.
-     *
-     * Use Reset(...) to configure a read (table, partition, key, client, and callback), then:
-     *  - PrepareRequest(is_local): prepare an RPC request if remote, or clear local result for local reads.
-     *  - Run(): executed when an RPC completes (or when local processing is finished). Run()
-     *    handles RPC failures with retry logic, translates NOT_OWNER into sharding handling
-     *    and potential retry, and finally invokes the user callback with the CommonResult.
-     *
-     * Accessors provide access to the brpc::Controller, request/response objects, table/partition/key,
-     * and local-result fields (value, ts, ttl, result). Value accessors return either the local
-     * in-memory values or the response's values depending on the request mode.
-     *
-     * Note: retry behavior is governed by the associated DataStoreServiceClient retry_limit_.
-     */
-    namespace EloqDS
+namespace EloqDS
 {
+/**
+ * Callback type invoked on completion of a datastore operation.
+ *
+ * Parameters:
+ *  - data: user-provided context pointer passed through the async call.
+ *  - closure: protobuf closure associated with the RPC (may be nullptr for
+ * local paths).
+ *  - client: reference to the DataStoreServiceClient that executed the
+ * operation.
+ *  - result: operation result detail (error code/message and any
+ * operation-specific fields).
+ */
 typedef void (*DataStoreCallback)(void *data,
                                   ::google::protobuf::Closure *closure,
                                   DataStoreServiceClient &client,
                                   const remote::CommonResult &result);
 
+/**
+ * Synchronization helper used to wait for an asynchronous datastore operation
+ * to complete.
+ *
+ * Provides a mutex/condition variable pair and a CommonResult to store the
+ * outcome. Typical usage: Reset() before issuing the async operation, Notify()
+ * from the async completion callback, and Wait() from the waiting thread.
+ * HasError() reports whether the stored result represents an error other than
+ * NO_ERROR or KEY_NOT_FOUND.
+ */
 struct SyncCallbackData : public Poolable
 {
     SyncCallbackData() : mtx_(), cv_(), finished_(false)
@@ -185,6 +117,22 @@ private:
 
     remote::CommonResult result_;
 };
+/**
+ * Aggregation and flow-control helper for coordinating many concurrent put-all
+ * writes.
+ *
+ * - unfinished_request_cnt_: signed count of outstanding write requests (must
+ * be signed).
+ * - all_request_started_: set to true once all requests have been launched.
+ * - max_flying_write_count: upper bound on concurrent in-flight writes (32).
+ *
+ * Finish(res) will merge the first non-NO_ERROR result into `result_`,
+ * decrement the unfinished request count, and notify a waiter when either:
+ *  - all requests have been started and the unfinished count reaches zero, or
+ *  - the unfinished count falls to (max_flying_write_count - 1), enabling flow
+ * control to allow launching further requests while keeping in-flight writes
+ * bounded.
+ */
 
 struct SyncPutAllData : public Poolable
 {
@@ -228,11 +176,43 @@ struct SyncPutAllData : public Poolable
     bthread::Mutex mux_;
     bthread::ConditionVariable cv_;
 };
+/**
+ * Generic synchronous callback adapter invoked by closures to signal
+ * completion.
+ *
+ * Parameters:
+ *  - data: user-provided context pointer passed through the async call.
+ *  - closure: protobuf closure associated with the RPC (may be nullptr for
+ * local paths).
+ *  - client: reference to the DataStoreServiceClient that executed the
+ * operation.
+ *  - result: operation result detail (error code/message and any
+ * operation-specific fields).
+ */
 
 void SyncCallback(void *data,
                   ::google::protobuf::Closure *closure,
                   DataStoreServiceClient &client,
                   const remote::CommonResult &result);
+
+/**
+ * Callback data structure for concurrent archive record reading operations.
+ * 
+ * Manages synchronization and flow control for reading base records that will
+ * be copied to archive storage. Tracks flying read count and provides mutex
+ * synchronization for concurrent access.
+ *
+ * Holds references to external synchronization primitives and counters:
+ *  - mtx_, cv_: external mutex and condition variable used to guard
+ * flying_read_cnt_.
+ *  - flying_read_cnt_: reference to the shared in-flight read counter.
+ *  - error_code_: reference to an integer used to capture the first observed
+ * error.
+ *
+ * Also stores the most recent read result (partition_id_, key_str_, value_str_,
+ * ts_, ttl_). Thread-safe: methods that mutate or read shared resources acquire
+ * the provided mutex.
+ */
 
 struct ReadBaseForArchiveCallbackData
 {
@@ -333,17 +313,60 @@ struct ReadBaseForArchiveCallbackData
     uint64_t ts_;
     uint64_t ttl_;
 };
-
+/**
+ * Callback invoked for batch archive reads to aggregate or forward results.
+ *
+ * Parameters:
+ *  - data: user-provided context pointer passed through the async call.
+ *  - closure: protobuf closure associated with the RPC (may be nullptr for
+ * local paths).
+ *  - client: reference to the DataStoreServiceClient that executed the
+ * operation.
+ *  - result: operation result detail (error code/message and any
+ * operation-specific fields).
+ */
 void SyncBatchReadForArchiveCallback(void *data,
                                      ::google::protobuf::Closure *closure,
                                      DataStoreServiceClient &client,
                                      const remote::CommonResult &result);
 
+/**
+ * Callback invoked to load a range slice (archive or otherwise).
+ *
+ * Parameters:
+ *  - data: user-provided context pointer passed through the async call.
+ *  - closure: protobuf closure associated with the RPC (may be nullptr for
+ * local paths).
+ *  - client: reference to the DataStoreServiceClient that executed the
+ * operation.
+ *  - result: operation result detail (error code/message and any
+ * operation-specific fields).
+ */
 void LoadRangeSliceCallback(void *data,
                             ::google::protobuf::Closure *closure,
                             DataStoreServiceClient &client,
                             const remote::CommonResult &result);
-
+/**
+ * Closure implementing a datastore Read operation supporting both local and
+ * remote paths.
+ *
+ * Use Reset(...) to configure a read (table, partition, key, client, and
+ * callback), then:
+ *  - PrepareRequest(is_local): prepare an RPC request if remote, or clear local
+ * result for local reads.
+ *  - Run(): executed when an RPC completes (or when local processing is
+ * finished). Run() handles RPC failures with retry logic, translates NOT_OWNER
+ * into sharding handling and potential retry, and finally invokes the user
+ * callback with the CommonResult.
+ *
+ * Accessors provide access to the brpc::Controller, request/response objects,
+ * table/partition/key, and local-result fields (value, ts, ttl, result). Value
+ * accessors return either the local in-memory values or the response's values
+ * depending on the request mode.
+ *
+ * Note: retry behavior is governed by the associated DataStoreServiceClient
+ * retry_limit_.
+ */
 class ReadClosure : public ::google::protobuf::Closure, public Poolable
 {
 public:
@@ -637,6 +660,13 @@ private:
     void *callback_data_;
 };
 
+/**
+ * Closure for asynchronous data flushing operations to KV storage.
+ * 
+ * Manages the lifecycle of flush operations, including RPC communication,
+ * retry logic, and callback invocation. Supports both local and remote
+ * flush operations with configurable retry behavior.
+ */
 class FlushDataClosure : public ::google::protobuf::Closure, public Poolable
 {
 public:
@@ -2163,31 +2193,62 @@ private:
     void *callback_data_;
 };
 
+/**
+ * Callback for fetching individual records from the data store.
+ * 
+ * Handles the completion of record fetch operations and processes the result.
+ */
 void FetchRecordCallback(void *data,
                          ::google::protobuf::Closure *closure,
                          DataStoreServiceClient &client,
                          const remote::CommonResult &result);
 
+/**
+ * Callback for fetching snapshot data from the data store.
+ * 
+ * Handles the completion of snapshot fetch operations and processes the result.
+ */
 void FetchSnapshotCallback(void *data,
                            ::google::protobuf::Closure *closure,
                            DataStoreServiceClient &client,
                            const remote::CommonResult &result);
 
+/**
+ * Callback data for asynchronous table drop operations.
+ * 
+ * Contains the KV table name that is being dropped.
+ */
 struct AsyncDropTableCallbackData
 {
     std::string kv_table_name_;
 };
 
+/**
+ * Callback for asynchronous table drop operations.
+ * 
+ * Handles the completion of table drop operations and processes the result.
+ */
 void AsyncDropTableCallback(void *data,
                             ::google::protobuf::Closure *closure,
                             DataStoreServiceClient &client,
                             const remote::CommonResult &result);
 
+/**
+ * Callback for fetching table catalog information.
+ * 
+ * Handles the completion of table catalog fetch operations and processes the result.
+ */
 void FetchTableCatalogCallback(void *data,
                                ::google::protobuf::Closure *closure,
                                DataStoreServiceClient &client,
                                const remote::CommonResult &result);
 
+/**
+ * Callback data for fetching table information.
+ * 
+ * Extends SyncCallbackData to include table-specific information like
+ * schema image, version timestamp, and found status.
+ */
 struct FetchTableCallbackData : public SyncCallbackData
 {
     FetchTableCallbackData() = default;
@@ -2219,11 +2280,24 @@ void FetchTableCallback(void *data,
                         DataStoreServiceClient &client,
                         const remote::CommonResult &result);
 
+/**
+ * Callback for synchronous put-all operations.
+ * 
+ * Handles the completion of batch put operations and updates the
+ * SyncPutAllData structure with the result.
+ */
 void SyncPutAllCallback(void *data,
                         ::google::protobuf::Closure *closure,
                         DataStoreServiceClient &client,
                         const remote::CommonResult &result);
 
+/**
+ * Callback data for fetching database information.
+ * 
+ * Extends SyncCallbackData to include database-specific information like
+ * database definition, found status, and yield/resume function pointers
+ * for cooperative scheduling.
+ */
 struct FetchDatabaseCallbackData : public SyncCallbackData
 {
     FetchDatabaseCallbackData() = default;
@@ -2280,11 +2354,22 @@ struct FetchDatabaseCallbackData : public SyncCallbackData
     const std::function<void()> *resume_fptr_;
 };
 
+/**
+ * Callback for fetching database information.
+ * 
+ * Handles the completion of database fetch operations and processes the result.
+ */
 void FetchDatabaseCallback(void *data,
                            ::google::protobuf::Closure *closure,
                            DataStoreServiceClient &client,
                            const remote::CommonResult &result);
 
+/**
+ * Callback data for fetching all database names.
+ * 
+ * Extends SyncCallbackData to include database names list and yield/resume
+ * function pointers for cooperative scheduling during pagination.
+ */
 struct FetchAllDatabaseCallbackData : public SyncCallbackData
 {
     FetchAllDatabaseCallbackData() = default;
@@ -2347,11 +2432,22 @@ struct FetchAllDatabaseCallbackData : public SyncCallbackData
     std::string end_key_;
 };
 
+/**
+ * Callback for fetching all database names.
+ * 
+ * Handles the completion of all database names fetch operations and processes the result.
+ */
 void FetchAllDatabaseCallback(void *data,
                               ::google::protobuf::Closure *closure,
                               DataStoreServiceClient &client,
                               const remote::CommonResult &result);
 
+/**
+ * Callback data for discovering all table names.
+ * 
+ * Extends SyncCallbackData to include table names list and yield/resume
+ * function pointers for cooperative scheduling during pagination.
+ */
 struct DiscoverAllTableNamesCallbackData : public SyncCallbackData
 {
     DiscoverAllTableNamesCallbackData() = default;
@@ -2408,30 +2504,61 @@ struct DiscoverAllTableNamesCallbackData : public SyncCallbackData
     std::string session_id_;
 };
 
+/**
+ * Callback for discovering all table names.
+ * 
+ * Handles the completion of table name discovery operations and processes the result.
+ */
 void DiscoverAllTableNamesCallback(void *data,
                                    ::google::protobuf::Closure *closure,
                                    DataStoreServiceClient &client,
                                    const remote::CommonResult &result);
 
+/**
+ * Callback for fetching table ranges.
+ * 
+ * Handles the completion of table range fetch operations and processes the result.
+ */
 void FetchTableRangesCallback(void *data,
                               ::google::protobuf::Closure *closure,
                               DataStoreServiceClient &client,
                               const remote::CommonResult &result);
 
+/**
+ * Callback for fetching range slices.
+ * 
+ * Handles the completion of range slice fetch operations and processes the result.
+ */
 void FetchRangeSlicesCallback(void *data,
                               ::google::protobuf::Closure *closure,
                               DataStoreServiceClient &client,
                               const remote::CommonResult &result);
+/**
+ * Callback for fetching current table statistics.
+ * 
+ * Handles the completion of current table statistics fetch operations and processes the result.
+ */
 void FetchCurrentTableStatsCallback(void *data,
                                     ::google::protobuf::Closure *closure,
                                     DataStoreServiceClient &client,
                                     const remote::CommonResult &result);
 
+/**
+ * Callback for fetching table statistics.
+ * 
+ * Handles the completion of table statistics fetch operations and processes the result.
+ */
 void FetchTableStatsCallback(void *data,
                              ::google::protobuf::Closure *closure,
                              DataStoreServiceClient &client,
                              const remote::CommonResult &result);
 
+/**
+ * Callback data for fetching archive records.
+ * 
+ * Extends SyncCallbackData to include archive-specific information like
+ * table name, partition ID, key ranges, batch size, and scan direction.
+ */
 struct FetchArchivesCallbackData : public SyncCallbackData
 {
     FetchArchivesCallbackData(const std::string_view kv_table_name,
@@ -2464,21 +2591,42 @@ struct FetchArchivesCallbackData : public SyncCallbackData
     std::vector<uint64_t> archive_commit_ts_;
 };
 
+/**
+ * Callback for fetching archive records.
+ * 
+ * Handles the completion of archive record fetch operations and processes the result.
+ */
 void FetchArchivesCallback(void *data,
                            ::google::protobuf::Closure *closure,
                            DataStoreServiceClient &client,
                            const remote::CommonResult &result);
 
+/**
+ * Callback for fetching record archives.
+ * 
+ * Handles the completion of record archive fetch operations and processes the result.
+ */
 void FetchRecordArchivesCallback(void *data,
                                  ::google::protobuf::Closure *closure,
                                  DataStoreServiceClient &client,
                                  const remote::CommonResult &result);
 
+/**
+ * Callback for fetching snapshot archives.
+ * 
+ * Handles the completion of snapshot archive fetch operations and processes the result.
+ */
 void FetchSnapshotArchiveCallback(void *data,
                                   ::google::protobuf::Closure *closure,
                                   DataStoreServiceClient &client,
                                   const remote::CommonResult &result);
 
+/**
+ * Callback data for creating snapshots for backup operations.
+ * 
+ * Extends SyncCallbackData to include backup-specific information like
+ * backup name, timestamp, and backup files list.
+ */
 struct CreateSnapshotForBackupCallbackData : public SyncCallbackData
 {
     CreateSnapshotForBackupCallbackData() = default;
@@ -2505,6 +2653,11 @@ struct CreateSnapshotForBackupCallbackData : public SyncCallbackData
     std::vector<std::string> *backup_files_;
 };
 
+/**
+ * Callback for creating snapshots for backup operations.
+ * 
+ * Handles the completion of snapshot creation for backup operations and processes the result.
+ */
 void CreateSnapshotForBackupCallback(void *data,
                                      ::google::protobuf::Closure *closure,
                                      DataStoreServiceClient &client,
