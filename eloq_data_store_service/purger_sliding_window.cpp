@@ -62,21 +62,31 @@ void S3FileNumberUpdater::UpdateSmallestFileNumber(uint64_t file_number,
     std::string content = std::to_string(file_number);
     std::string object_key = GetS3ObjectKey(epoch);
 
-    // Write to temp local file at first, then upload to S3
-    std::string time_id = std::to_string(
-        std::chrono::steady_clock::now().time_since_epoch().count());
-    std::string temp_file_path =
-        "/tmp/smallest_file_number_" + epoch + "_" + time_id + "_upload.txt";
-    std::ofstream temp_file(temp_file_path);
-    if (!temp_file.is_open())
+    // Write to temp local file at first
+    char tmp_template[] =
+        "/tmp/smallest_file_number_upload_XXXXXX";  // Xs will be replaced
+    int fd = mkstemp(tmp_template);
+    if (fd == -1)
     {
-        LOG(ERROR) << "Failed to open temp file for writing: "
-                   << temp_file_path;
+        LOG(ERROR) << "Failed to open temp file for writing: " << tmp_template;
         return;
     }
-    temp_file << content;
-    temp_file.close();
-    // Now upload the temp file to S3
+
+    std::string temp_file_path = tmp_template;
+
+    // write content to the temp file
+    if (write(fd, content.c_str(), content.size()) == -1)
+    {
+        LOG(ERROR) << "Failed to write to temp file: " << temp_file_path;
+        close(fd);
+        // Remove the temp file
+        if (std::remove(temp_file_path.c_str()) != 0)
+        {
+            LOG(WARNING) << "Failed to remove temp file: " << temp_file_path;
+        }
+        return;
+    }
+    close(fd);  // We will open it later for reading
 
     rocksdb::IOStatus s = storage_provider_->PutCloudObject(
         temp_file_path, bucket_name_, object_key);
