@@ -90,7 +90,7 @@ public:
         AppendPreBuiltTable(txservice::Sequences::table_name_);
 
         be_bucket_ids_.reserve(txservice::Sharder::ToTalRangeBuckets());
-        for (size_t bucket_id = 0;
+        for (uint16_t bucket_id = 0;
              bucket_id < txservice::Sharder::ToTalRangeBuckets();
              ++bucket_id)
         {
