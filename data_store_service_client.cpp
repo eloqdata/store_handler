@@ -2733,7 +2733,7 @@ DataStoreServiceClient::FetchBucketData(
 
     auto *callback_data = new FetchBucketDataCallbackData(fetch_bucket_data_cc);
     callback_data->bucket_kv_start_key_ = EncodeKvKeyForHashPart(
-        fetch_bucket_data_cc->bucket_id_, fetch_bucket_data_cc->start_key_);
+        fetch_bucket_data_cc->bucket_id_, *fetch_bucket_data_cc->start_key_);
     callback_data->bucket_kv_end_key_ =
         EncodeKvKeyForHashPart(fetch_bucket_data_cc->bucket_id_ + 1);
 
