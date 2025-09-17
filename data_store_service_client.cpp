@@ -130,6 +130,29 @@ void DataStoreServiceClient::ScheduleTimerTasks()
     assert(false);
 }
 
+/**
+ * @brief Batch-writes a set of flush tasks into KV tables.
+ *
+ * Processes the provided flush tasks grouped by table and partition, serializes
+ * each record (object tables use raw encoded blobs; non-object tables encode
+ * tx-records with unpack info), and issues batched PUT/DELETE operations via
+ * BatchWriteRecords. Batches are emitted per KV-partition and sized according
+ * to SyncPutAllData::max_flying_write_count; the method blocks as necessary to
+ * respect the global in-flight write limit and waits for all dispatched
+ * requests to complete before returning.
+ *
+ * The function distinguishes hash- and range-partitioned tables, computes
+ * per-partition batches, and updates per-record timestamps/TTLs and operation
+ * types. Partial batches are flushed at partition boundaries. On any remote or
+ * batch-level error the function logs the failure and returns false.
+ *
+ * @param flush_task Mapping from KV table name to a vector of flush task
+ *                   entries containing the records to write. Each entry's
+ *                   data_sync_vec_ provides the sequence of records for that
+ *                   flush task.
+ * @return true if all batches completed successfully; false if any batch
+ *         reported an error.
+ */
 bool DataStoreServiceClient::PutAll(
     std::unordered_map<std::string_view,
                        std::vector<std::unique_ptr<txservice::FlushTaskEntry>>>
@@ -1869,6 +1892,26 @@ void DataStoreServiceClient::DecodeArchiveValue(
     value_offset = pos;
 }
 
+/**
+ * @brief Writes multiple MVCC archive records to the MVCC archive KV table in partitioned batches.
+ *
+ * Groups archive entries from the provided flush tasks by archive partition, serializes keys
+ * and values into batch write requests, and dispatches those requests (possibly concurrently)
+ * to the KV layer. Batches are split to respect MAX_WRITE_BATCH_SIZE and an internal limit on
+ * in-flight write requests; the method waits for all dispatched batches for each partition to
+ * complete before returning.
+ *
+ * Side effects:
+ * - Commits serialized archive records to kv_mvcc_archive_name with a default TTL of 1 day.
+ * - Converts per-record commit timestamps to big-endian form as part of key encoding (the
+ *   in-memory commit_ts field of those records is mutated during processing).
+ *
+ * @param flush_task Map from KV table name to a vector of FlushTaskEntry pointers whose
+ *                   archive vectors contain the FlushRecord entries to write. Only entries
+ *                   with non-empty archive vectors are processed.
+ * @return true if all batches for all partitions completed successfully; false if any batch
+ *         failed (an error will be logged).
+ */
 bool DataStoreServiceClient::PutArchivesAll(
     std::unordered_map<std::string_view,
                        std::vector<std::unique_ptr<txservice::FlushTaskEntry>>>
