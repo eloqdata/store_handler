@@ -86,7 +86,7 @@ public:
         AppendPreBuiltTable(txservice::Sequences::table_name_);
 
         be_bucket_ids_.reserve(txservice::Sharder::ToTalRangeBuckets());
-        for (size_t bucket_id = 0;
+        for (uint16_t bucket_id = 0;
              bucket_id < txservice::Sharder::ToTalRangeBuckets();
              ++bucket_id)
         {
@@ -351,10 +351,9 @@ public:
      * @param snapshot_files The output snapshot files.
      * @return True if create successfully, otherwise false.
      */
-    bool CreateSnapshotForBackup(
-        const std::string &backup_name,
-        std::vector<std::string> &backup_files,
-        uint64_t backup_ts = 0) override;
+    bool CreateSnapshotForBackup(const std::string &backup_name,
+                                 std::vector<std::string> &backup_files,
+                                 uint64_t backup_ts = 0) override;
 
     bool NeedCopyRange() const override;
 
