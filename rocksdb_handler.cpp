@@ -20,6 +20,8 @@
  *
  */
 
+#include "rocksdb_handler.h"
+
 #include <brpc/controller.h>
 #include <brpc/server.h>
 #include <brpc/stream.h>
@@ -68,7 +70,6 @@
 #include "redis_zset_object.h"
 #include "rocksdb/iostats_context.h"
 #include "rocksdb/rate_limiter.h"
-#include "rocksdb_handler.h"
 #include "rocksdb_scanner.h"
 #include "store_util.h"
 #include "tx_key.h"
@@ -1279,12 +1280,14 @@ RocksDBHandler::FetchBucketData(
                     }
                 }
 
+                bool is_drained = false;
                 size_t record_count = 0;
                 while (iter->Valid() &&
                        record_count < fetch_bucket_data_cc->batch_size_)
                 {
                     if (iter->key().ToStringView() >= kv_bucket_end_key)
                     {
+                        is_drained = true;
                         break;
                     }
 
@@ -1309,18 +1312,14 @@ RocksDBHandler::FetchBucketData(
                     record_count++;
                 }
 
+                if (!iter->Valid())
+                {
+                    is_drained = true;
+                }
+
                 delete iter;
 
-                if (record_count < fetch_bucket_data_cc->batch_size_)
-                {
-                    // no more data
-                    fetch_bucket_data_cc->is_drained_ = true;
-                }
-                else
-                {
-                    fetch_bucket_data_cc->is_drained_ = false;
-                }
-
+                fetch_bucket_data_cc->is_drained_ = is_drained;
                 fetch_bucket_data_cc->SetFinish(
                     static_cast<int32_t>(txservice::CcErrorCode::NO_ERROR));
             });
@@ -1328,7 +1327,7 @@ RocksDBHandler::FetchBucketData(
 
     if (work.size() > 0)
     {
-        query_worker_pool_->BulkSubmitWorkl(std::move(work));
+        query_worker_pool_->BulkSubmitWork(std::move(work));
     }
 
     return DataStoreOpStatus::Success;
