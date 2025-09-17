@@ -192,30 +192,21 @@ void SlidingWindow::AddFileNumber(uint64_t file_number,
                                   int thread_id,
                                   uint64_t job_id)
 {
-    std::string epoch_copy;
-    bool do_immediate_update = false;
-    {
-        std::lock_guard<std::mutex> lock(window_mutex_);
-        do_immediate_update =
-            (file_number < last_published_smallest_) && !epoch_.empty();
-        epoch_copy = epoch_;
-        std::string key = GenerateKey(thread_id, job_id);
-        window_entries_.emplace(key, WindowEntry(file_number));
-        DLOG(INFO) << "Added file number to sliding window: " << file_number
-                   << ", thread_id: " << thread_id << ", job_id: " << job_id
-                   << ", epoch: " << epoch_
-                   << ", window size: " << window_entries_.size();
-    }
-
-    if (do_immediate_update)
+    std::lock_guard<std::mutex> lock(window_mutex_);
+    if (file_number < last_published_smallest_)
     {
         DLOG(INFO) << "Immediate S3 update with smaller file number: "
                    << file_number << ", thread_id: " << thread_id
-                   << ", job_id: " << job_id << ", epoch: " << epoch_copy;
-        std::lock_guard<std::mutex> g(window_mutex_);
-        s3_updater_->UpdateSmallestFileNumber(file_number, epoch_copy);
+                   << ", job_id: " << job_id << ", epoch: " << epoch_;
+        s3_updater_->UpdateSmallestFileNumber(file_number, epoch_);
         last_published_smallest_ = file_number;
     }
+    std::string key = GenerateKey(thread_id, job_id);
+    window_entries_.emplace(key, WindowEntry(file_number));
+    DLOG(INFO) << "Added file number to sliding window: " << file_number
+               << ", thread_id: " << thread_id << ", job_id: " << job_id
+               << ", epoch: " << epoch_
+               << ", window size: " << window_entries_.size();
 }
 
 void SlidingWindow::RemoveFileNumber(int thread_id, uint64_t job_id)
