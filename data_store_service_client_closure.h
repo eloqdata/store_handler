@@ -99,6 +99,8 @@ private:
 
 struct SyncPutAllData : public Poolable
 {
+    static constexpr int32_t max_flying_write_count = 32;
+
     void Reset()
     {
         unfinished_request_cnt_ = 0;
@@ -123,7 +125,8 @@ struct SyncPutAllData : public Poolable
         }
 
         --unfinished_request_cnt_;
-        if (all_request_started_ && unfinished_request_cnt_ == 0)
+        if ((all_request_started_ && unfinished_request_cnt_ == 0) ||
+            unfinished_request_cnt_ == max_flying_write_count - 1)
         {
             cv_.notify_one();
         }

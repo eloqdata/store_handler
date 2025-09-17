@@ -280,11 +280,13 @@ bool DataStoreServiceClient::PutAll(
             flush_task_entry_idx++;
         }
 
-        SyncCallbackData *sync_putall = sync_callback_data_pool_.NextObject();
+        SyncPutAllData *sync_putall = sync_putall_data_pool_.NextObject();
         PoolableGuard sync_putall_guard(sync_putall);
+        sync_putall->Reset();
 
         uint16_t parts_cnt_per_key = 1;
         uint16_t parts_cnt_per_record = table_name.IsObjectTable() ? 1 : 5;
+        uint32_t batch_cnt = 0;
 
         // Write data for hash_partitioned table
         for (auto part_it = hash_partitions_map.begin();
@@ -305,9 +307,18 @@ bool DataStoreServiceClient::PutAll(
                 txservice::TxKey tx_key = ckpt_rec.Key();
 
                 // Start a new batch if done with current partition.
-                if (write_batch_size >= MAX_WRITE_BATCH_SIZE)
+                if (write_batch_size >= SyncPutAllData::max_flying_write_count)
                 {
-                    sync_putall->Reset();
+                    // Wait for in-flight requests to decrease if limit reached
+                    {
+                        std::unique_lock<bthread::Mutex> lk(sync_putall->mux_);
+                        while (sync_putall->unfinished_request_cnt_ >=
+                               SyncPutAllData::max_flying_write_count)
+                        {
+                            sync_putall->cv_.wait(lk);
+                        }
+                    }
+
                     BatchWriteRecords(kv_table_name,
                                       part_it->first,
                                       std::move(key_parts),
@@ -317,19 +328,9 @@ bool DataStoreServiceClient::PutAll(
                                       std::move(op_types),
                                       true,
                                       sync_putall,
-                                      SyncCallback,
+                                      SyncPutAllCallback,
                                       parts_cnt_per_key,
                                       parts_cnt_per_record);
-                    sync_putall->Wait();
-
-                    if (sync_putall->Result().error_code() !=
-                        EloqDS::remote::DataStoreError::NO_ERROR)
-                    {
-                        LOG(WARNING)
-                            << "DataStoreHandler: Failed to write batch.";
-
-                        return false;
-                    }
                     key_parts.clear();
                     record_parts.clear();
                     records_ts.clear();
@@ -341,6 +342,7 @@ bool DataStoreServiceClient::PutAll(
                     records_ttl.reserve(recs_cnt);
                     op_types.reserve(recs_cnt);
                     write_batch_size = 0;
+                    ++batch_cnt;
                 }
 
                 assert(ckpt_rec.payload_status_ ==
@@ -360,7 +362,6 @@ bool DataStoreServiceClient::PutAll(
             // Send out the last batch
             if (key_parts.size() > 0)
             {
-                sync_putall->Reset();
                 BatchWriteRecords(kv_table_name,
                                   part_it->first,
                                   std::move(key_parts),
@@ -370,23 +371,16 @@ bool DataStoreServiceClient::PutAll(
                                   std::move(op_types),
                                   true,
                                   sync_putall,
-                                  SyncCallback,
+                                  SyncPutAllCallback,
                                   parts_cnt_per_key,
                                   parts_cnt_per_record);
-                sync_putall->Wait();
                 key_parts.clear();
                 record_parts.clear();
                 records_ts.clear();
                 records_ttl.clear();
                 op_types.clear();
                 write_batch_size = 0;
-                if (sync_putall->Result().error_code() !=
-                    EloqDS::remote::DataStoreError::NO_ERROR)
-                {
-                    LOG(WARNING) << "DataStoreHandler: Failed to write batch.";
-
-                    return false;
-                }
+                ++batch_cnt;
             }
         }
 
@@ -409,9 +403,21 @@ bool DataStoreServiceClient::PutAll(
                     txservice::TxKey tx_key = ckpt_rec.Key();
 
                     // Start a new batch if done with current partition.
-                    if (write_batch_size >= MAX_WRITE_BATCH_SIZE)
+                    if (write_batch_size >=
+                        SyncPutAllData::max_flying_write_count)
                     {
-                        sync_putall->Reset();
+                        // Wait for in-flight requests to decrease if limit
+                        // reached
+                        {
+                            std::unique_lock<bthread::Mutex> lk(
+                                sync_putall->mux_);
+                            while (sync_putall->unfinished_request_cnt_ >=
+                                   SyncPutAllData::max_flying_write_count)
+                            {
+                                sync_putall->cv_.wait(lk);
+                            }
+                        }
+
                         BatchWriteRecords(kv_table_name,
                                           part_it->first,
                                           std::move(key_parts),
@@ -421,19 +427,9 @@ bool DataStoreServiceClient::PutAll(
                                           std::move(op_types),
                                           true,
                                           sync_putall,
-                                          SyncCallback,
+                                          SyncPutAllCallback,
                                           parts_cnt_per_key,
                                           parts_cnt_per_record);
-                        sync_putall->Wait();
-
-                        if (sync_putall->Result().error_code() !=
-                            EloqDS::remote::DataStoreError::NO_ERROR)
-                        {
-                            LOG(WARNING)
-                                << "DataStoreHandler: Failed to write batch.";
-
-                            return false;
-                        }
                         record_tmp_mem_area.clear();
                         key_parts.clear();
                         record_parts.clear();
@@ -446,6 +442,7 @@ bool DataStoreServiceClient::PutAll(
                         records_ttl.reserve(recs_cnt);
                         op_types.reserve(recs_cnt);
                         write_batch_size = 0;
+                        ++batch_cnt;
                     }
 
                     assert(ckpt_rec.payload_status_ ==
@@ -460,7 +457,6 @@ bool DataStoreServiceClient::PutAll(
                 // Send out the last batch
                 if (key_parts.size() > 0)
                 {
-                    sync_putall->Reset();
                     BatchWriteRecords(kv_table_name,
                                       part_it->first,
                                       std::move(key_parts),
@@ -470,10 +466,9 @@ bool DataStoreServiceClient::PutAll(
                                       std::move(op_types),
                                       true,
                                       sync_putall,
-                                      SyncCallback,
+                                      SyncPutAllCallback,
                                       parts_cnt_per_key,
                                       parts_cnt_per_record);
-                    sync_putall->Wait();
                     record_tmp_mem_area.clear();
                     key_parts.clear();
                     record_parts.clear();
@@ -481,16 +476,28 @@ bool DataStoreServiceClient::PutAll(
                     records_ttl.clear();
                     op_types.clear();
                     write_batch_size = 0;
-                    if (sync_putall->Result().error_code() !=
-                        EloqDS::remote::DataStoreError::NO_ERROR)
-                    {
-                        LOG(WARNING)
-                            << "DataStoreHandler: Failed to write batch.";
-
-                        return false;
-                    }
+                    ++batch_cnt;
                 }
             }
+        }
+
+        // Wait for all requests to complete
+        {
+            std::unique_lock<bthread::Mutex> lk(sync_putall->mux_);
+            sync_putall->unfinished_request_cnt_ += batch_cnt;
+            sync_putall->all_request_started_ = true;
+            while (sync_putall->unfinished_request_cnt_ != 0)
+            {
+                sync_putall->cv_.wait(lk);
+            }
+        }
+
+        if (sync_putall->result_.error_code() !=
+            remote::DataStoreError::NO_ERROR)
+        {
+            LOG(ERROR) << "PutAll failed for error: "
+                       << sync_putall->result_.error_msg();
+            return false;
         }
     }
     return true;
@@ -1939,6 +1946,15 @@ bool DataStoreServiceClient::PutArchivesAll(
             // Start a new batch if done with current partition.
             if (write_batch_size >= MAX_WRITE_BATCH_SIZE)
             {
+                // Wait for in-flight requests to decrease if limit reached
+                {
+                    std::unique_lock<bthread::Mutex> lk(sync_putall->mux_);
+                    while (sync_putall->unfinished_request_cnt_ >=
+                           SyncPutAllData::max_flying_write_count)
+                    {
+                        sync_putall->cv_.wait(lk);
+                    }
+                }
                 BatchWriteRecords(kv_mvcc_archive_name,
                                   partition_id,
                                   std::move(keys),
