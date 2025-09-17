@@ -4198,16 +4198,13 @@ void DataStoreServiceClient::PreparePartitionBatches(
     uint16_t parts_cnt_per_record,
     uint64_t now)
 {
-    std::vector<std::string_view> key_parts;
-    std::vector<std::string_view> record_parts;
-    std::vector<uint64_t> records_ts;
-    std::vector<uint64_t> records_ttl;
-    std::vector<WriteOpType> op_types;
-    std::vector<size_t> record_tmp_mem_area;
     size_t write_batch_size = 0;
-
-    auto PrepareObjectData =
-        [&](txservice::FlushRecord &ckpt_rec, size_t &batch_size)
+    PartitionBatchRequest batch_request;
+    batch_request.Reset(
+        parts_cnt_per_key, parts_cnt_per_record, flush_recs.size());
+    auto PrepareObjectData = [&](txservice::FlushRecord &ckpt_rec,
+                                 size_t &batch_size,
+                                 PartitionBatchRequest &batch_request)
     {
         txservice::TxKey tx_key = ckpt_rec.Key();
         uint64_t ttl =
@@ -4217,72 +4214,77 @@ void DataStoreServiceClient::PreparePartitionBatches(
         if (ckpt_rec.payload_status_ == txservice::RecordStatus::Normal &&
             (!ckpt_rec.Payload()->HasTTL() || ttl > now))
         {
-            key_parts.emplace_back(
+            batch_request.key_parts.emplace_back(
                 std::string_view(tx_key.Data(), tx_key.Size()));
             batch_size += tx_key.Size();
 
             const txservice::TxRecord *rec = ckpt_rec.Payload();
-            record_parts.emplace_back(std::string_view(rec->EncodedBlobData(),
-                                                       rec->EncodedBlobSize()));
+            batch_request.record_parts.emplace_back(std::string_view(
+                rec->EncodedBlobData(), rec->EncodedBlobSize()));
             batch_size += rec->EncodedBlobSize();
 
-            records_ts.push_back(ckpt_rec.commit_ts_);
+            batch_request.records_ts.push_back(ckpt_rec.commit_ts_);
             batch_size += sizeof(uint64_t);
 
-            records_ttl.push_back(ttl);
+            batch_request.records_ttl.push_back(ttl);
             batch_size += sizeof(uint64_t);
 
-            op_types.push_back(WriteOpType::PUT);
+            batch_request.op_types.push_back(WriteOpType::PUT);
             batch_size += sizeof(WriteOpType);
         }
         else
         {
-            key_parts.emplace_back(
+            batch_request.key_parts.emplace_back(
                 std::string_view(tx_key.Data(), tx_key.Size()));
             batch_size += tx_key.Size();
 
-            record_parts.emplace_back(std::string_view());
+            batch_request.record_parts.emplace_back(std::string_view());
             batch_size += 0;
 
-            records_ts.push_back(ckpt_rec.commit_ts_);
+            batch_request.records_ts.push_back(ckpt_rec.commit_ts_);
             batch_size += sizeof(uint64_t);
 
-            records_ttl.push_back(0);
+            batch_request.records_ttl.push_back(0);
             batch_size += sizeof(uint64_t);
 
-            op_types.push_back(WriteOpType::DELETE);
+            batch_request.op_types.push_back(WriteOpType::DELETE);
             batch_size += sizeof(WriteOpType);
         }
     };
 
-    auto PrepareRecordData =
-        [&](txservice::FlushRecord &ckpt_rec, size_t &batch_size)
+    auto PrepareRecordData = [&](txservice::FlushRecord &ckpt_rec,
+                                 size_t &batch_size,
+                                 PartitionBatchRequest &batch_request)
     {
         uint64_t retired_ttl_for_deleted = now + 24 * 60 * 60 * 1000;
         txservice::TxKey tx_key = ckpt_rec.Key();
         bool is_deleted =
             !(ckpt_rec.payload_status_ == txservice::RecordStatus::Normal);
-        key_parts.emplace_back(std::string_view(tx_key.Data(), tx_key.Size()));
+        batch_request.key_parts.emplace_back(
+            std::string_view(tx_key.Data(), tx_key.Size()));
         batch_size += tx_key.Size();
 
         const txservice::TxRecord *rec = ckpt_rec.Payload();
         if (is_deleted)
         {
-            records_ttl.push_back(retired_ttl_for_deleted);
+            batch_request.records_ttl.push_back(retired_ttl_for_deleted);
         }
         else
         {
-            records_ttl.push_back(0);
+            batch_request.records_ttl.push_back(0);
         }
         batch_size += sizeof(uint64_t);
 
-        op_types.push_back(WriteOpType::PUT);
+        batch_request.op_types.push_back(WriteOpType::PUT);
         batch_size += sizeof(WriteOpType);
 
-        SerializeTxRecord(
-            is_deleted, rec, record_tmp_mem_area, record_parts, batch_size);
+        SerializeTxRecord(is_deleted,
+                          rec,
+                          batch_request.record_tmp_mem_area,
+                          batch_request.record_parts,
+                          batch_size);
 
-        records_ts.push_back(ckpt_rec.commit_ts_);
+        batch_request.records_ts.push_back(ckpt_rec.commit_ts_);
         batch_size += sizeof(uint64_t);
     };
 
@@ -4293,24 +4295,18 @@ void DataStoreServiceClient::PreparePartitionBatches(
             entries.at(idx.first)->data_sync_vec_->at(idx.second);
 
         // Start a new batch if size limit reached
-        if (write_batch_size >= MAX_WRITE_BATCH_SIZE)
+        // or the record_tmp_mem_area is full. Since the record_parts is a
+        // vector of string_view that references the record_tmp_mem_area, we
+        // cannot allow the record_tmp_mem_area to be resized which will cause
+        // the record_parts to be invalid.
+        if (write_batch_size >= MAX_WRITE_BATCH_SIZE ||
+            batch_request.record_tmp_mem_area.size() ==
+                batch_request.record_tmp_mem_area.capacity())
         {
-            partition_state.AddBatch(
-                PartitionBatchRequest(std::move(key_parts),
-                                      std::move(record_parts),
-                                      std::move(records_ts),
-                                      std::move(records_ttl),
-                                      std::move(record_tmp_mem_area),
-                                      std::move(op_types),
-                                      parts_cnt_per_key,
-                                      parts_cnt_per_record));
+            partition_state.AddBatch(std::move(batch_request));
 
-            key_parts.clear();
-            record_parts.clear();
-            records_ts.clear();
-            records_ttl.clear();
-            op_types.clear();
-            record_tmp_mem_area.clear();
+            batch_request.Reset(
+                parts_cnt_per_key, parts_cnt_per_record, flush_recs.size());
             write_batch_size = 0;
         }
 
@@ -4319,26 +4315,18 @@ void DataStoreServiceClient::PreparePartitionBatches(
 
         if (table_name.IsObjectTable())
         {
-            PrepareObjectData(ckpt_rec, write_batch_size);
+            PrepareObjectData(ckpt_rec, write_batch_size, batch_request);
         }
         else
         {
-            PrepareRecordData(ckpt_rec, write_batch_size);
+            PrepareRecordData(ckpt_rec, write_batch_size, batch_request);
         }
     }
 
     // Add the last batch if it has data
-    if (key_parts.size() > 0)
+    if (batch_request.key_parts.size() > 0)
     {
-        partition_state.AddBatch(
-            PartitionBatchRequest(std::move(key_parts),
-                                  std::move(record_parts),
-                                  std::move(records_ts),
-                                  std::move(records_ttl),
-                                  std::move(record_tmp_mem_area),
-                                  std::move(op_types),
-                                  parts_cnt_per_key,
-                                  parts_cnt_per_record));
+        partition_state.AddBatch(std::move(batch_request));
     }
 }
 
@@ -4351,44 +4339,51 @@ void DataStoreServiceClient::PrepareRangePartitionBatches(
     uint16_t parts_cnt_per_record,
     uint64_t now)
 {
-    std::vector<std::string_view> key_parts;
-    std::vector<std::string_view> record_parts;
-    std::vector<uint64_t> records_ts;
-    std::vector<uint64_t> records_ttl;
-    std::vector<WriteOpType> op_types;
-    std::vector<size_t> record_tmp_mem_area;
     size_t write_batch_size = 0;
+    PartitionBatchRequest batch_request;
 
-    auto PrepareRecordData =
-        [&](txservice::FlushRecord &ckpt_rec, size_t &batch_size)
+    auto PrepareRecordData = [&](txservice::FlushRecord &ckpt_rec,
+                                 size_t &batch_size,
+                                 PartitionBatchRequest &batch_request)
     {
         uint64_t retired_ttl_for_deleted = now + 24 * 60 * 60 * 1000;
         txservice::TxKey tx_key = ckpt_rec.Key();
         bool is_deleted =
             !(ckpt_rec.payload_status_ == txservice::RecordStatus::Normal);
-        key_parts.emplace_back(std::string_view(tx_key.Data(), tx_key.Size()));
+        batch_request.key_parts.emplace_back(
+            std::string_view(tx_key.Data(), tx_key.Size()));
         batch_size += tx_key.Size();
 
         const txservice::TxRecord *rec = ckpt_rec.Payload();
         if (is_deleted)
         {
-            records_ttl.push_back(retired_ttl_for_deleted);
+            batch_request.records_ttl.push_back(retired_ttl_for_deleted);
         }
         else
         {
-            records_ttl.push_back(0);
+            batch_request.records_ttl.push_back(0);
         }
         batch_size += sizeof(uint64_t);
 
-        op_types.push_back(WriteOpType::PUT);
+        batch_request.op_types.push_back(WriteOpType::PUT);
         batch_size += sizeof(WriteOpType);
 
-        SerializeTxRecord(
-            is_deleted, rec, record_tmp_mem_area, record_parts, batch_size);
+        SerializeTxRecord(is_deleted,
+                          rec,
+                          batch_request.record_tmp_mem_area,
+                          batch_request.record_parts,
+                          batch_size);
 
-        records_ts.push_back(ckpt_rec.commit_ts_);
+        batch_request.records_ts.push_back(ckpt_rec.commit_ts_);
         batch_size += sizeof(uint64_t);
     };
+
+    size_t rec_cnt = 0;
+    for (auto idx : flush_recs)
+    {
+        rec_cnt += entries.at(idx)->data_sync_vec_->size();
+    }
+    batch_request.Reset(parts_cnt_per_key, parts_cnt_per_record, rec_cnt);
 
     // Process records and create batches
     for (auto idx : flush_recs)
@@ -4396,24 +4391,18 @@ void DataStoreServiceClient::PrepareRangePartitionBatches(
         for (auto &ckpt_rec : *entries.at(idx)->data_sync_vec_)
         {
             // Start a new batch if size limit reached
-            if (write_batch_size >= MAX_WRITE_BATCH_SIZE)
+            // or the record_tmp_mem_area is full. Since the record_parts is a
+            // vector of string_view that references the record_tmp_mem_area, we
+            // cannot allow the record_tmp_mem_area to be resized which will
+            // cause the record_parts to be invalid.
+            if (write_batch_size >= MAX_WRITE_BATCH_SIZE ||
+                batch_request.record_tmp_mem_area.size() ==
+                    batch_request.record_tmp_mem_area.capacity())
             {
-                partition_state.AddBatch(
-                    PartitionBatchRequest(std::move(key_parts),
-                                          std::move(record_parts),
-                                          std::move(records_ts),
-                                          std::move(records_ttl),
-                                          std::move(record_tmp_mem_area),
-                                          std::move(op_types),
-                                          parts_cnt_per_key,
-                                          parts_cnt_per_record));
+                partition_state.AddBatch(std::move(batch_request));
 
-                key_parts.clear();
-                record_parts.clear();
-                records_ts.clear();
-                records_ttl.clear();
-                op_types.clear();
-                record_tmp_mem_area.clear();
+                batch_request.Reset(
+                    parts_cnt_per_key, parts_cnt_per_record, rec_cnt);
                 write_batch_size = 0;
             }
 
@@ -4422,22 +4411,14 @@ void DataStoreServiceClient::PrepareRangePartitionBatches(
                 ckpt_rec.payload_status_ == txservice::RecordStatus::Deleted);
 
             // Currently there is no object table in range partitioned table
-            PrepareRecordData(ckpt_rec, write_batch_size);
+            PrepareRecordData(ckpt_rec, write_batch_size, batch_request);
         }
     }
 
     // Add the last batch if it has data
-    if (key_parts.size() > 0)
+    if (batch_request.key_parts.size() > 0)
     {
-        partition_state.AddBatch(
-            PartitionBatchRequest(std::move(key_parts),
-                                  std::move(record_parts),
-                                  std::move(records_ts),
-                                  std::move(records_ttl),
-                                  std::move(record_tmp_mem_area),
-                                  std::move(op_types),
-                                  parts_cnt_per_key,
-                                  parts_cnt_per_record));
+        partition_state.AddBatch(std::move(batch_request));
     }
 }
 

@@ -351,6 +351,19 @@ struct PartitionBatchRequest
         parts_cnt_per_key = 1;
         parts_cnt_per_record = 1;
     }
+
+    void Reset(uint16_t key_parts_count, uint16_t record_parts_count, size_t record_cnt)
+    {
+        Clear();
+        parts_cnt_per_key = key_parts_count;
+        parts_cnt_per_record = record_parts_count;
+        key_parts.reserve(key_parts_count * record_cnt);
+        record_parts.reserve(record_parts_count * record_cnt);
+        records_ts.reserve(record_cnt);
+        records_ttl.reserve(record_cnt);
+        record_tmp_mem_area.reserve(record_cnt * 2);
+        op_types.reserve(record_cnt);
+    }
 };
 /**
  * @brief Wrapper for partition callback data that includes global coordinator
