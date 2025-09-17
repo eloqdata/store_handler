@@ -214,8 +214,7 @@ void SlidingWindow::AddFileNumber(uint64_t file_number,
                    << ", job_id: " << job_id << ", epoch: " << epoch_copy;
         std::lock_guard<std::mutex> g(window_mutex_);
         s3_updater_->UpdateSmallestFileNumber(file_number, epoch_copy);
-        last_published_smallest_ =
-            std::min(last_published_smallest_, file_number);
+        last_published_smallest_ = file_number;
     }
 }
 
