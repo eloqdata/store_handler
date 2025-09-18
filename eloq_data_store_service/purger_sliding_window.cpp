@@ -25,6 +25,7 @@
 #include <rocksdb/db.h>
 #include <rocksdb/io_status.h>
 #include <rocksdb/listener.h>
+#include <unistd.h>
 
 #include <chrono>
 #include <condition_variable>
@@ -38,7 +39,6 @@
 #include <thread>
 #include <unordered_map>
 #include <utility>
-#include <unistd.h>
 
 #include "purger_sliding_window.h"
 
@@ -222,16 +222,13 @@ void SlidingWindow::RemoveFileNumber(uint64_t thread_id, uint64_t job_id)
     {
         uint64_t removed_file_number = it->second.file_number_;
         auto now = std::chrono::steady_clock::now();
-        if (now - it->second.timestamp_ < entry_duration_)
-        {
-            // Entry is still within the duration window, only mark as deleted
-            it->second.deleted_ = true;
-        }
-        else
-        {
-            // Entry is expired, remove it
-            window_entries_.erase(it);
-        }
+        // Mark the entry as deleted, but do not remove it immediately
+        // to avoid frequent S3 updates, and give some time for Manifests
+        // file get updated.
+	//
+        // The entry will be removed when it expires in GetSmallestFileNumber()
+        it->second.deleted_ = true;
+        it->second.timestamp_ = now;
 
         DLOG(INFO) << "Removed file number from sliding window: "
                    << removed_file_number << ", thread_id: " << thread_id
