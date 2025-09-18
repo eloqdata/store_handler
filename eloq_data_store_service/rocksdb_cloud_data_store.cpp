@@ -324,6 +324,13 @@ bool RocksDBCloudDataStore::StartDB(std::string cookie, std::string prev_cookie)
     cfs_options_.purger_periodicity_millis =
         cloud_config_.purger_periodicity_millis_;
 
+    // Temp fix for very slow open db issue
+    // TODO: implement customized sst file manager
+    cfs_options_.constant_sst_file_size_in_sst_file_manager = 64 * 1024 * 1024L;
+    // Skip listing cloud files in GetChildren when DumpDBSummary to speed
+    // up open db
+    cfs_options_.skip_cloud_files_in_getchildren = true;
+
     DLOG(INFO) << "RocksDBCloudDataStore::StartDB, purger_periodicity_millis: "
                << cfs_options_.purger_periodicity_millis << " ms"
                << ", run_purger: " << cfs_options_.run_purger;
@@ -611,13 +618,20 @@ bool RocksDBCloudDataStore::OpenCloudDB(
         return false;
     }
 
+    // Reset max_open_files to default value of -1 after DB::Open
+    db_->SetDBOptions({{"max_open_files", "-1"}});
+
+    // Restore skip_cloud_files_in_getchildren to false
+    // after DB::Open
+    rocksdb::CloudFileSystem *cfs =
+        dynamic_cast<rocksdb::CloudFileSystem *>(cloud_fs_.get());
+    auto &cfs_options_ref = cfs->GetMutableCloudFileSystemOptions();
+    cfs_options_ref.skip_cloud_files_in_getchildren = false;
+
     if (cloud_config_.warm_up_thread_num_ != 0)
     {
         db_->WarmUp(cloud_config_.warm_up_thread_num_);
     }
-
-    // Reset max_open_files to default value of -1 after DB::Open
-    db_->SetDBOptions({{"max_open_files", "-1"}});
 
     LOG(INFO) << "RocksDB Cloud started";
     return true;
