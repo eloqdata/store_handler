@@ -495,6 +495,13 @@ void EloqStoreDataStore::SwitchToReadWrite()
     return;
 }
 
+void EloqStoreDataStore::CreateSnapshotForBackup(
+    CreateSnapshotForBackupRequest *req)
+{
+    return;
+}
+
+
 void EloqStoreDataStore::ScanDelete(DeleteRangeRequest *delete_range_req)
 {
     ::eloqstore::TableIdent eloq_store_table_id;

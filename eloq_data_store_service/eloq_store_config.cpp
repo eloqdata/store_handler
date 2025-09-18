@@ -85,7 +85,7 @@ DEFINE_uint32(eloq_store_max_archive_tasks,
               256,
               "EloqStore max archive tasks.");
 DEFINE_uint32(eloq_store_file_amplify_factor,
-              4,
+              2,
               "EloqStore file amplify factor.");
 DEFINE_uint64(eloq_store_local_space_limit,
               1ULL << 40,
