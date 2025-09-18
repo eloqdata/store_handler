@@ -144,7 +144,7 @@ public:
             }
 
             size_t old_size = pool_.size();
-            pool_.resize((size_t) (old_size * 1.5));
+            pool_.resize(static_cast<size_t>(old_size * 1.5));
             for (size_t idx = old_size; idx < pool_.size(); ++idx)
             {
                 pool_[idx] = std::make_unique<T>();

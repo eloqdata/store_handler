@@ -196,8 +196,7 @@ void EloqStoreDataStore::BatchWriteRecords(WriteRecordsRequest *write_req)
         entries.emplace_back(std::move(entry));
     }
 
-    if (!std::is_sorted(entries.begin(),
-                        entries.end(),
+    if (!std::ranges::is_sorted(entries,
                         [](const ::eloqstore::WriteDataEntry &lhs,
                            const ::eloqstore::WriteDataEntry &rhs)
                         { return lhs.key_ < rhs.key_; }))
@@ -206,8 +205,7 @@ void EloqStoreDataStore::BatchWriteRecords(WriteRecordsRequest *write_req)
                       "send to EloqStore for table: "
                    << eloq_store_table_id;
         // Sort the batch keys
-        std::sort(entries.begin(),
-                  entries.end(),
+        std::ranges::sort(entries,
                   [](const ::eloqstore::WriteDataEntry &lhs,
                      const ::eloqstore::WriteDataEntry &rhs)
                   { return lhs.key_ < rhs.key_; });
