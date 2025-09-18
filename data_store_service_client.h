@@ -39,6 +39,10 @@
 
 namespace EloqDS
 {
+// Forward declarations for types defined in closure header
+struct PartitionFlushState;
+struct PartitionBatchRequest;
+struct PartitionCallbackData;
 class DataStoreServiceClient;
 class BatchWriteRecordsClosure;
 class ReadClosure;
@@ -490,6 +494,27 @@ private:
     void BatchWriteRecordsInternal(BatchWriteRecordsClosure *closure);
 
     /**
+     * Helper methods for concurrent PutAll implementation
+     */
+    void PreparePartitionBatches(
+        PartitionFlushState& partition_state,
+        const std::vector<std::pair<size_t, size_t>>& flush_recs,
+        const std::vector<std::unique_ptr<txservice::FlushTaskEntry>>& entries,
+        const txservice::TableName& table_name,
+        uint16_t parts_cnt_per_key,
+        uint16_t parts_cnt_per_record,
+        uint64_t now);
+
+    void PrepareRangePartitionBatches(
+        PartitionFlushState& partition_state,
+        const std::vector<size_t>& flush_recs,
+        const std::vector<std::unique_ptr<txservice::FlushTaskEntry>>& entries,
+        const txservice::TableName& table_name,
+        uint16_t parts_cnt_per_key,
+        uint16_t parts_cnt_per_record,
+        uint64_t now);
+
+    /**
      * Delete range and flush data are not frequent calls, all calls are sent
      * with rpc.
      */
@@ -635,6 +660,10 @@ private:
     friend class DropTableClosure;
     friend class ScanNextClosure;
     friend class CreateSnapshotForBackupClosure;
+    friend void PartitionBatchCallback(void *data,
+                                      ::google::protobuf::Closure *closure,
+                                      DataStoreServiceClient &client,
+                                      const remote::CommonResult &result);
     friend class SinglePartitionScanner;
     friend void FetchAllDatabaseCallback(void *data,
                                          ::google::protobuf::Closure *closure,

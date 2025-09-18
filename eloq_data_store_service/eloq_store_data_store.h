@@ -252,6 +252,8 @@ public:
      */
     void SwitchToReadWrite() override;
 
+    void CreateSnapshotForBackup(CreateSnapshotForBackupRequest *req) override;
+
 private:
     static void OnRead(::eloqstore::KvRequest *req);
     static void OnBatchWrite(::eloqstore::KvRequest *req);

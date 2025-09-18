@@ -1,4 +1,3 @@
-
 /**
  *    Copyright (C) 2025 EloqData Inc.
  *
@@ -27,21 +26,50 @@
 #include <bthread/mutex.h>
 
 #include <memory>
+#include <queue>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "data_store_service_client.h"
-#include "data_store_service_scanner.h"
+#include "eloq_data_store_service/data_store_service.h"
 #include "eloq_data_store_service/object_pool.h"
+
+// Forward declarations
+namespace EloqDS
+{
+class DataStoreServiceClient;
+}
 
 namespace EloqDS
 {
+/**
+ * Callback type invoked on completion of a datastore operation.
+ *
+ * Parameters:
+ *  - data: user-provided context pointer passed through the async call.
+ *  - closure: protobuf closure associated with the RPC (may be nullptr for
+ * local paths).
+ *  - client: reference to the DataStoreServiceClient that executed the
+ * operation.
+ *  - result: operation result detail (error code/message and any
+ * operation-specific fields).
+ */
 typedef void (*DataStoreCallback)(void *data,
                                   ::google::protobuf::Closure *closure,
                                   DataStoreServiceClient &client,
                                   const remote::CommonResult &result);
 
+/**
+ * Synchronization helper used to wait for an asynchronous datastore operation
+ * to complete.
+ *
+ * Provides a mutex/condition variable pair and a CommonResult to store the
+ * outcome. Typical usage: Reset() before issuing the async operation, Notify()
+ * from the async completion callback, and Wait() from the waiting thread.
+ * HasError() reports whether the stored result represents an error other than
+ * NO_ERROR or KEY_NOT_FOUND.
+ */
 struct SyncCallbackData : public Poolable
 {
     SyncCallbackData() : mtx_(), cv_(), finished_(false)
@@ -97,8 +125,147 @@ private:
     remote::CommonResult result_;
 };
 
+/**
+ * @brief Per-partition state management for concurrent flushing
+ */
+struct PartitionFlushState : public Poolable
+{
+    int32_t partition_id;
+    std::queue<PartitionBatchRequest> pending_batches;
+    bool failed = false;
+    remote::CommonResult result;
+    mutable bthread::Mutex mux;
+
+    PartitionFlushState() : partition_id(0)
+    {
+        result.Clear();
+    }
+
+    void Reset(int32_t pid)
+    {
+        partition_id = pid;
+        while (!pending_batches.empty())
+        {
+            pending_batches.pop();
+        }
+        failed = false;
+        result.Clear();
+    }
+
+    void Clear() override
+    {
+        partition_id = 0;
+        while (!pending_batches.empty())
+        {
+            pending_batches.pop();
+        }
+    }
+    bool IsFailed() const
+    {
+        std::unique_lock<bthread::Mutex> lk(mux);
+        return failed;
+    }
+
+    void MarkFailed(const remote::CommonResult &error)
+    {
+        std::unique_lock<bthread::Mutex> lk(mux);
+        failed = true;
+        result.set_error_code(error.error_code());
+        result.set_error_msg(error.error_msg());
+    }
+
+    bool GetNextBatch(PartitionBatchRequest &batch);
+
+    void AddBatch(PartitionBatchRequest &&batch)
+    {
+        std::unique_lock<bthread::Mutex> lk(mux);
+        pending_batches.push(std::move(batch));
+    }
+};
+
+/**
+ * Coordination helper for concurrent partition-based put-all operations.
+ *
+ * This structure manages the coordination of multiple partitions that can
+ * process concurrently, with each partition maintaining serialization (only one
+ * request in-flight per partition). It tracks partition completion and provides
+ * global coordination for the entire PutAll operation.
+ *
+ * Key components:
+ * - partition_states_: vector of PartitionFlushState objects, one per partition
+ * - completed_partitions_: count of partitions that have finished processing
+ * - total_partitions_: total number of partitions to process
+ * - OnPartitionCompleted(): called when a partition finishes (success or
+ * failure)
+ *
+ * The structure waits for all partitions to complete before the PutAll
+ * operation can finish. If any partition fails, the entire operation is
+ * considered failed.
+ */
+
 struct SyncPutAllData : public Poolable
 {
+    static constexpr int32_t max_flying_write_count = 32;
+
+    void Reset()
+    {
+        // Clear partition states if using new concurrent approach
+        partition_states_.clear();
+        completed_partitions_ = 0;
+        total_partitions_ = 0;
+    }
+
+    virtual void Clear() override
+    {
+        completed_partitions_ = 0;
+        total_partitions_ = 0;
+        for (auto *partition_state : partition_states_)
+        {
+            partition_state->Clear();
+            partition_state->Free();
+        }
+        partition_states_.clear();
+    }
+    void OnPartitionCompleted()
+    {
+        std::unique_lock<bthread::Mutex> lk(mux_);
+        completed_partitions_++;
+        if (completed_partitions_ >= total_partitions_)
+        {
+            cv_.notify_one();
+        }
+    }
+    mutable bthread::Mutex mux_;
+    bthread::ConditionVariable cv_;
+
+    // fields for per-partition coordination
+    std::vector<PartitionFlushState *> partition_states_;
+    int32_t completed_partitions_{0};
+    int32_t total_partitions_{0};
+};
+
+/**
+ * Coordination helper for sequential batch operations with global concurrency
+ * control.
+ *
+ * This structure manages the coordination of sequential batch operations (like
+ * PutArchivesAll) where batches are processed one after another within each
+ * partition, but with global concurrency control to limit the total number of
+ * in-flight requests across all partitions.
+ *
+ * Key features:
+ * - Global concurrency control with max_flying_write_count limit (32)
+ * - Sequential processing within each partition
+ * - Flow control to prevent overwhelming the system
+ * - Error aggregation from all batches
+ *
+ * This is used by operations that need to maintain sequential ordering within
+ * partitions while still allowing some concurrency across the system.
+ */
+struct SyncConcurrentRequest : public Poolable
+{
+    static constexpr int32_t max_flying_write_count = 32;
+
     void Reset()
     {
         unfinished_request_cnt_ = 0;
@@ -123,7 +290,8 @@ struct SyncPutAllData : public Poolable
         }
 
         --unfinished_request_cnt_;
-        if (all_request_started_ && unfinished_request_cnt_ == 0)
+        if ((all_request_started_ && unfinished_request_cnt_ == 0) ||
+            unfinished_request_cnt_ == max_flying_write_count - 1)
         {
             cv_.notify_one();
         }
@@ -133,14 +301,138 @@ struct SyncPutAllData : public Poolable
     int32_t unfinished_request_cnt_{0};
     bool all_request_started_{false};
     remote::CommonResult result_;
-    bthread::Mutex mux_;
+    mutable bthread::Mutex mux_;
     bthread::ConditionVariable cv_;
 };
+
+/**
+ * @brief Represents a single batch request for a partition
+ */
+struct PartitionBatchRequest
+{
+    std::vector<std::string_view> key_parts;
+    std::vector<std::string_view> record_parts;
+    std::vector<uint64_t> records_ts;
+    std::vector<uint64_t> records_ttl;
+    std::vector<size_t> record_tmp_mem_area;
+    std::vector<WriteOpType> op_types;
+    uint16_t parts_cnt_per_key;
+    uint16_t parts_cnt_per_record;
+
+    PartitionBatchRequest() = default;
+
+    PartitionBatchRequest(std::vector<std::string_view> &&keys,
+                          std::vector<std::string_view> &&records,
+                          std::vector<uint64_t> &&ts,
+                          std::vector<uint64_t> &&ttl,
+                          std::vector<size_t> &&record_tmp_mem_area,
+                          std::vector<WriteOpType> &&ops,
+                          uint16_t key_parts_count,
+                          uint16_t record_parts_count)
+        : key_parts(std::move(keys)),
+          record_parts(std::move(records)),
+          records_ts(std::move(ts)),
+          records_ttl(std::move(ttl)),
+          record_tmp_mem_area(std::move(record_tmp_mem_area)),
+          op_types(std::move(ops)),
+          parts_cnt_per_key(key_parts_count),
+          parts_cnt_per_record(record_parts_count)
+    {
+    }
+
+    void Clear()
+    {
+        key_parts.clear();
+        record_parts.clear();
+        records_ts.clear();
+        records_ttl.clear();
+        record_tmp_mem_area.clear();
+        op_types.clear();
+        parts_cnt_per_key = 1;
+        parts_cnt_per_record = 1;
+    }
+
+    void Reset(uint16_t key_parts_count, uint16_t record_parts_count, size_t record_cnt)
+    {
+        Clear();
+        parts_cnt_per_key = key_parts_count;
+        parts_cnt_per_record = record_parts_count;
+        key_parts.reserve(key_parts_count * record_cnt);
+        record_parts.reserve(record_parts_count * record_cnt);
+        records_ts.reserve(record_cnt);
+        records_ttl.reserve(record_cnt);
+        record_tmp_mem_area.reserve(record_cnt * 2);
+        op_types.reserve(record_cnt);
+    }
+};
+/**
+ * @brief Wrapper for partition callback data that includes global coordinator
+ */
+struct PartitionCallbackData : public Poolable
+{
+    PartitionFlushState *partition_state;
+    SyncPutAllData *global_coordinator;
+    std::string_view table_name;
+    PartitionBatchRequest inflight_batch;
+
+    PartitionCallbackData()
+        : partition_state(nullptr), global_coordinator(nullptr), table_name("")
+    {
+    }
+
+    void Reset(PartitionFlushState *ps,
+               SyncPutAllData *gc,
+               const std::string_view tn)
+    {
+        partition_state = ps;
+        global_coordinator = gc;
+        table_name = tn;
+    }
+
+    void Clear() override
+    {
+        partition_state = nullptr;
+        global_coordinator = nullptr;
+        table_name = "";
+    }
+};
+/**
+ * Generic synchronous callback adapter invoked by closures to signal
+ * completion.
+ *
+ * Parameters:
+ *  - data: user-provided context pointer passed through the async call.
+ *  - closure: protobuf closure associated with the RPC (may be nullptr for
+ * local paths).
+ *  - client: reference to the DataStoreServiceClient that executed the
+ * operation.
+ *  - result: operation result detail (error code/message and any
+ * operation-specific fields).
+ */
 
 void SyncCallback(void *data,
                   ::google::protobuf::Closure *closure,
                   DataStoreServiceClient &client,
                   const remote::CommonResult &result);
+
+/**
+ * Callback data structure for concurrent archive record reading operations.
+ *
+ * Manages synchronization and flow control for reading base records that will
+ * be copied to archive storage. Tracks flying read count and provides mutex
+ * synchronization for concurrent access.
+ *
+ * Holds references to external synchronization primitives and counters:
+ *  - mtx_, cv_: external mutex and condition variable used to guard
+ * flying_read_cnt_.
+ *  - flying_read_cnt_: reference to the shared in-flight read counter.
+ *  - error_code_: reference to an integer used to capture the first observed
+ * error.
+ *
+ * Also stores the most recent read result (partition_id_, key_str_, value_str_,
+ * ts_, ttl_). Thread-safe: methods that mutate or read shared resources acquire
+ * the provided mutex.
+ */
 
 struct ReadBaseForArchiveCallbackData
 {
@@ -241,17 +533,60 @@ struct ReadBaseForArchiveCallbackData
     uint64_t ts_;
     uint64_t ttl_;
 };
-
+/**
+ * Callback invoked for batch archive reads to aggregate or forward results.
+ *
+ * Parameters:
+ *  - data: user-provided context pointer passed through the async call.
+ *  - closure: protobuf closure associated with the RPC (may be nullptr for
+ * local paths).
+ *  - client: reference to the DataStoreServiceClient that executed the
+ * operation.
+ *  - result: operation result detail (error code/message and any
+ * operation-specific fields).
+ */
 void SyncBatchReadForArchiveCallback(void *data,
                                      ::google::protobuf::Closure *closure,
                                      DataStoreServiceClient &client,
                                      const remote::CommonResult &result);
 
+/**
+ * Callback invoked to load a range slice (archive or otherwise).
+ *
+ * Parameters:
+ *  - data: user-provided context pointer passed through the async call.
+ *  - closure: protobuf closure associated with the RPC (may be nullptr for
+ * local paths).
+ *  - client: reference to the DataStoreServiceClient that executed the
+ * operation.
+ *  - result: operation result detail (error code/message and any
+ * operation-specific fields).
+ */
 void LoadRangeSliceCallback(void *data,
                             ::google::protobuf::Closure *closure,
                             DataStoreServiceClient &client,
                             const remote::CommonResult &result);
-
+/**
+ * Closure implementing a datastore Read operation supporting both local and
+ * remote paths.
+ *
+ * Use Reset(...) to configure a read (table, partition, key, client, and
+ * callback), then:
+ *  - PrepareRequest(is_local): prepare an RPC request if remote, or clear local
+ * result for local reads.
+ *  - Run(): executed when an RPC completes (or when local processing is
+ * finished). Run() handles RPC failures with retry logic, translates NOT_OWNER
+ * into sharding handling and potential retry, and finally invokes the user
+ * callback with the CommonResult.
+ *
+ * Accessors provide access to the brpc::Controller, request/response objects,
+ * table/partition/key, and local-result fields (value, ts, ttl, result). Value
+ * accessors return either the local in-memory values or the response's values
+ * depending on the request mode.
+ *
+ * Note: retry behavior is governed by the associated DataStoreServiceClient
+ * retry_limit_.
+ */
 class ReadClosure : public ::google::protobuf::Closure, public Poolable
 {
 public:
@@ -545,6 +880,13 @@ private:
     void *callback_data_;
 };
 
+/**
+ * Closure for asynchronous data flushing operations to KV storage.
+ *
+ * Manages the lifecycle of flush operations, including RPC communication,
+ * retry logic, and callback invocation. Supports both local and remote
+ * flush operations with configurable retry behavior.
+ */
 class FlushDataClosure : public ::google::protobuf::Closure, public Poolable
 {
 public:
@@ -2071,31 +2413,63 @@ private:
     void *callback_data_;
 };
 
+/**
+ * Callback for fetching individual records from the data store.
+ *
+ * Handles the completion of record fetch operations and processes the result.
+ */
 void FetchRecordCallback(void *data,
                          ::google::protobuf::Closure *closure,
                          DataStoreServiceClient &client,
                          const remote::CommonResult &result);
 
+/**
+ * Callback for fetching snapshot data from the data store.
+ *
+ * Handles the completion of snapshot fetch operations and processes the result.
+ */
 void FetchSnapshotCallback(void *data,
                            ::google::protobuf::Closure *closure,
                            DataStoreServiceClient &client,
                            const remote::CommonResult &result);
 
+/**
+ * Callback data for asynchronous table drop operations.
+ *
+ * Contains the KV table name that is being dropped.
+ */
 struct AsyncDropTableCallbackData
 {
     std::string kv_table_name_;
 };
 
+/**
+ * Callback for asynchronous table drop operations.
+ *
+ * Handles the completion of table drop operations and processes the result.
+ */
 void AsyncDropTableCallback(void *data,
                             ::google::protobuf::Closure *closure,
                             DataStoreServiceClient &client,
                             const remote::CommonResult &result);
 
+/**
+ * Callback for fetching table catalog information.
+ *
+ * Handles the completion of table catalog fetch operations and processes the
+ * result.
+ */
 void FetchTableCatalogCallback(void *data,
                                ::google::protobuf::Closure *closure,
                                DataStoreServiceClient &client,
                                const remote::CommonResult &result);
 
+/**
+ * Callback data for fetching table information.
+ *
+ * Extends SyncCallbackData to include table-specific information like
+ * schema image, version timestamp, and found status.
+ */
 struct FetchTableCallbackData : public SyncCallbackData
 {
     FetchTableCallbackData() = default;
@@ -2127,11 +2501,35 @@ void FetchTableCallback(void *data,
                         DataStoreServiceClient &client,
                         const remote::CommonResult &result);
 
-void SyncPutAllCallback(void *data,
-                        ::google::protobuf::Closure *closure,
-                        DataStoreServiceClient &client,
-                        const remote::CommonResult &result);
+/**
+ * Callback for synchronous concurrent request operations.
+ *
+ * Handles the completion of concurrent request operations and updates the
+ * SyncConcurrentRequest structure with the result.
+ */
+void SyncConcurrentRequestCallback(void *data,
+                                   ::google::protobuf::Closure *closure,
+                                   DataStoreServiceClient &client,
+                                   const remote::CommonResult &result);
 
+/**
+ * Callback for per-partition batch operations in concurrent PutAll.
+ *
+ * Handles the completion of a single batch for a partition and chains
+ * to the next batch if available, or marks the partition as completed.
+ */
+void PartitionBatchCallback(void *data,
+                            ::google::protobuf::Closure *closure,
+                            DataStoreServiceClient &client,
+                            const remote::CommonResult &result);
+
+/**
+ * Callback data for fetching database information.
+ *
+ * Extends SyncCallbackData to include database-specific information like
+ * database definition, found status, and yield/resume function pointers
+ * for cooperative scheduling.
+ */
 struct FetchDatabaseCallbackData : public SyncCallbackData
 {
     FetchDatabaseCallbackData() = default;
@@ -2188,11 +2586,22 @@ struct FetchDatabaseCallbackData : public SyncCallbackData
     const std::function<void()> *resume_fptr_;
 };
 
+/**
+ * Callback for fetching database information.
+ *
+ * Handles the completion of database fetch operations and processes the result.
+ */
 void FetchDatabaseCallback(void *data,
                            ::google::protobuf::Closure *closure,
                            DataStoreServiceClient &client,
                            const remote::CommonResult &result);
 
+/**
+ * Callback data for fetching all database names.
+ *
+ * Extends SyncCallbackData to include database names list and yield/resume
+ * function pointers for cooperative scheduling during pagination.
+ */
 struct FetchAllDatabaseCallbackData : public SyncCallbackData
 {
     FetchAllDatabaseCallbackData() = default;
@@ -2255,11 +2664,23 @@ struct FetchAllDatabaseCallbackData : public SyncCallbackData
     std::string end_key_;
 };
 
+/**
+ * Callback for fetching all database names.
+ *
+ * Handles the completion of all database names fetch operations and processes
+ * the result.
+ */
 void FetchAllDatabaseCallback(void *data,
                               ::google::protobuf::Closure *closure,
                               DataStoreServiceClient &client,
                               const remote::CommonResult &result);
 
+/**
+ * Callback data for discovering all table names.
+ *
+ * Extends SyncCallbackData to include table names list and yield/resume
+ * function pointers for cooperative scheduling during pagination.
+ */
 struct DiscoverAllTableNamesCallbackData : public SyncCallbackData
 {
     DiscoverAllTableNamesCallbackData() = default;
@@ -2316,30 +2737,66 @@ struct DiscoverAllTableNamesCallbackData : public SyncCallbackData
     std::string session_id_;
 };
 
+/**
+ * Callback for discovering all table names.
+ *
+ * Handles the completion of table name discovery operations and processes the
+ * result.
+ */
 void DiscoverAllTableNamesCallback(void *data,
                                    ::google::protobuf::Closure *closure,
                                    DataStoreServiceClient &client,
                                    const remote::CommonResult &result);
 
+/**
+ * Callback for fetching table ranges.
+ *
+ * Handles the completion of table range fetch operations and processes the
+ * result.
+ */
 void FetchTableRangesCallback(void *data,
                               ::google::protobuf::Closure *closure,
                               DataStoreServiceClient &client,
                               const remote::CommonResult &result);
 
+/**
+ * Callback for fetching range slices.
+ *
+ * Handles the completion of range slice fetch operations and processes the
+ * result.
+ */
 void FetchRangeSlicesCallback(void *data,
                               ::google::protobuf::Closure *closure,
                               DataStoreServiceClient &client,
                               const remote::CommonResult &result);
+/**
+ * Callback for fetching current table statistics.
+ *
+ * Handles the completion of current table statistics fetch operations and
+ * processes the result.
+ */
 void FetchCurrentTableStatsCallback(void *data,
                                     ::google::protobuf::Closure *closure,
                                     DataStoreServiceClient &client,
                                     const remote::CommonResult &result);
 
+/**
+ * Callback for fetching table statistics.
+ *
+ * Handles the completion of table statistics fetch operations and processes the
+ * result.
+ */
 void FetchTableStatsCallback(void *data,
                              ::google::protobuf::Closure *closure,
                              DataStoreServiceClient &client,
                              const remote::CommonResult &result);
 
+/**
+ * Callback data for fetching archive records.
+ *
+ * Extends SyncCallbackData to include archive-specific information like
+ * table name, partition ID, key ranges, batch size, and scan direction.
+ */
 struct FetchArchivesCallbackData : public SyncCallbackData
 {
     FetchArchivesCallbackData(const std::string_view kv_table_name,
@@ -2372,21 +2829,45 @@ struct FetchArchivesCallbackData : public SyncCallbackData
     std::vector<uint64_t> archive_commit_ts_;
 };
 
+/**
+ * Callback for fetching archive records.
+ *
+ * Handles the completion of archive record fetch operations and processes the
+ * result.
+ */
 void FetchArchivesCallback(void *data,
                            ::google::protobuf::Closure *closure,
                            DataStoreServiceClient &client,
                            const remote::CommonResult &result);
 
+/**
+ * Callback for fetching record archives.
+ *
+ * Handles the completion of record archive fetch operations and processes the
+ * result.
+ */
 void FetchRecordArchivesCallback(void *data,
                                  ::google::protobuf::Closure *closure,
                                  DataStoreServiceClient &client,
                                  const remote::CommonResult &result);
 
+/**
+ * Callback for fetching snapshot archives.
+ *
+ * Handles the completion of snapshot archive fetch operations and processes the
+ * result.
+ */
 void FetchSnapshotArchiveCallback(void *data,
                                   ::google::protobuf::Closure *closure,
                                   DataStoreServiceClient &client,
                                   const remote::CommonResult &result);
 
+/**
+ * Callback data for creating snapshots for backup operations.
+ *
+ * Extends SyncCallbackData to include backup-specific information like
+ * backup name, timestamp, and backup files list.
+ */
 struct CreateSnapshotForBackupCallbackData : public SyncCallbackData
 {
     CreateSnapshotForBackupCallbackData() = default;
@@ -2413,6 +2894,12 @@ struct CreateSnapshotForBackupCallbackData : public SyncCallbackData
     std::vector<std::string> *backup_files_;
 };
 
+/**
+ * Callback for creating snapshots for backup operations.
+ *
+ * Handles the completion of snapshot creation for backup operations and
+ * processes the result.
+ */
 void CreateSnapshotForBackupCallback(void *data,
                                      ::google::protobuf::Closure *closure,
                                      DataStoreServiceClient &client,
