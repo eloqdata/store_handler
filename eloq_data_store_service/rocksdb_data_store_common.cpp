@@ -282,15 +282,11 @@ void RocksDBDataStoreCommon::FlushData(FlushDataRequest *flush_data_req)
             std::unique_ptr<PoolableGuard> poolable_guard =
                 std::make_unique<PoolableGuard>(flush_data_req);
 
-            // Increase write counter at the start of the operation
-            IncreaseWriteCounter();
-
             ::EloqDS::remote::CommonResult result;
             std::shared_lock<std::shared_mutex> db_lk(db_mux_);
             auto db = GetDBPtr();
             if (!db)
             {
-                DecreaseWriteCounter();  // Decrease counter before error return
                 result.set_error_code(
                     ::EloqDS::remote::DataStoreError::DB_NOT_OPEN);
                 result.set_error_msg("DB is not opened");
@@ -307,7 +303,6 @@ void RocksDBDataStoreCommon::FlushData(FlushDataRequest *flush_data_req)
             {
                 LOG(ERROR) << "Unable to flush db with error: "
                            << status.ToString();
-                DecreaseWriteCounter();  // Decrease counter before error return
                 result.set_error_code(
                     ::EloqDS::remote::DataStoreError::FLUSH_FAILED);
                 result.set_error_msg(status.ToString());
@@ -315,8 +310,6 @@ void RocksDBDataStoreCommon::FlushData(FlushDataRequest *flush_data_req)
                 return;
             }
 
-            // Decrease counter before successful return
-            DecreaseWriteCounter();
             result.set_error_code(::EloqDS::remote::DataStoreError::NO_ERROR);
             flush_data_req->SetFinish(result);
             DLOG(INFO) << "FlushData successfully.";
@@ -332,16 +325,11 @@ void RocksDBDataStoreCommon::DeleteRange(DeleteRangeRequest *delete_range_req)
             std::unique_ptr<PoolableGuard> poolable_guard =
                 std::make_unique<PoolableGuard>(delete_range_req);
 
-            // Increase write counter at the start of the operation
-            IncreaseWriteCounter();
-
             ::EloqDS::remote::CommonResult result;
             std::shared_lock<std::shared_mutex> db_lk(db_mux_);
             auto db = GetDBPtr();
             if (!db)
             {
-                // Decrease counter before error return
-                DecreaseWriteCounter();
                 result.set_error_code(
                     ::EloqDS::remote::DataStoreError::DB_NOT_OPEN);
                 result.set_error_msg("DB is not opened");
@@ -380,9 +368,6 @@ void RocksDBDataStoreCommon::DeleteRange(DeleteRangeRequest *delete_range_req)
             {
                 LOG(ERROR) << "Unable to delete range with error: "
                            << status.ToString();
-
-                // Decrease counter before error return
-                DecreaseWriteCounter();
                 result.set_error_code(
                     ::EloqDS::remote::DataStoreError::WRITE_FAILED);
                 result.set_error_msg(status.ToString());
@@ -390,8 +375,6 @@ void RocksDBDataStoreCommon::DeleteRange(DeleteRangeRequest *delete_range_req)
                 return;
             }
 
-            // Decrease counter before successful return
-            DecreaseWriteCounter();
             result.set_error_code(::EloqDS::remote::DataStoreError::NO_ERROR);
             delete_range_req->SetFinish(result);
             DLOG(INFO) << "DeleteRange successfully.";
@@ -506,9 +489,6 @@ void RocksDBDataStoreCommon::BatchWriteRecords(
                 return;
             }
 
-            // Increase write counter before starting the write operation
-            IncreaseWriteCounter();
-
             const uint16_t parts_cnt_per_key =
                 batch_write_req->PartsCountPerKey();
             const uint16_t parts_cnt_per_record =
@@ -600,7 +580,6 @@ void RocksDBDataStoreCommon::BatchWriteRecords(
                 }
             }
 
-            DecreaseWriteCounter();
             result.set_error_code(::EloqDS::remote::DataStoreError::NO_ERROR);
             batch_write_req->SetFinish(result);
         });
@@ -626,16 +605,11 @@ void RocksDBDataStoreCommon::DropTable(DropTableRequest *drop_table_req)
             std::unique_ptr<PoolableGuard> poolable_guard =
                 std::make_unique<PoolableGuard>(drop_table_req);
 
-            // Increase write counter at the start of the operation
-            IncreaseWriteCounter();
-
             ::EloqDS::remote::CommonResult result;
             std::shared_lock<std::shared_mutex> db_lk(db_mux_);
             auto db = GetDBPtr();
             if (!db)
             {
-                // Decrease counter before error return
-                DecreaseWriteCounter();
                 result.set_error_code(
                     ::EloqDS::remote::DataStoreError::DB_NOT_OPEN);
                 result.set_error_msg("DB is not opened");
@@ -661,9 +635,6 @@ void RocksDBDataStoreCommon::DropTable(DropTableRequest *drop_table_req)
             {
                 LOG(ERROR) << "Unable to drop table with error: "
                            << status.ToString();
-
-                // Decrease counter before error return
-                DecreaseWriteCounter();
                 result.set_error_code(
                     ::EloqDS::remote::DataStoreError::WRITE_FAILED);
                 result.set_error_msg(status.ToString());
@@ -680,8 +651,6 @@ void RocksDBDataStoreCommon::DropTable(DropTableRequest *drop_table_req)
             {
                 LOG(ERROR) << "Unable to drop table with error: "
                            << status.ToString();
-                // Decrease counter before error return
-                DecreaseWriteCounter();
                 result.set_error_code(
                     ::EloqDS::remote::DataStoreError::FLUSH_FAILED);
                 result.set_error_msg(status.ToString());
@@ -689,8 +658,6 @@ void RocksDBDataStoreCommon::DropTable(DropTableRequest *drop_table_req)
                 return;
             }
 
-            // Decrease counter before successful return
-            DecreaseWriteCounter();
             result.set_error_code(::EloqDS::remote::DataStoreError::NO_ERROR);
             drop_table_req->SetFinish(result);
             DLOG(INFO) << "DropTable successfully.";
@@ -1004,35 +971,14 @@ void RocksDBDataStoreCommon::ScanClose(ScanRequest *scan_req)
         });
 }
 
-void RocksDBDataStoreCommon::WaitForPendingWrites()
-{
-    // Wait until all ongoing write requests are completed
-    while (ongoing_write_requests_.load(std::memory_order_acquire) > 0)
-    {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-}
-
 DSShardStatus RocksDBDataStoreCommon::FetchDSShardStatus() const
 {
     assert(data_store_service_ != nullptr);
     return data_store_service_->FetchDSShardStatus(shard_id_);
 }
 
-void RocksDBDataStoreCommon::IncreaseWriteCounter()
-{
-    ongoing_write_requests_.fetch_add(1, std::memory_order_release);
-}
-
-void RocksDBDataStoreCommon::DecreaseWriteCounter()
-{
-    ongoing_write_requests_.fetch_sub(1, std::memory_order_release);
-}
-
 void RocksDBDataStoreCommon::SwitchToReadOnly()
 {
-    WaitForPendingWrites();
-
     bthread::Mutex mutex;
     bthread::ConditionVariable cond_var;
     bool done = false;
