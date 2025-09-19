@@ -196,19 +196,15 @@ void EloqStoreDataStore::BatchWriteRecords(WriteRecordsRequest *write_req)
         entries.emplace_back(std::move(entry));
     }
 
-    if (!std::ranges::is_sorted(entries,
-                        [](const ::eloqstore::WriteDataEntry &lhs,
-                           const ::eloqstore::WriteDataEntry &rhs)
-                        { return lhs.key_ < rhs.key_; }))
+    if (!std::ranges::is_sorted(
+            entries, std::ranges::less{}, &::eloqstore::WriteDataEntry::key_))
     {
         DLOG(INFO) << "Sort this batch records in non-descending order before "
                       "send to EloqStore for table: "
                    << eloq_store_table_id;
         // Sort the batch keys
-        std::ranges::sort(entries,
-                  [](const ::eloqstore::WriteDataEntry &lhs,
-                     const ::eloqstore::WriteDataEntry &rhs)
-                  { return lhs.key_ < rhs.key_; });
+        std::ranges::sort(
+            entries, std::ranges::less{}, &::eloqstore::WriteDataEntry::key_);
     }
 
     kv_write_req.SetArgs(eloq_store_table_id, std::move(entries));
@@ -498,7 +494,6 @@ void EloqStoreDataStore::CreateSnapshotForBackup(
 {
     return;
 }
-
 
 void EloqStoreDataStore::ScanDelete(DeleteRangeRequest *delete_range_req)
 {

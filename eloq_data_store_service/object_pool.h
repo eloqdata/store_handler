@@ -143,8 +143,15 @@ public:
                 return nullptr;
             }
 
-            size_t old_size = pool_.size();
-            pool_.resize(static_cast<size_t>(old_size * 1.5));
+            const size_t old_size = pool_.size();
+            const size_t desired = old_size + (old_size >> 1);
+            const size_t new_size =
+                std::min(max_size_, std::max(old_size + 1, desired));
+            if (new_size <= old_size)
+            {
+                return nullptr;  // cannot grow further
+            }
+            pool_.resize(new_size);
             for (size_t idx = old_size; idx < pool_.size(); ++idx)
             {
                 pool_[idx] = std::make_unique<T>();
