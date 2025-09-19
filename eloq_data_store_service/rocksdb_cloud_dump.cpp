@@ -510,9 +510,9 @@ int main(int argc, char **argv)
             DLOG(INFO) << "cloud_env reset";
             cloud_fs = nullptr;
             DLOG(INFO) << "cloud_fs reset";
+            LOG(INFO) << "Database closed successfully.";
             Aws::ShutdownAPI(aws_options);
             google::ShutdownGoogleLogging();
-            LOG(INFO) << "Database closed successfully.";
             return 0;
         }
 
