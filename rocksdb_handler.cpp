@@ -1229,6 +1229,7 @@ txservice::store::DataStoreHandler::DataStoreOpStatus
 RocksDBHandler::FetchBucketData(
     std::vector<txservice::FetchBucketDataCc *> fetch_bucket_data_ccs)
 {
+    auto start_time = std::chrono::high_resolution_clock::now();
     std::vector<std::function<void()>> work;
     for (auto *fetch_bucket_data_cc : fetch_bucket_data_ccs)
     {
@@ -1353,6 +1354,11 @@ RocksDBHandler::FetchBucketData(
                     static_cast<int32_t>(txservice::CcErrorCode::NO_ERROR));
             });
     }
+    auto stop_time = std::chrono::high_resolution_clock::now();
+    LOG(INFO) << "== genertae work time = "
+              << std::chrono::duration_cast<std::chrono::microseconds>(
+                     stop_time - start_time)
+                     .count();
 
     if (work.size() > 0)
     {
