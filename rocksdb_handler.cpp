@@ -1362,6 +1362,7 @@ RocksDBHandler::FetchBucketData(
 
     if (work.size() > 0)
     {
+        LOG(INFO) << "== BulkSubmit start";
         auto start_time = std::chrono::high_resolution_clock::now();
         query_worker_pool_->BulkSubmitWork(std::move(work));
         auto stop_time = std::chrono::high_resolution_clock::now();
