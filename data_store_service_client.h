@@ -429,12 +429,6 @@ public:
                                  std::vector<std::string_view> &keys,
                                  uint64_t &write_batch_size);
 
-    // NOTICE: be_commit_ts is the big endian encode value of commit_ts
-    static bool DecodeArchiveKey(const std::string &archive_key,
-                                 std::string &table_name,
-                                 txservice::TxKey &key,
-                                 uint64_t &be_commit_ts);
-
     static void EncodeArchiveValue(bool is_deleted,
                                    const txservice::TxRecord *value,
                                    size_t &unpack_info_size,
