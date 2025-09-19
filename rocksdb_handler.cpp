@@ -41,6 +41,7 @@
 
 #include <atomic>
 #include <cerrno>
+#include <chrono>
 #include <condition_variable>
 #include <csignal>
 #include <cstdint>
@@ -1355,7 +1356,13 @@ RocksDBHandler::FetchBucketData(
 
     if (work.size() > 0)
     {
+        auto start_time = std::chrono::high_resolution_clock::now();
         query_worker_pool_->BulkSubmitWork(std::move(work));
+        auto stop_time = std::chrono::high_resolution_clock::now();
+        LOG(INFO) << "== BulkSubmit: time = "
+                  << std::chrono::duration_cast<std::chrono::microseconds>(
+                         stop_time - start_time)
+                         .count();
     }
 
     return DataStoreOpStatus::Success;
