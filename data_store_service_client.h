@@ -459,7 +459,7 @@ public:
 private:
     int32_t MapKeyHashToPartitionId(const txservice::TxKey &key) const
     {
-        return (key.Hash() >> 10) & 0x3FF;
+        return key.Hash() & 0x3FF;
     }
 
     // =====================================================
