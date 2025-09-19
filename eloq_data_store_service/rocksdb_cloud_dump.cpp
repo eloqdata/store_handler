@@ -51,6 +51,7 @@ DEFINE_string(region, "us-east-1", "AWS region");
 DEFINE_string(s3_endpoint, "", "Custom S3 endpoint URL (optional)");
 DEFINE_string(db_path, "./db", "Local DB path");
 DEFINE_bool(list_cf, false, "List all column families");
+DEFINE_bool(opendb, false, "Open the DB only");
 DEFINE_string(dump_keys, "", "Dump all keys from specified column family");
 DEFINE_string(get_value,
               "",
@@ -78,6 +79,7 @@ void print_usage(const char *prog_name)
         "  --s3_endpoint=URL            Custom S3 endpoint URL (optional)\n"
         "  --db_path=PATH               Local DB path (default: ./db)\n"
         "  --list_cf                    List all column families\n"
+        "  --opendb                     Open the DB only\n"
         "  --dump_keys=CF               Dump all keys from specified column "
         "family\n"
         "  --get_value=CF,KEY           Get value for a specific key in "
@@ -99,6 +101,7 @@ struct CmdLineParams
     std::string s3_endpoint_url;
     std::string db_path;
     bool list_cf;
+    bool opendb;
     std::string dump_keys_cf;
     std::pair<std::string, std::string> get_value;
     std::string cookie_on_open;
@@ -118,6 +121,7 @@ CmdLineParams parse_arguments()
     params.s3_endpoint_url = FLAGS_s3_endpoint;
     params.db_path = FLAGS_db_path;
     params.list_cf = FLAGS_list_cf;
+    params.opendb = FLAGS_opendb;
     params.dump_keys_cf = FLAGS_dump_keys;
     params.cookie_on_open = FLAGS_cookie_on_open;
 
@@ -151,11 +155,11 @@ CmdLineParams parse_arguments()
     {
         throw std::runtime_error("Cookie on open is required");
     }
-    if (!params.list_cf && params.dump_keys_cf.empty() &&
+    if (!params.list_cf && !params.opendb && params.dump_keys_cf.empty() &&
         params.get_value.first.empty())
     {
         throw std::runtime_error(
-            "No action specified. Use --list_cf, --dump_keys, or --get_value");
+            "No action specified. Use --list_cf, --opendb, --dump_keys, or --get_value");
     }
 
     return params;
@@ -379,6 +383,13 @@ int main(int argc, char **argv)
         cfs_options.dest_bucket.SetRegion(params.region);
         cfs_options.dest_bucket.SetObjectPath(params.object_path);
         cfs_options.cookie_on_open = params.cookie_on_open;
+        // Temp fix for very slow open db issue
+        // TODO: implement customized sst file manager
+        cfs_options.constant_sst_file_size_in_sst_file_manager =
+            64 * 1024 * 1024L;
+        // Skip listing cloud files in GetChildren when DumpDBSummary to speed
+        // up open db
+        cfs_options.skip_cloud_files_in_getchildren = true;
 
         // Add sst_file_cache for accelerating random access on sst files
         cfs_options.sst_file_cache =
@@ -419,6 +430,9 @@ int main(int argc, char **argv)
         options.info_log_level = rocksdb::InfoLogLevel::INFO_LEVEL;
         options.max_open_files = -1;              // Allow unlimited open files
         options.disable_auto_compactions = true;  // Disable auto compactions
+        options.best_efforts_recovery = false;
+        options.skip_checking_sst_file_sizes_on_db_open = true;
+        options.skip_stats_update_on_db_open = true;
 
         // Open the DB
         rocksdb::DBCloud *db = nullptr;
@@ -457,6 +471,8 @@ int main(int argc, char **argv)
                 cf_name, rocksdb::ColumnFamilyOptions()));
         }
 
+        LOG(INFO) << "Opening database with " << cf_descs.size()
+                  << " column families...";
         // Open the database with all column families
         std::vector<rocksdb::ColumnFamilyHandle *> cf_handles;
         status = rocksdb::DBCloud::Open(
@@ -468,6 +484,36 @@ int main(int argc, char **argv)
                        << status.ToString();
             throw std::runtime_error("Unable to open RocksDB Cloud database: " +
                                      status.ToString());
+        }
+
+        rocksdb::CloudFileSystem *cloud_fs_ptr =
+            dynamic_cast<rocksdb::CloudFileSystem *>(cloud_fs.get());
+        auto &cfs_options_ref =
+            cloud_fs_ptr->GetMutableCloudFileSystemOptions();
+        // Restore skip_cloud_files_in_getchildren to false
+        cfs_options_ref.skip_cloud_files_in_getchildren = false;
+
+        if (params.opendb)
+        {
+            LOG(INFO) << "Database opened successfully.";
+            // Clean up resources
+            for (auto cf_handle : cf_handles)
+            {
+                db->DestroyColumnFamilyHandle(cf_handle);
+            }
+
+            db->Close();
+            DLOG(INFO) << "DB closed";
+            delete db;
+            DLOG(INFO) << "DB deleted";
+            cloud_env = nullptr;
+            DLOG(INFO) << "cloud_env reset";
+            cloud_fs = nullptr;
+            DLOG(INFO) << "cloud_fs reset";
+            LOG(INFO) << "Database closed successfully.";
+            Aws::ShutdownAPI(aws_options);
+            google::ShutdownGoogleLogging();
+            return 0;
         }
 
         // Build a map from column family name to handle
