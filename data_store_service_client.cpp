@@ -1943,63 +1943,6 @@ void DataStoreServiceClient::EncodeArchiveKey(
 }
 
 /**
- * @brief Decodes an archive key to extract its components.
- *
- * Parses an archive key string to extract the table name, transaction key,
- * and commit timestamp. The archive key format is:
- * "log:item:{table_name}:{key}:{commit_ts}". Validates the key format and
- * extracts each component using string separators.
- *
- * @param archive_key The archive key string to decode.
- * @param table_name Output parameter for the extracted table name.
- * @param key Output parameter for the extracted transaction key.
- * @param be_commit_ts Output parameter for the extracted commit timestamp
- * (big-endian).
- * @return true if the key is successfully decoded, false if the format is
- * invalid.
- */
-bool DataStoreServiceClient::DecodeArchiveKey(const std::string &archive_key,
-                                              std::string &table_name,
-                                              txservice::TxKey &key,
-                                              uint64_t &be_commit_ts)
-{
-    // Find the first separator
-    size_t first_sep = archive_key.find(KEY_SEPARATOR);
-    if (first_sep == std::string::npos)
-    {
-        return false;
-    }
-
-    // Extract table_name
-    table_name = archive_key.substr(0, first_sep);
-
-    // Find the second separator
-    size_t second_sep =
-        archive_key.find(KEY_SEPARATOR, first_sep + KEY_SEPARATOR.size());
-    if (second_sep == std::string::npos)
-    {
-        return false;
-    }
-
-    // Extract key
-    size_t key_start = first_sep + KEY_SEPARATOR.size();
-    size_t key_length = second_sep - key_start;
-    key = txservice::TxKeyFactory::CreateTxKey(archive_key.data() + key_start,
-                                               key_length);
-
-    // Extract commit_ts
-    size_t ts_pos = second_sep + KEY_SEPARATOR.size();
-    if (ts_pos + sizeof(uint64_t) > archive_key.size())
-    {
-        return false;
-    }
-    be_commit_ts =
-        *reinterpret_cast<const uint64_t *>(archive_key.data() + ts_pos);
-
-    return true;
-}
-
-/**
  * @brief Encodes archive value data for storage.
  *
  * Serializes archive value information including deletion status, unpack info,
