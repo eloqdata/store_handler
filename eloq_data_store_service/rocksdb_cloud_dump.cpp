@@ -155,11 +155,11 @@ CmdLineParams parse_arguments()
     {
         throw std::runtime_error("Cookie on open is required");
     }
-    if (!params.list_cf && params.dump_keys_cf.empty() &&
+    if (!params.list_cf && !params.opendb && params.dump_keys_cf.empty() &&
         params.get_value.first.empty())
     {
         throw std::runtime_error(
-            "No action specified. Use --list_cf, --dump_keys, or --get_value");
+            "No action specified. Use --list_cf, --opendb, --dump_keys, or --get_value");
     }
 
     return params;
@@ -503,9 +503,13 @@ int main(int argc, char **argv)
             }
 
             db->Close();
+            LOG(INFO) << "DB closed";
             delete db;
+            LOG(INFO) << "DB deleted";
             cloud_env = nullptr;
+            LOG(INFO) << "cloud_env reset";
             cloud_fs = nullptr;
+            LOG(INFO) << "cloud_fs reset";
             Aws::ShutdownAPI(aws_options);
             google::ShutdownGoogleLogging();
             LOG(INFO) << "Database closed successfully.";

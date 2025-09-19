@@ -325,7 +325,7 @@ bool RocksDBCloudDataStore::StartDB(std::string cookie, std::string prev_cookie)
         cloud_config_.purger_periodicity_millis_;
 
     // Temp fix for very slow open db issue
-    // TODO: implement customized sst file manager
+    // TODO(monkeyzilla): implement customized sst file manager
     cfs_options_.constant_sst_file_size_in_sst_file_manager = 64 * 1024 * 1024L;
     // Skip listing cloud files in GetChildren when DumpDBSummary to speed
     // up open db
@@ -506,13 +506,6 @@ bool RocksDBCloudDataStore::OpenCloudDB(
     options.periodic_compaction_seconds = periodic_compaction_seconds_;
     options.daily_offpeak_time_utc = dialy_offpeak_time_utc_;
 
-    // The max_open_files default value is -1, it cause DB open all files on
-    // DB::Open() This behavior causes 2 effects,
-    // 1. DB::Open() will be slow
-    // 2. During DB::Open, some of the opened sst files keep in LRUCache
-    // will be deleted due to LRU policy, which causes DB::Open failed
-    options.max_open_files = 0;
-
     if (target_file_size_base_ > 0)
     {
         options.target_file_size_base = target_file_size_base_;
@@ -617,9 +610,6 @@ bool RocksDBCloudDataStore::OpenCloudDB(
         // db does not exist. This node cannot escalate to be the ng leader.
         return false;
     }
-
-    // Reset max_open_files to default value of -1 after DB::Open
-    db_->SetDBOptions({{"max_open_files", "-1"}});
 
     // Restore skip_cloud_files_in_getchildren to false
     // after DB::Open
