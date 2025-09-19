@@ -2400,21 +2400,6 @@ void FetchBucketDataCallback(void *data,
                              DataStoreServiceClient &client,
                              const remote::CommonResult &result);
 
-struct FetchBucketDataCallbackData
-{
-    FetchBucketDataCallbackData(
-        txservice::FetchBucketDataCc *fetch_bucket_data_cc)
-        : fetch_bucket_data_cc_(fetch_bucket_data_cc)
-    {
-    }
-
-    txservice::FetchBucketDataCc *fetch_bucket_data_cc_;
-    std::string bucket_kv_start_key_;  // key owner
-    std::string bucket_kv_end_key_;
-    std::string session_id_;
-    std::vector<remote::SearchCondition> search_cond_;
-};
-
 void FetchArchivesCallback(void *data,
                            ::google::protobuf::Closure *closure,
                            DataStoreServiceClient &client,

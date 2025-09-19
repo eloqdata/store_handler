@@ -428,9 +428,9 @@ bool RocksDBHandler::PutAll(
         {
             for (auto &flush_rec : *flush_task_entry->data_sync_vec_)
             {
-                // TODO(lokax): encode bucket id
                 txservice::TxKey key = flush_rec.Key();
-                std::string rocksdb_key = EncodeToKvKey(key);
+                std::string rocksdb_key;
+                EncodeToKvKey(key, rocksdb_key);
 
                 if (flush_rec.payload_status_ ==
                         txservice::RecordStatus::Normal &&
@@ -1120,8 +1120,8 @@ RocksDBHandler::FetchRecord(txservice::FetchRecordCc *fetch_cc,
     LOG_IF(ERROR, fetch_snapshot_cc != nullptr)
         << "RocksDBHandler::FetchRecord with FetchSnapshotCc not implemented";
 
-    // TODO(lokax): encode bucket id
-    std::string rocksdb_key = EncodeToKvKey(fetch_cc->tx_key_);
+    std::string rocksdb_key;
+    EncodeToKvKey(fetch_cc->tx_key_, rocksdb_key);
 
     if (metrics::enable_kv_metrics)
     {
@@ -1257,18 +1257,33 @@ RocksDBHandler::FetchBucketData(
 
                 assert(cfh != nullptr);
 
-                std::string kv_bucket_start_key =
+                fetch_bucket_data_cc->kv_start_key_.clear();
+                fetch_bucket_data_cc->kv_end_key_.clear();
+
+                EncodeToKvKey(fetch_bucket_data_cc->bucket_id_,
+                              *fetch_bucket_data_cc->start_key_,
+                              fetch_bucket_data_cc->kv_start_key_);
+                if (fetch_bucket_data_cc->end_key_ == nullptr ||
+                    fetch_bucket_data_cc->end_key_->Type() !=
+                        txservice::KeyType::Normal)
+                {
+                    // postive
+                    EncodeToKvKey(fetch_bucket_data_cc->bucket_id_ + 1,
+                                  fetch_bucket_data_cc->kv_end_key_);
+                }
+                else
+                {
                     EncodeToKvKey(fetch_bucket_data_cc->bucket_id_,
-                                  fetch_bucket_data_cc->start_key_);
-                std::string kv_bucket_end_key =
-                    EncodeToKvKey(fetch_bucket_data_cc->bucket_id_ + 1);
+                                  *fetch_bucket_data_cc->end_key_,
+                                  fetch_bucket_data_cc->kv_end_key_);
+                }
 
                 rocksdb::ReadOptions read_options;
                 // NOTICE: do not enable async_io if compiling rocksdbcloud
                 // without iouring.
                 read_options.async_io = false;
                 rocksdb::Iterator *iter = db->NewIterator(read_options, cfh);
-                rocksdb::Slice key(kv_bucket_start_key);
+                rocksdb::Slice key(fetch_bucket_data_cc->kv_start_key_);
                 iter->Seek(key);
                 if (!fetch_bucket_data_cc->start_key_inclusive_ &&
                     iter->Valid())
@@ -1285,10 +1300,23 @@ RocksDBHandler::FetchBucketData(
                 while (iter->Valid() &&
                        record_count < fetch_bucket_data_cc->batch_size_)
                 {
-                    if (iter->key().ToStringView() >= kv_bucket_end_key)
+                    if (fetch_bucket_data_cc->end_key_inclusive_)
                     {
-                        is_drained = true;
-                        break;
+                        if (iter->key().ToStringView() >
+                            fetch_bucket_data_cc->kv_end_key_)
+                        {
+                            is_drained = true;
+                            break;
+                        }
+                    }
+                    else
+                    {
+                        if (iter->key().ToStringView() >=
+                            fetch_bucket_data_cc->kv_end_key_)
+                        {
+                            is_drained = true;
+                            break;
+                        }
                     }
 
                     // TODO(lokax): support search condition pushdown
@@ -1367,7 +1395,7 @@ RocksDBHandler::FetchBucketData(
 
             std::string kv_bucket_start_key =
                 EncodeToKvKey(fetch_bucket_data_cc->bucket_id_,
-                              fetch_bucket_data_cc->start_key_);
+                              *fetch_bucket_data_cc->start_key_);
             std::string kv_bucket_end_key =
                 EncodeToKvKey(fetch_bucket_data_cc->bucket_id_ + 1);
 
@@ -2144,36 +2172,33 @@ bool RocksDBHandler::OnLeaderStart(uint32_t *next_leader_node)
     return succ;
 }
 
-std::string RocksDBHandler::EncodeToKvKey(uint16_t bucket_id)
+void RocksDBHandler::EncodeToKvKey(uint16_t bucket_id, std::string &key_out)
 {
-    std::string rocksdb_key;
     uint16_t be_bucket_id = EloqShare::host_to_big_endian(bucket_id);
-    rocksdb_key.append(reinterpret_cast<const char *>(&be_bucket_id),
-                       sizeof(be_bucket_id));
-    return rocksdb_key;
+    key_out.append(reinterpret_cast<const char *>(&be_bucket_id),
+                   sizeof(be_bucket_id));
 }
 
-std::string RocksDBHandler::EncodeToKvKey(uint16_t bucket_id,
-                                          const txservice::TxKey &tx_key)
+void RocksDBHandler::EncodeToKvKey(uint16_t bucket_id,
+                                   const txservice::TxKey &tx_key,
+                                   std::string &key_out)
 {
-    std::string rocksdb_key;
     uint16_t be_bucket_id = EloqShare::host_to_big_endian(bucket_id);
-    rocksdb_key.reserve(sizeof(uint16_t) + tx_key.Size());
-    rocksdb_key.append(reinterpret_cast<const char *>(&be_bucket_id),
-                       sizeof(be_bucket_id));
+    key_out.reserve(sizeof(uint16_t) + tx_key.Size());
+    key_out.append(reinterpret_cast<const char *>(&be_bucket_id),
+                   sizeof(be_bucket_id));
     if (tx_key.Type() == txservice::KeyType::Normal)
     {
-        rocksdb_key.append(tx_key.Data(), tx_key.Size());
+        key_out.append(tx_key.Data(), tx_key.Size());
     }
-
-    return rocksdb_key;
 }
 
-std::string RocksDBHandler::EncodeToKvKey(const txservice::TxKey &tx_key)
+void RocksDBHandler::EncodeToKvKey(const txservice::TxKey &tx_key,
+                                   std::string &key_out)
 {
     uint16_t bucket_id =
         txservice::Sharder::Instance().MapKeyHashToBucketId(tx_key.Hash());
-    return EncodeToKvKey(bucket_id, tx_key);
+    EncodeToKvKey(bucket_id, tx_key, key_out);
 }
 
 std::string RocksDBHandler::DecodeTxKeyFromKvKey(const char *data, size_t size)

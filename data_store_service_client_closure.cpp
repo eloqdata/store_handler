@@ -232,12 +232,11 @@ void FetchBucketDataCallback(void *data,
                              const remote::CommonResult &result)
 {
     assert(data != nullptr);
-    FetchBucketDataCallbackData *callback_data =
-        static_cast<FetchBucketDataCallbackData *>(data);
+    txservice::FetchBucketDataCc *fetch_bucket_data_cc =
+        static_cast<txservice::FetchBucketDataCc *>(data);
     ScanNextClosure *scan_next_closure =
         static_cast<ScanNextClosure *>(closure);
     assert(!scan_next_closure->GenerateSessionId());
-    auto *fetch_bucket_data_cc = callback_data->fetch_bucket_data_cc_;
 
     if (result.error_code() != EloqDS::remote::DataStoreError::NO_ERROR)
     {
@@ -245,8 +244,6 @@ void FetchBucketDataCallback(void *data,
                    << result.error_msg();
         fetch_bucket_data_cc->SetFinish(
             static_cast<int32_t>(txservice::CcErrorCode::DATA_STORE_ERR));
-
-        delete callback_data;
         return;
     }
 
@@ -287,8 +284,6 @@ void FetchBucketDataCallback(void *data,
     // callback_data->session_id_ = scan_next_closure->GetSessionId();
     fetch_bucket_data_cc->SetFinish(
         static_cast<int32_t>(txservice::CcErrorCode::NO_ERROR));
-
-    delete callback_data;
 }
 
 void FetchSnapshotCallback(void *data,

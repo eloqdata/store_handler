@@ -424,9 +424,11 @@ public:
     static uint32_t HashArchiveKey(const std::string &kv_table_name,
                                    const txservice::TxKey &tx_key);
 
-    static std::string EncodeKvKeyForHashPart(uint16_t bucket_id);
-    static std::string EncodeKvKeyForHashPart(uint16_t bucket_id,
-                                              const txservice::TxKey &tx_key);
+    static void EncodeKvKeyForHashPart(uint16_t bucket_id,
+                                       std::string &key_out);
+    static void EncodeKvKeyForHashPart(uint16_t bucket_id,
+                                       const txservice::TxKey &tx_key,
+                                       std::string &key_out);
 
     static std::string_view DecodeKvKeyForHashPart(const char *data,
                                                    size_t size);

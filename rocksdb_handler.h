@@ -525,10 +525,12 @@ public:
             cancel_data_loading_on_error,
         std::shared_ptr<std::atomic<uint16_t>> on_flying_count);
 
-    static std::string EncodeToKvKey(uint16_t bucket_id);
-    static std::string EncodeToKvKey(uint16_t bucket_id,
-                                     const txservice::TxKey &tx_key);
-    static std::string EncodeToKvKey(const txservice::TxKey &tx_key);
+    static void EncodeToKvKey(uint16_t bucket_id, std::string &key_out);
+    static void EncodeToKvKey(uint16_t bucket_id,
+                              const txservice::TxKey &tx_key,
+                              std::string &key_out);
+    static void EncodeToKvKey(const txservice::TxKey &tx_key,
+                              std::string &key_out);
     static std::string DecodeTxKeyFromKvKey(const char *data, size_t size);
     static uint16_t DecodeBucketIdFromKvKey(const char *data, size_t size);
 

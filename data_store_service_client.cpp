@@ -1747,28 +1747,25 @@ uint32_t DataStoreServiceClient::HashArchiveKey(
     return partition_id;
 }
 
-std::string DataStoreServiceClient::EncodeKvKeyForHashPart(uint16_t bucket_id)
+void DataStoreServiceClient::EncodeKvKeyForHashPart(uint16_t bucket_id,
+                                                    std::string &key_out)
 {
-    std::string kv_key;
     uint16_t be_bucket_id = EloqShare::host_to_big_endian(bucket_id);
-    kv_key.append(reinterpret_cast<const char *>(&be_bucket_id),
-                  sizeof(be_bucket_id));
-    return kv_key;
+    key_out.append(reinterpret_cast<const char *>(&be_bucket_id),
+                   sizeof(be_bucket_id));
 }
 
-std::string DataStoreServiceClient::EncodeKvKeyForHashPart(
-    uint16_t bucket_id, const txservice::TxKey &tx_key)
+void DataStoreServiceClient::EncodeKvKeyForHashPart(
+    uint16_t bucket_id, const txservice::TxKey &tx_key, std::string &key_out)
 {
-    std::string kv_key;
     uint16_t be_bucket_id = EloqShare::host_to_big_endian(bucket_id);
-    kv_key.reserve(sizeof(uint16_t) + tx_key.Size());
-    kv_key.append(reinterpret_cast<const char *>(&be_bucket_id),
-                  sizeof(be_bucket_id));
+    key_out.reserve(sizeof(uint16_t) + tx_key.Size());
+    key_out.append(reinterpret_cast<const char *>(&be_bucket_id),
+                   sizeof(be_bucket_id));
     if (tx_key.Type() == txservice::KeyType::Normal)
     {
-        kv_key.append(tx_key.Data(), tx_key.Size());
+        key_out.append(tx_key.Data(), tx_key.Size());
     }
-    return kv_key;
 }
 
 std::string_view DataStoreServiceClient::DecodeKvKeyForHashPart(
@@ -2731,24 +2728,36 @@ DataStoreServiceClient::FetchBucketData(
                             fetch_bucket_data_cc->bucket_id_),
                         false);
 
-    auto *callback_data = new FetchBucketDataCallbackData(fetch_bucket_data_cc);
-    callback_data->bucket_kv_start_key_ = EncodeKvKeyForHashPart(
-        fetch_bucket_data_cc->bucket_id_, *fetch_bucket_data_cc->start_key_);
-    callback_data->bucket_kv_end_key_ =
-        EncodeKvKeyForHashPart(fetch_bucket_data_cc->bucket_id_ + 1);
+    fetch_bucket_data_cc->kv_start_key_.clear();
+    fetch_bucket_data_cc->kv_end_key_.clear();
+
+    EncodeKvKeyForHashPart(fetch_bucket_data_cc->bucket_id_,
+                           *fetch_bucket_data_cc->start_key_,
+                           fetch_bucket_data_cc->kv_start_key_);
+    if (fetch_bucket_data_cc->end_key_->Type() != txservice::KeyType::Normal)
+    {
+        EncodeKvKeyForHashPart(fetch_bucket_data_cc->bucket_id_ + 1,
+                               fetch_bucket_data_cc->kv_end_key_);
+    }
+    else
+    {
+        EncodeKvKeyForHashPart(fetch_bucket_data_cc->bucket_id_,
+                               *fetch_bucket_data_cc->end_key_,
+                               fetch_bucket_data_cc->kv_end_key_);
+    }
 
     ScanNext(fetch_bucket_data_cc->kv_table_name_,
              kv_partition_id,
-             callback_data->bucket_kv_start_key_,
-             callback_data->bucket_kv_end_key_,
-             callback_data->session_id_,
+             fetch_bucket_data_cc->kv_start_key_,
+             fetch_bucket_data_cc->kv_end_key_,
+             "",
              false,
              fetch_bucket_data_cc->start_key_inclusive_,
-             false,
+             fetch_bucket_data_cc->end_key_inclusive_,
              true,
              fetch_bucket_data_cc->batch_size_,
-             &callback_data->search_cond_,
-             callback_data,
+             nullptr,
+             fetch_bucket_data_cc,
              &FetchBucketDataCallback);
 
     return txservice::store::DataStoreHandler::DataStoreOpStatus::Success;
