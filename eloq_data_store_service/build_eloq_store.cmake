@@ -96,7 +96,9 @@ set(ELOQ_STORE_SOURCES
     ${ELOQ_STORE_SOURCE_DIR}/object_store.cpp
     ${ELOQ_STORE_SOURCE_DIR}/types.cpp
     ${ELOQ_STORE_SOURCE_DIR}/kv_options.cpp
-    ${ELOQ_STORE_SOURCE_DIR}/eloqstore_module.cpp)
+    ${ELOQ_STORE_SOURCE_DIR}/eloqstore_module.cpp
+    ${ELOQ_STORE_SOURCE_DIR}/purger_event_listener.cpp
+    ${ELOQ_STORE_SOURCE_DIR}/purger_sliding_window.cpp)
 
 add_library(eloqstore STATIC ${ELOQ_STORE_SOURCES} ${INI_SOURCES})
 
