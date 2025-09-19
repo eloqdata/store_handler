@@ -21,6 +21,8 @@
  */
 #include "eloq_store_data_store.h"
 
+#include <algorithm>
+
 #include "eloq_store_data_store_factory.h"
 #include "internal_request.h"
 
