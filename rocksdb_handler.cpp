@@ -1372,6 +1372,8 @@ RocksDBHandler::FetchBucketData(
                          .count();
     }
 
+    LOG(INFO) << "== FetchBucket: return";
+
     return DataStoreOpStatus::Success;
 }
 
