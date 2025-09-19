@@ -503,13 +503,13 @@ int main(int argc, char **argv)
             }
 
             db->Close();
-            LOG(INFO) << "DB closed";
+            DLOG(INFO) << "DB closed";
             delete db;
-            LOG(INFO) << "DB deleted";
+            DLOG(INFO) << "DB deleted";
             cloud_env = nullptr;
-            LOG(INFO) << "cloud_env reset";
+            DLOG(INFO) << "cloud_env reset";
             cloud_fs = nullptr;
-            LOG(INFO) << "cloud_fs reset";
+            DLOG(INFO) << "cloud_fs reset";
             Aws::ShutdownAPI(aws_options);
             google::ShutdownGoogleLogging();
             LOG(INFO) << "Database closed successfully.";
