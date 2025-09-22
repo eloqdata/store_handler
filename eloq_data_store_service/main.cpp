@@ -285,8 +285,8 @@ int main(int argc, char *argv[])
     // INIReader config_reader(nullptr, 0);
     EloqDS::RocksDBConfig rocksdb_config(config_reader, data_path);
     EloqDS::RocksDBCloudConfig rocksdb_cloud_config(config_reader);
+    rocksdb_cloud_config.branch_name_ = FLAGS_eloq_dss_branch_name;
     auto ds_factory = std::make_unique<EloqDS::RocksDBCloudDataStoreFactory>(
-        FLAGS_eloq_dss_branch_name,
         rocksdb_config, rocksdb_cloud_config, enable_cache_replacement_);
 
 #elif defined(DATA_STORE_TYPE_ELOQDSS_ROCKSDB)
@@ -330,7 +330,6 @@ int main(int argc, char *argv[])
     defined(DATA_STORE_TYPE_ELOQDSS_ROCKSDB_CLOUD_GCS)
         // TODO(lzx): move setup datastore to data_store_service
         auto ds = std::make_unique<EloqDS::RocksDBCloudDataStore>(
-            FLAGS_eloq_dss_branch_name,
             rocksdb_cloud_config,
             rocksdb_config,
             (FLAGS_bootstrap || is_single_node),
