@@ -67,6 +67,10 @@ DEFINE_string(eloq_dss_peer_node,
               "Data store peer node address. Used to get cluster topology if "
               "data_store_config_file is not provided.");
 
+DEFINE_string(eloq_dss_branch_name,
+              "development",
+              "Data store branch name.");
+
 DEFINE_string(ip, "127.0.0.1", "Server IP");
 DEFINE_int32(port, 9100, "Server Port");
 
@@ -281,6 +285,7 @@ int main(int argc, char *argv[])
     // INIReader config_reader(nullptr, 0);
     EloqDS::RocksDBConfig rocksdb_config(config_reader, data_path);
     EloqDS::RocksDBCloudConfig rocksdb_cloud_config(config_reader);
+    rocksdb_cloud_config.branch_name_ = FLAGS_eloq_dss_branch_name;
     auto ds_factory = std::make_unique<EloqDS::RocksDBCloudDataStoreFactory>(
         rocksdb_config, rocksdb_cloud_config, enable_cache_replacement_);
 

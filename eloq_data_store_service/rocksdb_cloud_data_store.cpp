@@ -261,7 +261,7 @@ rocksdb::S3ClientFactory RocksDBCloudDataStore::BuildS3ClientFactory(
     };
 }
 
-bool RocksDBCloudDataStore::StartDB(std::string cookie, std::string prev_cookie)
+bool RocksDBCloudDataStore::StartDB()
 {
     if (db_)
     {
@@ -373,26 +373,42 @@ bool RocksDBCloudDataStore::StartDB(std::string cookie, std::string prev_cookie)
     std::string cookie_on_open = "";
     std::string new_cookie_on_open = "";
 
-    // TODO(githubzilla): ng_id is not used in the current implementation,
-    // remove it later
-    int64_t ng_id = 0;
+    // TODO(githubzilla): dss_shard_id is not used in the current
+    // implementation, remove it later
+    int64_t dss_shard_id = 0;
+    std::string cloud_manifest_prefix;
+    int64_t max_term = -1;
     auto storage_provider = cfs->GetStorageProvider();
-    int64_t max_term =
-        FindMaxTermFromCloudManifestFiles(storage_provider,
-                                          cloud_config_.bucket_prefix_,
-                                          cloud_config_.bucket_name_,
-                                          cloud_config_.object_path_,
-                                          ng_id);
+    // find the max term cookie from cloud manifest files
+    bool ret = FindMaxTermFromCloudManifestFiles(storage_provider,
+                                                 cloud_config_.bucket_prefix_,
+                                                 cloud_config_.bucket_name_,
+                                                 cloud_config_.object_path_,
+                                                 cloud_config_.branch_name_,
+                                                 dss_shard_id,
+                                                 cloud_manifest_prefix,
+                                                 max_term);
+
+    if (!ret)
+    {
+        LOG(ERROR) << "Failed to find max term from cloud manifest file for "
+                      "branch: "
+                   << cloud_config_.branch_name_;
+    }
 
     if (max_term != -1)
     {
-        cookie_on_open = MakeCloudManifestCookie(ng_id, max_term);
-        new_cookie_on_open = MakeCloudManifestCookie(ng_id, max_term + 1);
+        cookie_on_open = MakeCloudManifestCookie(
+            cloud_config_.branch_name_, dss_shard_id, max_term);
+        new_cookie_on_open = MakeCloudManifestCookie(
+            cloud_config_.branch_name_, dss_shard_id, max_term + 1);
     }
     else
     {
+        // this is a new db
         cookie_on_open = "";
-        new_cookie_on_open = MakeCloudManifestCookie(ng_id, 0);
+        new_cookie_on_open = MakeCloudManifestCookie(
+            cloud_config_.branch_name_, dss_shard_id, 0);
     }
 
     // new CLOUDMANIFEST suffixed by cookie and epochID suffixed
@@ -701,23 +717,32 @@ rocksdb::DBCloud *RocksDBCloudDataStore::GetDBPtr()
 }
 
 inline std::string RocksDBCloudDataStore::MakeCloudManifestCookie(
-    int64_t cc_ng_id, int64_t term)
+    const std::string &branch_name, int64_t dss_shard_id, int64_t term)
 {
-    return std::to_string(cc_ng_id) + "-" + std::to_string(term);
+    if (branch_name.empty())
+    {
+        return std::to_string(dss_shard_id) + "-" + std::to_string(term);
+    }
+
+    return branch_name + "-" + std::to_string(dss_shard_id) + "-" +
+           std::to_string(term);
 }
 
 inline std::string RocksDBCloudDataStore::MakeCloudManifestFile(
-    const std::string &dbname, int64_t cc_ng_id, int64_t term)
+    const std::string &dbname,
+    const std::string &branch_name,
+    int64_t dss_shard_id,
+    int64_t term)
 {
-    if (cc_ng_id < 0 || term < 0)
+    if (branch_name.empty() && (dss_shard_id < 0 || term < 0))
     {
         return dbname + "/CLOUDMANIFEST";
     }
 
-    assert(cc_ng_id >= 0 && term >= 0);
+    assert(dss_shard_id >= 0 && term >= 0);
 
-    return dbname + "/CLOUDMANIFEST-" + std::to_string(cc_ng_id) + "-" +
-           std::to_string(term);
+    return dbname + "/CLOUDMANIFEST-" + branch_name + "-" +
+           std::to_string(dss_shard_id) + "-" + std::to_string(term);
 }
 
 inline bool RocksDBCloudDataStore::IsCloudManifestFile(
@@ -741,7 +766,10 @@ inline std::vector<std::string> RocksDBCloudDataStore::SplitString(
 }
 
 inline bool RocksDBCloudDataStore::GetCookieFromCloudManifestFile(
-    const std::string &filename, int64_t &cc_ng_id, int64_t &term)
+    const std::string &filename,
+    std::string &branch_name,
+    int64_t &dss_shard_id,
+    int64_t &term)
 {
     const std::string prefix = "CLOUDMANIFEST";
     auto pos = filename.rfind('/');
@@ -751,55 +779,129 @@ inline bool RocksDBCloudDataStore::GetCookieFromCloudManifestFile(
     // Check if the filename starts with "CLOUDMANIFEST"
     if (manifest_part.find(prefix) != 0)
     {
+        dss_shard_id = -1;
+        term = -1;
+        branch_name = "";
         return false;
     }
 
     // Remove the prefix "CLOUDMANIFEST" to parse the rest
     std::string suffix = manifest_part.substr(prefix.size());
+    DLOG(INFO) << "GetCookieFromCloudManifestFile, filename: " << filename
+               << ", suffix: " << suffix;
 
     // If there's no suffix
     if (suffix.empty())
     {
-        cc_ng_id = -1;
+        dss_shard_id = -1;
         term = -1;
-        return false;
+        branch_name = "";
+        return true;
     }
-    else if (suffix[0] == '-')
+
+    // Handle the case where suffix starts with a hyphen
+    if (suffix[0] == '-')
     {
-        // Parse the "-cc_ng_id-term" format
-        suffix = suffix.substr(1);  // Remove the leading '-'
-        std::vector<std::string> parts = SplitString(suffix, '-');
-        if (parts.size() != 2)
+        suffix = suffix.substr(1);  // Remove the leading hyphen
+        // If after removing the leading hyphen, the suffix is empty
+        if (suffix.empty())
         {
             return false;
         }
+    }
+    else
+    {
+        // Invalid format if it doesn't start with a hyphen
+        // This should not happen
+        return false;
+    }
 
-        bool res = String2ll(parts[0].c_str(), parts[0].size(), cc_ng_id);
+    // Find the hyphens in the suffix (after removing the leading one)
+    auto last_hyphen_pos = suffix.rfind('-');
+    DLOG(INFO) << "GetCookieFromCloudManifestFile, last_hyphen_pos: "
+               << last_hyphen_pos << ", suffix: " << suffix;
+
+    if (last_hyphen_pos == std::string::npos)
+    {
+        // No hyphen found, this is just a branch name with no shard_id or term
+        // Format: CLOUDMANIFEST-{branch_name}
+        branch_name = suffix;
+        dss_shard_id = -1;
+        term = -1;
+        return true;
+    }
+
+    // Now check if there's another hyphen before the last one
+    auto second_last_hyphen_pos = suffix.rfind('-', last_hyphen_pos - 1);
+    DLOG(INFO) << "GetCookieFromCloudManifestFile, second_last_hyphen_pos: "
+               << second_last_hyphen_pos << ", suffix: " << suffix;
+
+    if (second_last_hyphen_pos != std::string::npos)
+    {
+        // We found two hyphens, format is:
+        // CLOUDMANIFEST-{branch_name}-{dss_shard_id}-{term}
+        branch_name = suffix.substr(0, second_last_hyphen_pos);
+
+        // Extract the dss_shard_id and term
+        std::string dss_shard_id_str =
+            suffix.substr(second_last_hyphen_pos + 1,
+                          last_hyphen_pos - second_last_hyphen_pos - 1);
+        std::string term_str = suffix.substr(last_hyphen_pos + 1);
+
+        // Parse dss_shard_id and term
+        bool res = String2ll(
+            dss_shard_id_str.c_str(), dss_shard_id_str.size(), dss_shard_id);
         if (!res)
         {
             return false;
         }
-        res = String2ll(parts[1].c_str(), parts[1].size(), term);
+        res = String2ll(term_str.c_str(), term_str.size(), term);
         return res;
     }
+    else
+    {
+        // Only one hyphen found, format is: CLOUDMANIFEST-{dss_shard_id}-{term}
+        // with empty branch name
+        branch_name = "";
 
-    return false;
+        // The part before the hyphen is dss_shard_id
+        std::string dss_shard_id_str = suffix.substr(0, last_hyphen_pos);
+        // The part after the hyphen is term
+        std::string term_str = suffix.substr(last_hyphen_pos + 1);
+
+        // Parse dss_shard_id and term
+        bool res = String2ll(
+            dss_shard_id_str.c_str(), dss_shard_id_str.size(), dss_shard_id);
+        if (!res)
+        {
+            return false;
+        }
+        res = String2ll(term_str.c_str(), term_str.size(), term);
+        return res;
+    }
 }
 
-inline int64_t RocksDBCloudDataStore::FindMaxTermFromCloudManifestFiles(
+inline bool RocksDBCloudDataStore::FindMaxTermFromCloudManifestFiles(
     const std::shared_ptr<ROCKSDB_NAMESPACE::CloudStorageProvider>
         &storage_provider,
     const std::string &bucket_prefix,
     const std::string &bucket_name,
     const std::string &object_path,
-    const int64_t cc_ng_id_in_cookie)
+    const std::string &branch_name,
+    const int64_t dss_shard_id_in_cookie,
+    std::string &cloud_manifest_prefix,
+    int64_t &max_term)
 {
+    max_term = -1;
+    cloud_manifest_prefix = "CLOUDMANIFEST-" + branch_name;
+
+    int64_t shard_id = -1;
+    int64_t term = -1;
+
     // find the max term cookie from cloud manifest files
     // read only db should be opened with the latest cookie
     auto start = std::chrono::system_clock::now();
     std::vector<std::string> cloud_objects;
-    std::string cloud_manifest_prefix = "CLOUDMANIFEST-";
-    cloud_manifest_prefix.append(std::to_string(cc_ng_id_in_cookie));
     auto st = storage_provider->ListCloudObjectsWithPrefix(
         bucket_prefix + bucket_name,
         object_path,
@@ -808,19 +910,31 @@ inline int64_t RocksDBCloudDataStore::FindMaxTermFromCloudManifestFiles(
     if (!st.ok())
     {
         LOG(ERROR) << "Failed to list cloud objects, error: " << st.ToString();
-        return -1;
+        return false;
     }
 
-    int64_t max_term = -1;
+    if (cloud_objects.empty())
+    {
+        LOG(ERROR) << "No cloud manifest files found in bucket: "
+                   << bucket_prefix + bucket_name
+                   << ", object_path: " << object_path
+                   << ", with prefix: " << cloud_manifest_prefix;
+        return false;
+    }
+
+    std::string object_branch_name;
     for (const auto &object : cloud_objects)
     {
-        LOG(INFO) << "FindMaxTermFromCloudManifestFiles, object: " << object;
+        shard_id = -1;
+        term = -1;
+        object_branch_name = "";
+        DLOG(INFO) << "FindMaxTermFromCloudManifestFiles, object: " << object;
         if (IsCloudManifestFile(object))
         {
-            int64_t cc_ng_id;
-            int64_t term;
-            bool res = GetCookieFromCloudManifestFile(object, cc_ng_id, term);
-            if (cc_ng_id_in_cookie == cc_ng_id && res)
+            bool res = GetCookieFromCloudManifestFile(
+                object, object_branch_name, shard_id, term);
+            if (res && branch_name == object_branch_name &&
+                dss_shard_id_in_cookie == shard_id)
             {
                 if (term > max_term)
                 {
@@ -829,14 +943,15 @@ inline int64_t RocksDBCloudDataStore::FindMaxTermFromCloudManifestFiles(
             }
         }
     }
-    LOG(INFO) << "FindMaxTermFromCloudManifestFiles, cc_ng_id: "
-              << cc_ng_id_in_cookie << " max_term: " << max_term;
+    LOG(INFO) << "FindMaxTermFromCloudManifestFiles, branch_name: "
+              << branch_name << " cc_ng_id: " << dss_shard_id_in_cookie
+              << " max_term: " << max_term;
     auto end = std::chrono::system_clock::now();
     auto duration =
         std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
     LOG(INFO) << "FindMaxTermFromCloudManifestFiles tooks " << duration.count()
               << " ms";
 
-    return max_term;
+    return true;
 }
 }  // namespace EloqDS

@@ -60,8 +60,7 @@ public:
      * @param cfs_options The cloud file system options.
      * @return True if open successfully, otherwise false.
      */
-    bool StartDB(std::string cookie = "",
-                 std::string prev_cookie = "") override;
+    bool StartDB() override;
 
     /**
      * @brief Create a snapshot of the data store.
@@ -82,23 +81,53 @@ protected:
 
 private:
     /// Helper functions for cloud manifest files and cookies
-    inline std::string MakeCloudManifestCookie(int64_t cc_ng_id, int64_t term);
+    inline std::string MakeCloudManifestCookie(const std::string &branch_name,
+                                               int64_t dss_shard_id,
+                                               int64_t term);
     inline std::string MakeCloudManifestFile(const std::string &dbname,
-                                             int64_t cc_ng_id,
+                                             const std::string &branch_name,
+                                             int64_t dss_shard_id,
                                              int64_t term);
     inline bool IsCloudManifestFile(const std::string &filename);
     inline std::vector<std::string> SplitString(const std::string &str,
                                                 char delimiter);
+    /**
+     * @brief Extract branch_name, cc_ng_id and term from a cloud manifest file
+     * name.
+     * @param filename The cloud manifest file name:
+     * CLOUDMANIFEST-{branch_name}-{cc_ng_id}-{term}.
+     * @param branch_name The extracted branch_name.
+     * @param cc_ng_id The extracted cc_ng_id.
+     * @param term The extracted term.
+     * @return True if the filename is a valid cloud manifest file name
+     */
     inline bool GetCookieFromCloudManifestFile(const std::string &filename,
-                                               int64_t &cc_ng_id,
+                                               std::string &branch_name,
+                                               int64_t &dss_shard_id,
                                                int64_t &term);
-    inline int64_t FindMaxTermFromCloudManifestFiles(
+
+    /**
+     * @brief Find the max term from cloud manifest files in the bucket.
+     * @param storage_provider The cloud storage provider.
+     * @param bucket_prefix The bucket prefix.
+     * @param bucket_name The bucket name.
+     * @param object_path The object path.
+     * @param branch_name The branch name.
+     * @param cc_ng_id_in_cookie The cc_ng_id in the cookie.
+     * @param cloud_manifest_prefix The cloud manifest prefix
+     * @param max_term The max term found from the cloud manifest files.
+     * @return true if successfully find the max term, otherwise false.
+     */
+    inline bool FindMaxTermFromCloudManifestFiles(
         const std::shared_ptr<ROCKSDB_NAMESPACE::CloudStorageProvider>
             &storage_provider,
         const std::string &bucket_prefix,
         const std::string &bucket_name,
         const std::string &object_path,
-        const int64_t cc_ng_id_in_cookie);
+        const std::string &branch_name,
+        const int64_t dss_shard_id_in_cookie,
+        std::string &cloud_manifest_prefix,
+        int64_t &max_term);
 
     /* Convert a string into a long long. Returns 1 if the string could be
      * parsed into a (non-overflowing) long long, 0 otherwise. The value will be

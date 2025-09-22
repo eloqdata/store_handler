@@ -91,6 +91,7 @@ struct RocksDBCloudConfig
     std::string s3_endpoint_url_;
     size_t warm_up_thread_num_;
     size_t purger_periodicity_millis_{10 * 60 * 1000}; // 10 minutes
+    std::string branch_name_;
 };
 
 inline rocksdb::Status NewCloudFileSystem(
