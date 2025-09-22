@@ -36,12 +36,10 @@ class RocksDBCloudDataStoreFactory : public DataStoreFactory
 {
 public:
     RocksDBCloudDataStoreFactory(
-        const std::string &branch_name,
         const ::EloqDS::RocksDBConfig &config,
         const ::EloqDS::RocksDBCloudConfig &cloud_config,
         bool tx_enable_cache_replacement)
-        : branch_name_(branch_name),
-          config_(config),
+        : config_(config),
           cloud_config_(cloud_config),
           tx_enable_cache_replacement_(tx_enable_cache_replacement)
     {
@@ -54,7 +52,6 @@ public:
         bool start_db = true) override
     {
         auto ds = std::make_unique<RocksDBCloudDataStore>(
-            branch_name_,
             cloud_config_,
             config_,
             create_if_missing,
@@ -78,7 +75,6 @@ public:
     }
 
 private:
-    std::string branch_name_;
     ::EloqDS::RocksDBConfig config_;
     ::EloqDS::RocksDBCloudConfig cloud_config_;
     bool tx_enable_cache_replacement_;

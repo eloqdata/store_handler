@@ -38,8 +38,7 @@ namespace EloqDS
 class RocksDBCloudDataStore : public RocksDBDataStoreCommon
 {
 public:
-    RocksDBCloudDataStore(const std::string &branch_name,
-                          const EloqDS::RocksDBCloudConfig &cloud_config,
+    RocksDBCloudDataStore(const EloqDS::RocksDBCloudConfig &cloud_config,
                           const EloqDS::RocksDBConfig &config,
                           bool create_if_missing,
                           bool tx_enable_cache_replacement,
@@ -152,7 +151,6 @@ private:
     bool OpenCloudDB(const rocksdb::CloudFileSystemOptions &cfs_options);
 
 private:
-    const std::string branch_name_;
     const EloqDS::RocksDBCloudConfig cloud_config_;
     rocksdb::CloudFileSystemOptions cfs_options_;
     std::shared_ptr<rocksdb::FileSystem> cloud_fs_{nullptr};

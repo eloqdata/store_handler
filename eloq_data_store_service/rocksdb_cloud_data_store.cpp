@@ -134,7 +134,6 @@ bool RocksDBCloudDataStore::String2ll(const char *s,
 }
 
 RocksDBCloudDataStore::RocksDBCloudDataStore(
-    const std::string &branch_name,
     const EloqDS::RocksDBCloudConfig &cloud_config,
     const EloqDS::RocksDBConfig &config,
     bool create_if_missing,
@@ -146,7 +145,6 @@ RocksDBCloudDataStore::RocksDBCloudDataStore(
                              tx_enable_cache_replacement,
                              shard_id,
                              data_store_service),
-      branch_name_(branch_name),
       cloud_config_(cloud_config),
       cloud_fs_(),
       cloud_env_(nullptr),
@@ -375,8 +373,8 @@ bool RocksDBCloudDataStore::StartDB()
     std::string cookie_on_open = "";
     std::string new_cookie_on_open = "";
 
-    // TODO(githubzilla): dss_shard_id is not used in the current implementation,
-    // remove it later
+    // TODO(githubzilla): dss_shard_id is not used in the current
+    // implementation, remove it later
     int64_t dss_shard_id = 0;
     std::string cloud_manifest_prefix;
     int64_t max_term = -1;
@@ -386,7 +384,7 @@ bool RocksDBCloudDataStore::StartDB()
                                                  cloud_config_.bucket_prefix_,
                                                  cloud_config_.bucket_name_,
                                                  cloud_config_.object_path_,
-                                                 branch_name_,
+                                                 cloud_config_.branch_name_,
                                                  dss_shard_id,
                                                  cloud_manifest_prefix,
                                                  max_term);
@@ -395,20 +393,22 @@ bool RocksDBCloudDataStore::StartDB()
     {
         LOG(ERROR) << "Failed to find max term from cloud manifest file for "
                       "branch: "
-                   << branch_name_;
+                   << cloud_config_.branch_name_;
     }
 
     if (max_term != -1)
     {
-        cookie_on_open = MakeCloudManifestCookie(branch_name_, dss_shard_id, max_term);
-        new_cookie_on_open =
-            MakeCloudManifestCookie(branch_name_, dss_shard_id, max_term + 1);
+        cookie_on_open = MakeCloudManifestCookie(
+            cloud_config_.branch_name_, dss_shard_id, max_term);
+        new_cookie_on_open = MakeCloudManifestCookie(
+            cloud_config_.branch_name_, dss_shard_id, max_term + 1);
     }
     else
     {
         // this is a new db
         cookie_on_open = "";
-        new_cookie_on_open = MakeCloudManifestCookie(branch_name_, dss_shard_id, 0);
+        new_cookie_on_open = MakeCloudManifestCookie(
+            cloud_config_.branch_name_, dss_shard_id, 0);
     }
 
     // new CLOUDMANIFEST suffixed by cookie and epochID suffixed
@@ -787,8 +787,8 @@ inline bool RocksDBCloudDataStore::GetCookieFromCloudManifestFile(
 
     // Remove the prefix "CLOUDMANIFEST" to parse the rest
     std::string suffix = manifest_part.substr(prefix.size());
-    DLOG(INFO) << "GetCookieFromCloudManifestFile, filename: "
-                << filename << ", suffix: " << suffix;
+    DLOG(INFO) << "GetCookieFromCloudManifestFile, filename: " << filename
+               << ", suffix: " << suffix;
 
     // If there's no suffix
     if (suffix.empty())
@@ -838,7 +838,8 @@ inline bool RocksDBCloudDataStore::GetCookieFromCloudManifestFile(
 
     if (second_last_hyphen_pos != std::string::npos)
     {
-        // We found two hyphens, format is: CLOUDMANIFEST-{branch_name}-{dss_shard_id}-{term}
+        // We found two hyphens, format is:
+        // CLOUDMANIFEST-{branch_name}-{dss_shard_id}-{term}
         branch_name = suffix.substr(0, second_last_hyphen_pos);
 
         // Extract the dss_shard_id and term
@@ -848,8 +849,8 @@ inline bool RocksDBCloudDataStore::GetCookieFromCloudManifestFile(
         std::string term_str = suffix.substr(last_hyphen_pos + 1);
 
         // Parse dss_shard_id and term
-        bool res =
-            String2ll(dss_shard_id_str.c_str(), dss_shard_id_str.size(), dss_shard_id);
+        bool res = String2ll(
+            dss_shard_id_str.c_str(), dss_shard_id_str.size(), dss_shard_id);
         if (!res)
         {
             return false;
@@ -869,8 +870,8 @@ inline bool RocksDBCloudDataStore::GetCookieFromCloudManifestFile(
         std::string term_str = suffix.substr(last_hyphen_pos + 1);
 
         // Parse dss_shard_id and term
-        bool res =
-            String2ll(dss_shard_id_str.c_str(), dss_shard_id_str.size(), dss_shard_id);
+        bool res = String2ll(
+            dss_shard_id_str.c_str(), dss_shard_id_str.size(), dss_shard_id);
         if (!res)
         {
             return false;
