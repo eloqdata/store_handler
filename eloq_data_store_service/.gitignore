@@ -68,3 +68,5 @@ tests/tmp
 compile_commands*
 
 *.log
+
+eloqstore
