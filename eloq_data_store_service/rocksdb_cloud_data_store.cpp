@@ -44,6 +44,8 @@
 #include "data_store_service.h"
 #include "ds_request.pb.h"
 #include "internal_request.h"
+#include "purger_event_listener.h"
+#include "rocksdb/cloud/cloud_file_system_impl.h"
 #include "rocksdb/cloud/cloud_storage_provider.h"
 #include "rocksdb_cloud_data_store.h"
 
@@ -511,8 +513,6 @@ bool RocksDBCloudDataStore::OpenCloudDB(
     options.skip_stats_update_on_db_open = true;
     // Important! keep atomic_flush true, since we disabled WAL
     options.atomic_flush = true;
-    auto db_event_listener = std::make_shared<RocksDBEventListener>();
-    options.listeners.emplace_back(db_event_listener);
 
     // The following two configuration items are setup for purpose of removing
     // expired kv data items according to their ttl Rocksdb will compact all sst
@@ -583,6 +583,23 @@ bool RocksDBCloudDataStore::OpenCloudDB(
             max_bytes_for_level_multiplier_;
     }
 
+    // Add event listener for purger
+    rocksdb::CloudFileSystemImpl *cfs_impl =
+        dynamic_cast<rocksdb::CloudFileSystemImpl *>(cloud_fs_.get());
+    if (cfs_impl == nullptr)
+    {
+        LOG(ERROR) << "Fail to get CloudFileSystemImpl from cloud_fs_";
+        return false;
+    }
+    std::string bucket_name =
+        cloud_config_.bucket_prefix_ + cloud_config_.bucket_name_;
+    auto db_event_listener = std::make_shared<PurgerEventListener>(
+        "", /*We still don't know the epoch now*/
+        bucket_name,
+        cloud_config_.object_path_,
+        cfs_impl->GetStorageProvider());
+    options.listeners.emplace_back(db_event_listener);
+
     // set ttl compaction filter
     assert(ttl_compaction_filter_ == nullptr);
     ttl_compaction_filter_ = std::make_unique<EloqDS::TTLCompactionFilter>();
@@ -633,6 +650,39 @@ bool RocksDBCloudDataStore::OpenCloudDB(
         dynamic_cast<rocksdb::CloudFileSystem *>(cloud_fs_.get());
     auto &cfs_options_ref = cfs->GetMutableCloudFileSystemOptions();
     cfs_options_ref.skip_cloud_files_in_getchildren = false;
+
+    // Stop background work - memtable flush and compaction
+    // before blocking purger
+    status = db_->PauseBackgroundWork();
+    if (!status.ok())
+    {
+        LOG(ERROR) << "Fail to pause background work, error: "
+                   << status.ToString();
+        db_->ContinueBackgroundWork();
+        return false;
+    }
+
+    // set epoch for purger event listener
+    std::string current_epoch;
+    status = db_->GetCurrentEpoch(&current_epoch);
+    if (!status.ok())
+    {
+        LOG(ERROR) << "Fail to get current epoch from db, error: "
+                   << status.ToString();
+        db_->ContinueBackgroundWork();
+        return false;
+    }
+    if (current_epoch.empty())
+    {
+        LOG(ERROR) << "Current epoch from db is empty";
+        db_->ContinueBackgroundWork();
+        return false;
+    }
+    db_event_listener->SetEpoch(current_epoch);
+    db_event_listener->BlockPurger();
+
+    // Resume background work
+    db_->ContinueBackgroundWork();
 
     if (cloud_config_.warm_up_thread_num_ != 0)
     {
