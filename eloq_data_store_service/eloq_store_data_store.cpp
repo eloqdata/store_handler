@@ -38,6 +38,8 @@ thread_local ObjectPool<EloqStoreOperationData<::eloqstore::TruncateRequest>>
     eloq_store_truncate_op_pool_;
 thread_local ObjectPool<EloqStoreOperationData<::eloqstore::FloorRequest>>
     eloq_store_floor_op_pool_;
+thread_local ObjectPool<EloqStoreOperationData<::eloqstore::DropTableRequest>>
+    eloq_store_drop_table_op_pool_;
 thread_local ObjectPool<ScanDeleteOperationData> eloq_store_scan_del_op_pool_;
 
 inline void BuildKey(const WriteRecordsRequest &write_req,
@@ -355,12 +357,64 @@ void EloqStoreDataStore::CreateTable(CreateTableRequest *create_table_req)
 
 void EloqStoreDataStore::DropTable(DropTableRequest *drop_table_req)
 {
-    // TODO(ysw): wait for this feature of the eloqstore.
-    PoolableGuard req_guard(drop_table_req);
+    EloqStoreOperationData<::eloqstore::DropTableRequest> *drop_table_op =
+        eloq_store_drop_table_op_pool_.NextObject();
+    drop_table_op->Reset(drop_table_req);
+
+    PoolableGuard op_guard(drop_table_op);
+
+    ::eloqstore::DropTableRequest &kv_drop_table_req =
+        drop_table_op->EloqStoreRequest();
+
+    kv_drop_table_req.SetArgs(std::string(drop_table_req->GetTableName()));
+
+    uint64_t user_data = reinterpret_cast<uint64_t>(drop_table_op);
+    if (!eloq_store_service_->ExecAsyn(
+            &kv_drop_table_req, user_data, OnDropTable))
+    {
+        LOG(ERROR) << "Send drop table request to EloqStore failed for table: "
+                   << drop_table_req->GetTableName();
+        remote::CommonResult result;
+        result.set_error_code(::EloqDS::remote::DataStoreError::DB_NOT_OPEN);
+        result.set_error_msg("EloqStore not open.");
+        drop_table_req->SetFinish(result);
+        return;
+    }
+
+    op_guard.Release();
+}
+
+void EloqStoreDataStore::OnDropTable(eloqstore::KvRequest *req)
+{
+    EloqStoreOperationData<::eloqstore::DropTableRequest> *drop_table_op =
+        static_cast<EloqStoreOperationData<::eloqstore::DropTableRequest> *>(
+            reinterpret_cast<void *>(req->UserData()));
+
+    assert(req == &drop_table_op->EloqStoreRequest());
+    ::eloqstore::DropTableRequest *drop_table_request =
+        static_cast<::eloqstore::DropTableRequest *>(req);
+
+    PoolableGuard op_guard(drop_table_op);
+
+    DropTableRequest *ds_drop_table_req =
+        static_cast<DropTableRequest *>(drop_table_op->DataStoreRequest());
 
     remote::CommonResult result;
+    if (drop_table_request->Error() != ::eloqstore::KvError::NoError)
+    {
+        LOG(ERROR) << "Write to EloqStore failed with error code: "
+                   << static_cast<uint32_t>(drop_table_request->Error())
+                   << ", error message: " << drop_table_request->ErrMessage()
+                   << ". Table: " << req->TableId();
+
+        result.set_error_code(::EloqDS::remote::DataStoreError::WRITE_FAILED);
+        result.set_error_msg(drop_table_request->ErrMessage());
+        ds_drop_table_req->SetFinish(result);
+        return;
+    }
+
     result.set_error_code(::EloqDS::remote::DataStoreError::NO_ERROR);
-    drop_table_req->SetFinish(result);
+    ds_drop_table_req->SetFinish(result);
 }
 
 void EloqStoreDataStore::ScanNext(ScanRequest *scan_req)
