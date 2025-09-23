@@ -55,6 +55,8 @@ class ScanNextClosure;
 class CreateSnapshotForBackupClosure;
 class SinglePartitionScanner;
 
+class DssClusterConfig;
+
 typedef void (*DataStoreCallback)(void *data,
                                   ::google::protobuf::Closure *closure,
                                   DataStoreServiceClient &client,
@@ -364,19 +366,6 @@ public:
         cluster_manager_.HandleShardingError(result);
     }
 
-    std::shared_ptr<brpc::Channel> GetDataStoreServiceChannelByPartitionId(
-        uint32_t partition_id);
-    std::shared_ptr<brpc::Channel> UpdateDataStoreServiceChannelByPartitionId(
-        uint32_t partition_id);
-    std::shared_ptr<brpc::Channel> GetDataStoreServiceChannelByShardId(
-        uint32_t shard_id);
-    std::shared_ptr<brpc::Channel> UpdateDataStoreServiceChannelByShardId(
-        uint32_t shard_id);
-    std::shared_ptr<brpc::Channel> GetDataStoreServiceChannel(
-        const DSSNode &node);
-    std::shared_ptr<brpc::Channel> UpdateDataStoreServiceChannel(
-        const DSSNode &node);
-
     /**
      * Serialize a record with is_deleted flag and record string.
      * @param is_deleted
@@ -641,9 +630,15 @@ private:
      */
     bool IsLocalPartition(int32_t partition_id);
 
-    bthread::Mutex ds_service_mutex_;
-    bthread::ConditionVariable ds_service_cv_;
-    std::atomic<bool> ds_serv_shutdown_indicator_;
+    inline uint32_t GetShardIdByPartitionId(int32_t partition_id);
+    inline uint32_t AllDataShardCount() const;
+    inline uint32_t GetOwnerNodeIndexOfShard(uint32_t shard_id) const;
+    inline brpc::Channel *GetChannelOfNodeIndex(uint32_t node_index);
+    bool UpdateOwnerNodeIndexOfShard(uint32_t shard_id,
+                                     uint32_t old_node_index,
+                                     uint32_t &new_node_index);
+    uint32_t FindFreeNodeIndex();
+
 
     txservice::EloqHashCatalogFactory hash_catalog_factory_{};
     txservice::EloqRangeCatalogFactory range_catalog_factory_{};
@@ -651,15 +646,35 @@ private:
     // EngineServer TxService and DataStoreHandler
     std::array<const txservice::CatalogFactory *, 5> catalog_factory_array_;
 
-    // remote data store service configuration
-    DataStoreServiceClusterManager cluster_manager_;
 
+    bthread::Mutex ds_service_mutex_;
+    bthread::ConditionVariable ds_service_cv_;
+    std::atomic<bool> ds_serv_shutdown_indicator_;
     // point to the data store service if it is colocated
     DataStoreService *data_store_service_;
 
-    std::atomic<uint64_t> flying_remote_fetch_count_{0};
-    // Work queue for fetch records from primary node
-    std::deque<txservice::FetchRecordCc *> remote_fetch_cc_queue_;
+    struct DssNode
+    {
+        std::string host_name_;
+        uint16_t port_;
+        brpc::Channel channel_;
+
+        // expired_ts_ is the timestamp when the node is expired.
+        // If expired_ts_ is 0, the node is not expired.
+        // If expired_ts_ is not 0, the node is expired and the value is the
+        // timestamp when the node is expired.
+        std::atomic<uint64_t> expired_ts_{1U};
+    };
+    // Cached nodes info of data store service.
+    std::vector<DssNode> dss_nodes_{1024};
+    // Now only support one shard. dss_shards_ caches the index in dss_nodes_ of
+    // shard owner.
+    std::vector<std::atomic<uint32_t>> dss_shards_{1, UINT32_MAX};
+    const uint64_t NodeExpiredTime = 10 * 1000 * 1000;  // 10s
+
+    // std::atomic<uint64_t> flying_remote_fetch_count_{0};
+    // // Work queue for fetch records from primary node
+    // std::deque<txservice::FetchRecordCc *> remote_fetch_cc_queue_;
 
     // table names and their kv table names
     std::unordered_map<txservice::TableName, std::string>
@@ -674,9 +689,9 @@ private:
     friend class ScanNextClosure;
     friend class CreateSnapshotForBackupClosure;
     friend void PartitionBatchCallback(void *data,
-                                      ::google::protobuf::Closure *closure,
-                                      DataStoreServiceClient &client,
-                                      const remote::CommonResult &result);
+                                       ::google::protobuf::Closure *closure,
+                                       DataStoreServiceClient &client,
+                                       const remote::CommonResult &result);
     friend class SinglePartitionScanner;
     friend void FetchAllDatabaseCallback(void *data,
                                          ::google::protobuf::Closure *closure,

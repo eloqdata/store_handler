@@ -611,6 +611,7 @@ public:
         ds_service_client_ = client;
         callback_data_ = callback_data;
         callback_ = callback;
+        remote_node_index_ = UINT32_MAX;
     }
 
     void Clear() override
@@ -638,6 +639,7 @@ public:
         {
             is_local_request_ = true;
             result_.Clear();
+            remote_node_index_ = UINT32_MAX;
         }
         else
         {
@@ -675,10 +677,12 @@ public:
                     cntl_.ErrorCode() != EAGAIN &&
                     cntl_.ErrorCode() != brpc::ERPCTIMEDOUT)
                 {
-                    auto channel =
-                        ds_service_client_
-                            ->UpdateDataStoreServiceChannelByPartitionId(
-                                partition_id_);
+                    uint32_t shard_id =
+                        ds_service_client_->GetShardIdByPartitionId(
+                            partition_id_);
+                    uint32_t new_node_index;
+                    ds_service_client_->UpdateOwnerNodeIndexOfShard(
+                        shard_id, remote_node_index_, new_node_index);
 
                     // Retry
                     if (retry_count_ < ds_service_client_->retry_limit_)
@@ -864,7 +868,7 @@ private:
     brpc::Controller cntl_;
     EloqDS::remote::ReadRequest request_;
     EloqDS::remote::ReadResponse response_;
-    // keep channel alive
+    uint32_t remote_node_index_{UINT32_MAX};
 
     // serve local call
     std::string_view table_name_;
@@ -899,6 +903,7 @@ public:
         cntl_.Reset();
         request_.Clear();
         response_.Clear();
+        remote_node_index_ = UINT32_MAX;
         cntl_.Reset();
         ds_service_client_ = nullptr;
         retry_count_ = 0;
@@ -919,6 +924,7 @@ public:
     {
         is_local_request_ = true;
         rpc_request_prepare_ = false;
+        remote_node_index_ = UINT32_MAX;
         retry_count_ = 0;
         ds_service_client_ = &store_hd;
         kv_table_names_ = kv_table_names;
@@ -933,6 +939,7 @@ public:
         {
             is_local_request_ = true;
             result_.Clear();
+            remote_node_index_ = UINT32_MAX;
         }
         else
         {
@@ -973,8 +980,9 @@ public:
                     cntl_.ErrorCode() != EAGAIN &&
                     cntl_.ErrorCode() != brpc::ERPCTIMEDOUT)
                 {
-                    ds_service_client_->UpdateDataStoreServiceChannelByShardId(
-                        shard_ids_.back());
+                    uint32_t new_node_index;
+                    ds_service_client_->UpdateOwnerNodeIndexOfShard(
+                        shard_ids_.back(), remote_node_index_, new_node_index);
 
                     // Retry
                     if (retry_count_ < ds_service_client_->retry_limit_)
@@ -1084,6 +1092,7 @@ private:
     brpc::Controller cntl_;
     ::EloqDS::remote::FlushDataRequest request_;
     ::EloqDS::remote::FlushDataResponse response_;
+    uint32_t remote_node_index_{UINT32_MAX};
     DataStoreServiceClient *ds_service_client_;
     uint16_t retry_count_{0};
 
@@ -1112,6 +1121,7 @@ public:
         request_.Clear();
         response_.Clear();
         cntl_.Reset();
+        remote_node_index_ = UINT32_MAX;
         ds_service_client_ = nullptr;
         retry_count_ = 0;
         is_local_request_ = false;
@@ -1133,6 +1143,7 @@ public:
     {
         is_local_request_ = true;
         rpc_request_prepare_ = false;
+        remote_node_index_ = UINT32_MAX;
         retry_count_ = 0;
         ds_service_client_ = &store_hd;
         table_name_ = table_name;
@@ -1150,6 +1161,7 @@ public:
         {
             is_local_request_ = true;
             result_.Clear();
+            remote_node_index_ = UINT32_MAX;
         }
         else
         {
@@ -1189,9 +1201,12 @@ public:
                     cntl_.ErrorCode() != EAGAIN &&
                     cntl_.ErrorCode() != brpc::ERPCTIMEDOUT)
                 {
-                    ds_service_client_
-                        ->UpdateDataStoreServiceChannelByPartitionId(
+                    uint32_t shard_id =
+                        ds_service_client_->GetShardIdByPartitionId(
                             partition_id_);
+                    uint32_t new_node_index;
+                    ds_service_client_->UpdateOwnerNodeIndexOfShard(
+                        shard_id, remote_node_index_, new_node_index);
 
                     // Retry
                     if (retry_count_ < ds_service_client_->retry_limit_)
@@ -1300,6 +1315,8 @@ private:
     brpc::Controller cntl_;
     ::EloqDS::remote::DeleteRangeRequest request_;
     ::EloqDS::remote::DeleteRangeResponse response_;
+    // remote node index in dss_nodes_
+    uint32_t remote_node_index_{UINT32_MAX};
     DataStoreServiceClient *ds_service_client_;
     uint16_t retry_count_{0};
 
@@ -1330,6 +1347,7 @@ public:
         cntl_.Reset();
         request_.Clear();
         response_.Clear();
+        remote_node_index_ = UINT32_MAX;
         cntl_.Reset();
         ds_service_client_ = nullptr;
         retry_count_ = 0;
@@ -1350,6 +1368,7 @@ public:
     {
         is_local_request_ = true;
         rpc_request_prepare_ = false;
+        remote_node_index_ = UINT32_MAX;
         retry_count_ = 0;
         ds_service_client_ = &store_hd;
         table_name_ = table_name;
@@ -1364,6 +1383,7 @@ public:
         {
             is_local_request_ = true;
             result_.Clear();
+            remote_node_index_ = UINT32_MAX;
         }
         else
         {
@@ -1399,8 +1419,9 @@ public:
                     cntl_.ErrorCode() != EAGAIN &&
                     cntl_.ErrorCode() != brpc::ERPCTIMEDOUT)
                 {
-                    ds_service_client_->UpdateDataStoreServiceChannelByShardId(
-                        shard_ids_.back());
+                    uint32_t new_node_index;
+                    ds_service_client_->UpdateOwnerNodeIndexOfShard(
+                        shard_ids_.back(), remote_node_index_, new_node_index);
 
                     // Retry
                     if (retry_count_ < ds_service_client_->retry_limit_)
@@ -1510,6 +1531,7 @@ private:
     brpc::Controller cntl_;
     ::EloqDS::remote::DropTableRequest request_;
     ::EloqDS::remote::DropTableResponse response_;
+    uint32_t remote_node_index_{UINT32_MAX};
     DataStoreServiceClient *ds_service_client_;
     uint16_t retry_count_{0};
 
@@ -1559,8 +1581,10 @@ public:
         request_.Clear();
         response_.Clear();
         cntl_.Reset();
+        remote_node_index_ = UINT32_MAX;
         parts_cnt_per_key_ = 1;
         parts_cnt_per_record_ = 1;
+        result_.Clear();
     }
 
     // for writing single record
@@ -1649,8 +1673,10 @@ public:
                     uint32_t req_shard_id =
                         ds_service_client_->GetShardIdByPartitionId(
                             partition_id_);
-                    ds_service_client_->UpdateDataStoreServiceChannelByShardId(
-                        req_shard_id);
+                    uint32_t new_node_index;
+                    ds_service_client_->UpdateOwnerNodeIndexOfShard(
+                        req_shard_id, remote_node_index_, new_node_index);
+
                     need_retry = true;
                 }
                 else
@@ -1690,8 +1716,16 @@ public:
         (*callback_)(callback_data_, this, *ds_service_client_, result_);
     }
 
-    void PrepareRemoteRequest()
+    void PrepareRequest(bool is_local_request)
     {
+        if (is_local_request)
+        {
+            is_local_request_ = true;
+            result_.Clear();
+            remote_node_index_ = UINT32_MAX;
+            return;
+        }
+
         // clear
         cntl_.Reset();
         cntl_.set_timeout_ms(5000);
@@ -1774,6 +1808,7 @@ private:
     brpc::Controller cntl_;
     EloqDS::remote::BatchWriteRecordsRequest request_;
     EloqDS::remote::BatchWriteRecordsResponse response_;
+    uint32_t remote_node_index_{UINT32_MAX};
     DataStoreServiceClient *ds_service_client_{nullptr};
     uint16_t retry_count_{0};
 
@@ -1814,6 +1849,7 @@ public:
         cntl_.Reset();
         request_.Clear();
         response_.Clear();
+        remote_node_index_ = UINT32_MAX;
         cntl_.Reset();
         ds_service_client_ = nullptr;
         retry_count_ = 0;
@@ -1853,6 +1889,7 @@ public:
     {
         is_local_request_ = true;
         rpc_request_prepare_ = false;
+        remote_node_index_ = UINT32_MAX;
         retry_count_ = 0;
         ds_service_client_ = &store_hd;
         table_name_ = table_name;
@@ -1876,6 +1913,7 @@ public:
         {
             is_local_request_ = true;
             result_.Clear();
+            remote_node_index_ = UINT32_MAX;
         }
         else
         {
@@ -1935,9 +1973,12 @@ public:
                     cntl_.ErrorCode() != EAGAIN &&
                     cntl_.ErrorCode() != brpc::ERPCTIMEDOUT)
                 {
-                    ds_service_client_
-                        ->UpdateDataStoreServiceChannelByPartitionId(
+                    uint32_t shard_id =
+                        ds_service_client_->GetShardIdByPartitionId(
                             partition_id_);
+                    uint32_t new_node_index;
+                    ds_service_client_->UpdateOwnerNodeIndexOfShard(
+                        shard_id, remote_node_index_, new_node_index);
 
                     // Retry
                     if (retry_count_ < ds_service_client_->retry_limit_)
@@ -2134,6 +2175,7 @@ private:
     brpc::Controller cntl_;
     ::EloqDS::remote::ScanRequest request_;
     ::EloqDS::remote::ScanResponse response_;
+    uint32_t remote_node_index_{UINT32_MAX};
     DataStoreServiceClient *ds_service_client_;
     uint16_t retry_count_{0};
 
@@ -2175,7 +2217,7 @@ public:
         cntl_.Reset();
         request_.Clear();
         response_.Clear();
-        channel_ = nullptr;
+        remote_node_index_ = UINT32_MAX;
         ds_service_client_ = nullptr;
         retry_count_ = 0;
         is_local_request_ = false;
@@ -2202,6 +2244,7 @@ public:
     {
         is_local_request_ = true;
         rpc_request_prepare_ = false;
+        remote_node_index_ = UINT32_MAX;
         retry_count_ = 0;
         ds_service_client_ = &store_hd;
         shard_ids_ = std::move(shard_ids);
@@ -2218,6 +2261,7 @@ public:
         {
             is_local_request_ = true;
             result_.Clear();
+            remote_node_index_ = UINT32_MAX;
         }
         else
         {
@@ -2262,9 +2306,9 @@ public:
                     cntl_.ErrorCode() != brpc::ERPCTIMEDOUT)
                 {
                     uint32_t shard_id = shard_ids_.back();
-                    channel_ =
-                        ds_service_client_
-                            ->UpdateDataStoreServiceChannelByShardId(shard_id);
+                    uint32_t new_node_index;
+                    ds_service_client_->UpdateOwnerNodeIndexOfShard(
+                        shard_id, remote_node_index_, new_node_index);
 
                     // Retry
                     if (retry_count_ < ds_service_client_->retry_limit_)
@@ -2315,16 +2359,6 @@ public:
     brpc::Controller *Controller()
     {
         return &cntl_;
-    }
-
-    brpc::Channel *GetChannel()
-    {
-        return channel_.get();
-    }
-
-    void SetChannel(std::shared_ptr<brpc::Channel> channel)
-    {
-        channel_ = channel;
     }
 
     const std::string_view GetBackupName()
@@ -2395,7 +2429,7 @@ private:
     brpc::Controller cntl_;
     ::EloqDS::remote::CreateSnapshotForBackupRequest request_;
     ::EloqDS::remote::CreateSnapshotForBackupResponse response_;
-    std::shared_ptr<brpc::Channel> channel_;
+    uint32_t remote_node_index_{UINT32_MAX};
     DataStoreServiceClient *ds_service_client_;
     uint16_t retry_count_{0};
 

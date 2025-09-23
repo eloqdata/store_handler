@@ -2749,12 +2749,12 @@ bool DataStoreServiceClient::CreateSnapshotForBackup(
 {
     CreateSnapshotForBackupClosure *closure =
         create_snapshot_for_backup_closure_pool_.NextObject();
-    auto shards = cluster_manager_.GetAllShards();
+    uint32_t shard_cnt = AllDataShardCount();
     std::vector<uint32_t> shard_ids;
-    shard_ids.reserve(shards.size());
-    for (auto &[s_id, _] : shards)
+    shard_ids.reserve(shard_cnt);
+    for (uint32_t shard_id = 0; shard_id < shard_cnt; shard_id++)
     {
-        shard_ids.push_back(s_id);
+        shard_ids.push_back(shard_id);
     }
 
     CreateSnapshotForBackupCallbackData *callback_data =
@@ -2813,17 +2813,11 @@ void DataStoreServiceClient::CreateSnapshotForBackupInternal(
     {
         // Handle remote shard
         closure->PrepareRequest(false);
-        auto channel = GetDataStoreServiceChannelByShardId(shard_id);
-        if (!channel)
-        {
-            LOG(WARNING) << "Failed to get channel for shard " << shard_id;
-            // Continue with next shard
-            CreateSnapshotForBackupInternal(closure);
-            return;
-        }
+        uint32_t node_index = GetOwnerNodeIndexOfShard(shard_id);
+        closure->remote_node_index_ = node_index;
+        auto channel = &dss_nodes_[node_index].channel_;
 
-        closure->SetChannel(channel);
-        EloqDS::remote::DataStoreRpcService_Stub stub(channel.get());
+        EloqDS::remote::DataStoreRpcService_Stub stub(channel);
         brpc::Controller &cntl = *closure->Controller();
         cntl.set_timeout_ms(30000);  // Longer timeout for backup operations
         auto *req = closure->RemoteRequest();
@@ -2910,9 +2904,12 @@ void DataStoreServiceClient::OnShutdown()
  */
 bool DataStoreServiceClient::IsLocalShard(uint32_t shard_id)
 {
-    // this is a temporary solution for scale up scenario (from one smaller
-    // node to another bigger node)
-    return cluster_manager_.IsOwnerOfShard(shard_id);
+    if (data_store_service_ != nullptr)
+    {
+        return data_store_service_->IsOwnerOfShard(shard_id);
+    }
+
+    return false;
 }
 
 /**
@@ -2927,7 +2924,92 @@ bool DataStoreServiceClient::IsLocalShard(uint32_t shard_id)
  */
 bool DataStoreServiceClient::IsLocalPartition(int32_t partition_id)
 {
-    return cluster_manager_.IsOwnerOfPartition(partition_id);
+    return IsLocalShard(GetShardIdByPartitionId(partition_id));
+}
+
+uint32_t DataStoreServiceClient::GetShardIdByPartitionId(int32_t partition_id)
+{
+    // Now, only support one shard.
+    return 0;
+}
+
+uint32_t DataStoreServiceClient::AllDataShardCount() const
+{
+    return dss_shards_.size();
+}
+
+uint32_t DataStoreServiceClient::GetOwnerNodeIndexOfShard(
+    uint32_t shard_id) const
+{
+    assert(dss_shards_[shard_id].load(std::memory_order_acquire) != UINT32_MAX);
+    return dss_shards_[shard_id].load(std::memory_order_acquire);
+}
+
+brpc::Channel *DataStoreServiceClient::GetChannelOfNodeIndex(
+    uint32_t node_index)
+{
+    if (node_index >= dss_nodes_.size())
+    {
+        return nullptr;
+    }
+    return &dss_nodes_[node_index].channel_;
+}
+
+bool DataStoreServiceClient::UpdateOwnerNodeIndexOfShard(
+    uint32_t shard_id, uint32_t old_node_index, uint32_t &new_node_index)
+{
+    new_node_index = dss_shards_[shard_id].load(std::memory_order_acquire);
+    if (new_node_index != old_node_index)
+    {
+        return true;
+    }
+
+    uint64_t expect_val = 0;
+
+    if (dss_nodes_[old_node_index].expired_ts_.compare_exchange_strong(
+            expect_val, current_ts))
+    {
+        // The old node channle is not updated by other, update it.
+        uint32_t free_index = FindFreeNodeIndex();
+        if (free_index == dss_nodes_.size())
+        {
+            LOG(ERROR) << "Find free node index failed";
+            return false;
+        }
+        auto &node = dss_nodes_[free_index];
+        node.host_name_ = dss_nodes_[old_node_index].host_name_;
+        node.port_ = dss_nodes_[old_node_index].port_;
+        node.channel_.Init(node.host_name_.c_str(), node.port_, nullptr);
+        dss_shards_[shard_id].store(free_index, std::memory_order_release);
+        new_node_index = free_index;
+        return true;
+    }
+    else
+    {
+        // Other thread is updating the shard. Waiting.
+        return false;
+    }
+}
+
+uint32_t DataStoreServiceClient::FindFreeNodeIndex()
+{
+    uint64_t current_ts =
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::system_clock::now().time_since_epoch())
+            .count();
+    for (uint32_t i = 0; i < dss_nodes_.size(); i++)
+    {
+        uint64_t expired_ts =
+            dss_nodes_[i].expired_ts_.load(std::memory_order_acquire);
+        if (expired_ts > 0 && expired_ts < current_ts &&
+            (current_ts - expired_ts) > NodeExpiredTime &&
+            dss_nodes_[i].expired_ts_.compare_exchange_strong(expired_ts, 0))
+        {
+            return i;
+        }
+    }
+    // not found
+    return dss_nodes_.size();
 }
 
 txservice::store::DataStoreHandler::DataStoreOpStatus
@@ -3023,18 +3105,12 @@ void DataStoreServiceClient::ReadInternal(ReadClosure *read_clouse)
     else
     {
         read_clouse->PrepareRequest(false);
-        auto channel =
-            GetDataStoreServiceChannelByPartitionId(read_clouse->PartitionId());
-        if (!channel)
-        {
-            brpc::ClosureGuard guard(read_clouse);
-            ::EloqDS::remote::CommonResult &result = read_clouse->Result();
-            result.set_error_code(
-                ::EloqDS::remote::DataStoreError::NETWORK_ERROR);
-            return;
-        }
+        uint32_t node_index = GetOwnerNodeIndexOfShard(
+            GetShardIdByPartitionId(read_clouse->PartitionId()));
+        read_clouse->remote_node_index_ = node_index;
+        auto channel = &dss_nodes_[node_index].channel_;
 
-        EloqDS::remote::DataStoreRpcService_Stub stub(channel.get());
+        EloqDS::remote::DataStoreRpcService_Stub stub(channel);
         brpc::Controller &cntl = *read_clouse->Controller();
         cntl.set_timeout_ms(5000);
         auto *req = read_clouse->ReadRequest();
@@ -3082,19 +3158,12 @@ void DataStoreServiceClient::DeleteRangeInternal(
     else
     {
         delete_range_clouse->PrepareRequest(false);
-        auto channel = GetDataStoreServiceChannelByPartitionId(
-            delete_range_clouse->PartitionId());
-        if (!channel)
-        {
-            brpc::ClosureGuard guard(delete_range_clouse);
-            ::EloqDS::remote::CommonResult &result =
-                delete_range_clouse->Result();
-            result.set_error_code(
-                ::EloqDS::remote::DataStoreError::NETWORK_ERROR);
-            return;
-        }
+        uint32_t node_index = GetOwnerNodeIndexOfShard(
+            GetShardIdByPartitionId(delete_range_clouse->PartitionId()));
+        delete_range_clouse->remote_node_index_ = node_index;
+        auto channel = &dss_nodes_[node_index].channel_;
 
-        EloqDS::remote::DataStoreRpcService_Stub stub(channel.get());
+        EloqDS::remote::DataStoreRpcService_Stub stub(channel);
         brpc::Controller &cntl = *delete_range_clouse->Controller();
         cntl.set_timeout_ms(5000);
         auto *req = delete_range_clouse->DeleteRangeRequest();
@@ -3109,12 +3178,12 @@ void DataStoreServiceClient::FlushData(
     DataStoreCallback callback)
 {
     FlushDataClosure *closure = flush_data_closure_pool_.NextObject();
-    auto shards = cluster_manager_.GetAllShards();
+    uint32_t shard_cnt = AllDataShardCount();
     std::vector<uint32_t> shard_ids;
-    shard_ids.reserve(shards.size());
-    for (auto &[s_id, _] : shards)
+    shard_ids.reserve(shard_cnt);
+    for (uint32_t shard_id = 0; shard_id < shard_cnt; shard_id++)
     {
-        shard_ids.push_back(s_id);
+        shard_ids.push_back(shard_id);
     }
 
     closure->Reset(
@@ -3139,18 +3208,11 @@ void DataStoreServiceClient::FlushDataInternal(
     else
     {
         flush_data_closure->PrepareRequest(false);
-        auto channel = GetDataStoreServiceChannelByShardId(shard_id);
-        if (!channel)
-        {
-            brpc::ClosureGuard guard(flush_data_closure);
-            ::EloqDS::remote::CommonResult &result =
-                flush_data_closure->Result();
-            result.set_error_code(
-                ::EloqDS::remote::DataStoreError::NETWORK_ERROR);
-            return;
-        }
+        uint32_t node_index = GetOwnerNodeIndexOfShard(shard_id);
+        flush_data_closure->remote_node_index_ = node_index;
+        auto channel = &dss_nodes_[node_index].channel_;
 
-        EloqDS::remote::DataStoreRpcService_Stub stub(channel.get());
+        EloqDS::remote::DataStoreRpcService_Stub stub(channel);
         brpc::Controller &cntl = *flush_data_closure->Controller();
         cntl.set_timeout_ms(5000);
         auto *req = flush_data_closure->FlushDataRequest();
@@ -3167,12 +3229,12 @@ void DataStoreServiceClient::DropTable(std::string_view table_name,
     DLOG(INFO) << "DropTableWithRetry for table: " << table_name;
 
     DropTableClosure *closure = drop_table_closure_pool_.NextObject();
-    auto shards = cluster_manager_.GetAllShards();
+    uint32_t shard_cnt = AllDataShardCount();
     std::vector<uint32_t> shard_ids;
-    shard_ids.reserve(shards.size());
-    for (auto &[s_id, _] : shards)
+    shard_ids.reserve(shard_cnt);
+    for (uint32_t shard_id = 0; shard_id < shard_cnt; shard_id++)
     {
-        shard_ids.push_back(s_id);
+        shard_ids.push_back(shard_id);
     }
 
     closure->Reset(
@@ -3197,18 +3259,11 @@ void DataStoreServiceClient::DropTableInternal(
     else
     {
         drop_table_closure->PrepareRequest(false);
-        auto channel = GetDataStoreServiceChannelByShardId(shard_id);
-        if (!channel)
-        {
-            brpc::ClosureGuard guard(drop_table_closure);
-            ::EloqDS::remote::CommonResult &result =
-                drop_table_closure->Result();
-            result.set_error_code(
-                ::EloqDS::remote::DataStoreError::NETWORK_ERROR);
-            return;
-        }
+        uint32_t node_index = GetOwnerNodeIndexOfShard(shard_id);
+        drop_table_closure->remote_node_index_ = node_index;
+        auto channel = &dss_nodes_[node_index].channel_;
 
-        EloqDS::remote::DataStoreRpcService_Stub stub(channel.get());
+        EloqDS::remote::DataStoreRpcService_Stub stub(channel);
         brpc::Controller &cntl = *drop_table_closure->Controller();
         cntl.set_timeout_ms(5000);
         auto *req = drop_table_closure->DropTableRequest();
@@ -3272,19 +3327,12 @@ void DataStoreServiceClient::ScanNextInternal(
     else
     {
         scan_next_closure->PrepareRequest(false);
-        auto channel = GetDataStoreServiceChannelByPartitionId(
-            scan_next_closure->PartitionId());
-        if (!channel)
-        {
-            brpc::ClosureGuard guard(scan_next_closure);
-            ::EloqDS::remote::CommonResult &result =
-                scan_next_closure->Result();
-            result.set_error_code(
-                ::EloqDS::remote::DataStoreError::NETWORK_ERROR);
-            return;
-        }
+        uint32_t node_index = GetOwnerNodeIndexOfShard(
+            GetShardIdByPartitionId(scan_next_closure->PartitionId()));
+        scan_next_closure->remote_node_index_ = node_index;
+        auto channel = &dss_nodes_[node_index].channel_;
 
-        EloqDS::remote::DataStoreRpcService_Stub stub(channel.get());
+        EloqDS::remote::DataStoreRpcService_Stub stub(channel);
         brpc::Controller &cntl = *scan_next_closure->Controller();
         cntl.set_timeout_ms(5000);
         auto *req = scan_next_closure->ScanNextRequest();
@@ -3331,19 +3379,12 @@ void DataStoreServiceClient::ScanCloseInternal(
     else
     {
         scan_next_closure->PrepareRequest(false);
-        auto channel = GetDataStoreServiceChannelByPartitionId(
-            scan_next_closure->PartitionId());
-        if (!channel)
-        {
-            brpc::ClosureGuard guard(scan_next_closure);
-            ::EloqDS::remote::CommonResult &result =
-                scan_next_closure->Result();
-            result.set_error_code(
-                ::EloqDS::remote::DataStoreError::NETWORK_ERROR);
-            return;
-        }
+        uint32_t node_index = GetOwnerNodeIndexOfShard(
+            GetShardIdByPartitionId(scan_next_closure->PartitionId()));
+        scan_next_closure->remote_node_index_ = node_index;
+        auto channel = &dss_nodes_[node_index].channel_;
 
-        EloqDS::remote::DataStoreRpcService_Stub stub(channel.get());
+        EloqDS::remote::DataStoreRpcService_Stub stub(channel);
         brpc::Controller &cntl = *scan_next_closure->Controller();
         cntl.set_timeout_ms(5000);
         auto *req = scan_next_closure->ScanNextRequest();
@@ -3598,31 +3639,11 @@ bool DataStoreServiceClient::DeleteTableStatistics(
 }
 
 std::shared_ptr<brpc::Channel>
-DataStoreServiceClient::GetDataStoreServiceChannelByPartitionId(
-    uint32_t partition_id)
-{
-    return cluster_manager_.GetDataStoreServiceChannelByPartitionId(
-        partition_id);
-}
-
-std::shared_ptr<brpc::Channel>
 DataStoreServiceClient::UpdateDataStoreServiceChannelByPartitionId(
     uint32_t partition_id)
 {
     return cluster_manager_.UpdateDataStoreServiceChannelByPartitionId(
         partition_id);
-}
-
-std::shared_ptr<brpc::Channel>
-DataStoreServiceClient::GetDataStoreServiceChannel(const DSSNode &node)
-{
-    return cluster_manager_.GetDataStoreServiceChannel(node);
-}
-
-std::shared_ptr<brpc::Channel>
-DataStoreServiceClient::GetDataStoreServiceChannelByShardId(uint32_t shard_id)
-{
-    return cluster_manager_.GetDataStoreServiceChannelByShardId(shard_id);
 }
 
 std::shared_ptr<brpc::Channel>
@@ -3681,7 +3702,7 @@ void DataStoreServiceClient::BatchWriteRecordsInternal(
 
     if (IsLocalShard(req_shard_id))
     {
-        closure->is_local_request_ = true;
+        closure->PrepareRequest(true);
         data_store_service_->BatchWriteRecords(closure->kv_table_name_,
                                                closure->partition_id_,
                                                closure->key_parts_,
@@ -3697,26 +3718,14 @@ void DataStoreServiceClient::BatchWriteRecordsInternal(
     }
     else
     {
-        closure->is_local_request_ = false;
-
-        auto channel =
-            cluster_manager_.GetDataStoreServiceChannelByShardId(req_shard_id);
-        if (!channel)
-        {
-            // TODO(lzx): retry..
-            assert(false);
-            closure->result_.set_error_code(
-                remote::DataStoreError::NETWORK_ERROR);
-            closure->Run();
-            return;
-        }
-
         // prepare request
-        closure->PrepareRemoteRequest();
-        // timeout is set in the PrepareRemoteRequest
+        closure->PrepareRequest(false);
+        uint32_t node_index = GetOwnerNodeIndexOfShard(req_shard_id);
+        closure->remote_node_index_ = node_index;
+        auto channel = &dss_nodes_[node_index].channel_;
 
         // send request
-        remote::DataStoreRpcService_Stub stub(channel.get());
+        remote::DataStoreRpcService_Stub stub(channel);
         stub.BatchWriteRecords(closure->Controller(),
                                closure->RemoteRequest(),
                                closure->RemoteResponse(),
