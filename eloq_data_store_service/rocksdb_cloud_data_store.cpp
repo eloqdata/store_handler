@@ -607,6 +607,9 @@ bool RocksDBCloudDataStore::OpenCloudDB(
     options.compaction_filter =
         static_cast<rocksdb::CompactionFilter *>(ttl_compaction_filter_.get());
 
+    // Disable auto compactions before blocking purger
+    options.disable_auto_compactions = true;
+
     auto start = std::chrono::system_clock::now();
     std::unique_lock<std::shared_mutex> db_lk(db_mux_);
     rocksdb::Status status;
@@ -683,6 +686,9 @@ bool RocksDBCloudDataStore::OpenCloudDB(
 
     // Resume background work
     db_->ContinueBackgroundWork();
+
+    // Enable auto compactions after blocking purger
+    status = db_->SetOptions({{"disable_auto_compactions", "false"}});
 
     if (cloud_config_.warm_up_thread_num_ != 0)
     {

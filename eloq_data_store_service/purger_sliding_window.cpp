@@ -128,7 +128,8 @@ void S3FileNumberUpdater::UpdateSmallestFileNumber(uint64_t file_number,
 
 void S3FileNumberUpdater::BlockPurger(const std::string &epoch)
 {
-    DLOG(INFO) << "Wrote 0 as file number to S3 to block purger";
+    DLOG(INFO) << "Wrote 0 as file number to S3 to block purger, epoch: "
+               << epoch;
     UpdateSmallestFileNumber(std::numeric_limits<uint64_t>::min(), epoch);
     // Don't update last_published_smallest_ in sliding window,
     // so that future smaller file number can still be updated
