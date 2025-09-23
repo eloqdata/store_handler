@@ -23,6 +23,9 @@ else()
     message(FATAL_ERROR "Boost.Context not found!")
 endif()
 
+find_package(jsoncpp REQUIRED)
+find_package(CURL REQUIRED)
+
 find_path(URING_INCLUDE_PATH NAMES liburing.h)
 find_library(URING_LIB NAMES uring)
 if ((NOT URING_INCLUDE_PATH) OR (NOT URING_LIB))
@@ -103,4 +106,4 @@ set(ELOQ_STORE_SOURCES
 add_library(eloqstore STATIC ${ELOQ_STORE_SOURCES} ${INI_SOURCES})
 
 target_include_directories(eloqstore PUBLIC ${ELOQ_STORE_INCLUDE})
-target_link_libraries(eloqstore PRIVATE ${URING_LIB} Boost::context glog::glog absl::flat_hash_map)
+target_link_libraries(eloqstore PRIVATE ${URING_LIB} Boost::context glog::glog absl::flat_hash_map jsoncpp_lib ${CURL_LIBRARIES})
