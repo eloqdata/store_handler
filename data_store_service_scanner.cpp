@@ -73,7 +73,8 @@ bool SinglePartitionScanner::FetchNextBatch()
         scanner_->IsInclusiveEnd(),
         scanner_->IsScanForward(),
         scanner_->GetBatchSize(),
-        scanner_->SearchConditions(),
+        // scanner_->SearchConditions(),
+        nullptr,
         this,
         ProcessScanNextResult);
 
@@ -213,7 +214,7 @@ DataStoreServiceHashPartitionScanner<ScanForward>::
         const txservice::KVCatalogInfo *kv_info,
         const txservice::TxKey &start_key,
         bool inclusive,
-        const std::vector<txservice::store::DataStoreSearchCond> &pushdown_cond,
+        const std::vector<txservice::DataStoreSearchCond> &pushdown_cond,
         size_t batch_size)
     : DataStoreServiceScanner(client,
                               kv_info->GetKvTableName(table_name),

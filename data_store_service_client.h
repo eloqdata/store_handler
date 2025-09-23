@@ -204,6 +204,9 @@ public:
               uint64_t &version_ts,
               const txservice::TableSchema *table_schema) override;
 
+    std::vector<txservice::DataStoreSearchCond> CreateDataSerachCondition(
+        int32_t obj_type, const std::string_view &pattern) override;
+
     txservice::store::DataStoreHandler::DataStoreOpStatus FetchBucketData(
         txservice::FetchBucketDataCc *fetch_bucket_data_cc) override;
 
@@ -236,7 +239,7 @@ public:
         const txservice::TxKey &start_key,
         bool inclusive,
         uint8_t key_parts,
-        const std::vector<txservice::store::DataStoreSearchCond> &search_cond,
+        const std::vector<txservice::DataStoreSearchCond> &search_cond,
         const txservice::KeySchema *key_schema,
         const txservice::RecordSchema *rec_schema,
         const txservice::KVCatalogInfo *kv_info,
@@ -428,9 +431,11 @@ public:
     static uint32_t HashArchiveKey(const std::string &kv_table_name,
                                    const txservice::TxKey &tx_key);
 
-    static std::string EncodeKvKeyForHashPart(uint16_t bucket_id);
-    static std::string EncodeKvKeyForHashPart(uint16_t bucket_id,
-                                              const txservice::TxKey &tx_key);
+    static void EncodeKvKeyForHashPart(uint16_t bucket_id,
+                                       std::string &key_out);
+    static void EncodeKvKeyForHashPart(uint16_t bucket_id,
+                                       const std::string_view &tx_key,
+                                       std::string &key_out);
 
     static std::string_view DecodeKvKeyForHashPart(const char *data,
                                                    size_t size);
@@ -563,19 +568,20 @@ private:
 
     void FlushDataInternal(FlushDataClosure *flush_data_closure);
 
-    void ScanNext(const std::string_view table_name,
-                  uint32_t partition_id,
-                  const std::string_view start_key,
-                  const std::string_view end_key,
-                  const std::string_view session_id,
-                  bool generate_session,
-                  bool inclusive_start,
-                  bool inclusive_end,
-                  bool scan_forward,
-                  uint32_t batch_size,
-                  const std::vector<remote::SearchCondition> *search_conditions,
-                  void *callback_data,
-                  DataStoreCallback callback);
+    void ScanNext(
+        const std::string_view table_name,
+        uint32_t partition_id,
+        const std::string_view start_key,
+        const std::string_view end_key,
+        const std::string_view session_id,
+        bool generate_session,
+        bool inclusive_start,
+        bool inclusive_end,
+        bool scan_forward,
+        uint32_t batch_size,
+        const std::vector<txservice::DataStoreSearchCond> *search_conditions,
+        void *callback_data,
+        DataStoreCallback callback);
 
     void ScanNextInternal(ScanNextClosure *scan_next_closure);
 
@@ -620,7 +626,6 @@ private:
 #ifdef USE_ONE_ELOQDSS_PARTITION
         return 0;
 #else
-        // TODO(lokax):
         std::string_view sv = table.StringView();
         return (std::hash<std::string_view>()(sv)) & 0x3FF;
 #endif
@@ -629,7 +634,6 @@ private:
     int32_t KvPartitionIdOf(int32_t key_partition,
                             bool is_range_partition = true)
     {
-        // TODO(lokax):
 #ifdef USE_ONE_ELOQDSS_PARTITION
         if (is_range_partition)
         {
@@ -707,6 +711,10 @@ private:
                                          ::google::protobuf::Closure *closure,
                                          DataStoreServiceClient &client,
                                          const remote::CommonResult &result);
+    friend void FetchBucketDataCallback(void *data,
+                                        ::google::protobuf::Closure *closure,
+                                        DataStoreServiceClient &client,
+                                        const remote::CommonResult &result);
     friend void DiscoverAllTableNamesCallback(
         void *data,
         ::google::protobuf::Closure *closure,

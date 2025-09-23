@@ -898,32 +898,6 @@ void RocksDBDataStoreCommon::ScanNext(ScanRequest *scan_req)
                                    key);
                 assert(ret);
                 rocksdb::Slice value = iter->value();
-                const remote::SearchCondition *cond = nullptr;
-                bool matched = true;
-                for (int cond_idx = 0; cond_idx < search_cond_size; ++cond_idx)
-                {
-                    cond = scan_req->GetSearchConditions(cond_idx);
-                    assert(cond);
-                    if (cond->field_name() == "type" &&
-                        cond->value().compare(0, 1, value.data(), 0, 1))
-                    {
-                        // type mismatch
-                        matched = false;
-                        break;
-                    }
-                }
-                if (!matched)
-                {
-                    if (scan_forward)
-                    {
-                        iter->Next();
-                    }
-                    else
-                    {
-                        iter->Prev();
-                    }
-                    continue;
-                }
 
                 // Deserialize value to record and record_ts
                 std::string rec;
@@ -931,6 +905,43 @@ void RocksDBDataStoreCommon::ScanNext(ScanRequest *scan_req)
                 uint64_t rec_ttl;
                 DeserializeValueToRecord(
                     value.data(), value.size(), rec, rec_ts, rec_ttl);
+
+                const remote::SearchCondition *cond = nullptr;
+                bool matched = true;
+                if (!rec.empty())
+                {
+                    for (int cond_idx = 0; cond_idx < search_cond_size;
+                         ++cond_idx)
+                    {
+                        cond = scan_req->GetSearchConditions(cond_idx);
+                        assert(cond);
+                        if (cond->field_name() == "type")
+                        {
+                            int8_t obj_type =
+                                static_cast<int8_t>(cond->value()[0]);
+                            int8_t store_obj_type = static_cast<int8_t>(rec[0]);
+                            if (obj_type != store_obj_type)
+                            {
+                                // type mismatch
+                                matched = false;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (!matched)
+                    {
+                        if (scan_forward)
+                        {
+                            iter->Next();
+                        }
+                        else
+                        {
+                            iter->Prev();
+                        }
+                        continue;
+                    }
+                }
 
                 scan_req->AddItem(
                     std::string(key), std::move(rec), rec_ts, rec_ttl);

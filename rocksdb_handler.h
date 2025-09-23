@@ -381,6 +381,12 @@ public:
 
     rocksdb::ColumnFamilyHandle *GetColumnFamilyHandler(const std::string &cf);
 
+    std::vector<txservice::DataStoreSearchCond> CreateDataSerachCondition(
+        int32_t obj_type, const std::string_view &pattern) override;
+
+    std::function<void()> GenerateFetchBucketWork(
+        txservice::FetchBucketDataCc *fetch_bucket_data_cc);
+
     txservice::store::DataStoreHandler::DataStoreOpStatus FetchBucketData(
         std::vector<txservice::FetchBucketDataCc *> fetch_bucket_data_ccs)
         override;
@@ -394,7 +400,7 @@ public:
         const txservice::TxKey &start_key,
         bool inclusive,
         uint8_t key_parts,
-        const std::vector<txservice::store::DataStoreSearchCond> &search_cond,
+        const std::vector<txservice::DataStoreSearchCond> &search_cond,
         const txservice::KeySchema *key_schema,
         const txservice::RecordSchema *rec_schema,
         const txservice::KVCatalogInfo *kv_info,
@@ -525,10 +531,12 @@ public:
             cancel_data_loading_on_error,
         std::shared_ptr<std::atomic<uint16_t>> on_flying_count);
 
-    static std::string EncodeToKvKey(uint16_t bucket_id);
-    static std::string EncodeToKvKey(uint16_t bucket_id,
-                                     const txservice::TxKey &tx_key);
-    static std::string EncodeToKvKey(const txservice::TxKey &tx_key);
+    static void EncodeToKvKey(uint16_t bucket_id, std::string &key_out);
+    static void EncodeToKvKey(uint16_t bucket_id,
+                              const std::string_view &tx_key,
+                              std::string &key_out);
+    static void EncodeToKvKey(const txservice::TxKey &tx_key,
+                              std::string &key_out);
     static std::string DecodeTxKeyFromKvKey(const char *data, size_t size);
     static uint16_t DecodeBucketIdFromKvKey(const char *data, size_t size);
 

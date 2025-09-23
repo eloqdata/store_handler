@@ -1209,7 +1209,7 @@ private:
     const remote::ScanRequest *req_{nullptr};
     remote::ScanResponse *resp_{nullptr};
     google::protobuf::Closure *done_{nullptr};
-    std::vector<::EloqDS::remote::SearchCondition> search_conditions_;
+    // std::vector<::EloqDS::remote::SearchCondition> search_conditions_;
 };
 
 class ScanLocalRequest : public ScanRequest

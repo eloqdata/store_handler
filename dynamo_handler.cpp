@@ -2761,7 +2761,7 @@ EloqDS::DynamoHandler::ScanForward(
     const txservice::TxKey &start_key,
     bool inclusive,
     uint8_t key_parts,
-    const std::vector<txservice::store::DataStoreSearchCond> &search_cond,
+    const std::vector<txservice::DataStoreSearchCond> &search_cond,
     const txservice::KeySchema *key_schema,
     const txservice::RecordSchema *rec_schema,
     const txservice::KVCatalogInfo *kv_info,

@@ -178,7 +178,7 @@ void FetchRecordCallback(void *data,
                     val, is_deleted, offset))
             {
                 LOG(ERROR) << "====fetch record===decode error==" << " key: "
-                           << read_closure->Key()
+                           << read_closure->Key().back()
                            << " status: " << (int) fetch_cc->rec_status_;
                 std::abort();
             }
@@ -230,12 +230,11 @@ void FetchBucketDataCallback(void *data,
                              const remote::CommonResult &result)
 {
     assert(data != nullptr);
-    FetchBucketDataCallbackData *callback_data =
-        static_cast<FetchBucketDataCallbackData *>(data);
+    txservice::FetchBucketDataCc *fetch_bucket_data_cc =
+        static_cast<txservice::FetchBucketDataCc *>(data);
     ScanNextClosure *scan_next_closure =
         static_cast<ScanNextClosure *>(closure);
     assert(!scan_next_closure->GenerateSessionId());
-    auto *fetch_bucket_data_cc = callback_data->fetch_bucket_data_cc_;
 
     if (result.error_code() != EloqDS::remote::DataStoreError::NO_ERROR)
     {
@@ -243,8 +242,6 @@ void FetchBucketDataCallback(void *data,
                    << result.error_msg();
         fetch_bucket_data_cc->SetFinish(
             static_cast<int32_t>(txservice::CcErrorCode::DATA_STORE_ERR));
-
-        delete callback_data;
         return;
     }
 
@@ -259,15 +256,16 @@ void FetchBucketDataCallback(void *data,
     for (uint32_t item_idx = 0; item_idx < items_size; ++item_idx)
     {
         scan_next_closure->GetItem(item_idx, key_str, value_str, ts, ttl);
-
-        std::string tx_key(
-            client.DecodeKvKeyForHashPart(key_str.data(), key_str.size()));
         if (ttl > 0 && ttl < now)
         {
-            fetch_bucket_data_cc->AddDataItem(std::move(tx_key), "", 1, true);
+            // fetch_bucket_data_cc->AddDataItem(std::move(tx_key), "", 1,
+            // true);
+            continue;
         }
         else
         {
+            std::string tx_key(
+                client.DecodeKvKeyForHashPart(key_str.data(), key_str.size()));
             fetch_bucket_data_cc->AddDataItem(
                 std::move(tx_key), std::move(value_str), ts, false);
         }
@@ -280,13 +278,32 @@ void FetchBucketDataCallback(void *data,
     else
     {
         fetch_bucket_data_cc->is_drained_ = false;
+        if (fetch_bucket_data_cc->bucket_data_items_.empty())
+        {
+            int32_t kv_partition_id = client.KvPartitionIdOf(
+                txservice::Sharder::MapBucketIdToKvPartitionId(
+                    fetch_bucket_data_cc->bucket_id_),
+                false);
+            client.ScanNext(fetch_bucket_data_cc->kv_table_name_,
+                            kv_partition_id,
+                            fetch_bucket_data_cc->kv_start_key_,
+                            fetch_bucket_data_cc->kv_end_key_,
+                            "",
+                            false,
+                            fetch_bucket_data_cc->start_key_inclusive_,
+                            fetch_bucket_data_cc->end_key_inclusive_,
+                            true,
+                            fetch_bucket_data_cc->batch_size_,
+                            fetch_bucket_data_cc->pushdown_cond_,
+                            fetch_bucket_data_cc,
+                            &FetchBucketDataCallback);
+            return;
+        }
     }
 
     // callback_data->session_id_ = scan_next_closure->GetSessionId();
     fetch_bucket_data_cc->SetFinish(
         static_cast<int32_t>(txservice::CcErrorCode::NO_ERROR));
-
-    delete callback_data;
 }
 
 void FetchSnapshotCallback(void *data,

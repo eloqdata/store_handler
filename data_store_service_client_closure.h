@@ -1843,7 +1843,8 @@ public:
         session_id_ = "";
         generate_session_id_ = true;
         batch_size_ = 0;
-        search_conditions_ = nullptr;
+        // search_conditions_ = nullptr;
+        search_conditions_.clear();
         result_.Clear();
         items_.clear();
 
@@ -1852,20 +1853,21 @@ public:
         callback_data_ = nullptr;
     }
 
-    void Reset(DataStoreServiceClient &store_hd,
-               const std::string_view table_name,
-               uint32_t partition_id,
-               const std::string_view start_key,
-               const std::string_view end_key,
-               bool inclusive_start,
-               bool inclusive_end,
-               bool scan_forward,
-               const std::string_view session_id,
-               bool generate_session_id,
-               const uint32_t batch_size,
-               const std::vector<remote::SearchCondition> *search_conditions,
-               void *callback_data,
-               DataStoreCallback callback)
+    void Reset(
+        DataStoreServiceClient &store_hd,
+        const std::string_view table_name,
+        uint32_t partition_id,
+        const std::string_view start_key,
+        const std::string_view end_key,
+        bool inclusive_start,
+        bool inclusive_end,
+        bool scan_forward,
+        const std::string_view session_id,
+        bool generate_session_id,
+        const uint32_t batch_size,
+        const std::vector<txservice::DataStoreSearchCond> *pushdown_conditions,
+        void *callback_data,
+        DataStoreCallback callback)
     {
         is_local_request_ = true;
         rpc_request_prepare_ = false;
@@ -1881,7 +1883,19 @@ public:
         session_id_ = session_id;
         generate_session_id_ = generate_session_id;
         batch_size_ = batch_size;
-        search_conditions_ = search_conditions;
+        if (pushdown_conditions)
+        {
+            // convert pushdown conditions to search conditions
+            for (const auto &cond : *pushdown_conditions)
+            {
+                remote::SearchCondition search_cond;
+                search_cond.set_field_name(cond.field_name_);
+                search_cond.set_op(cond.op_);
+                search_cond.set_value(cond.val_str_);
+                search_conditions_.emplace_back(std::move(search_cond));
+            }
+        }
+        // search_conditions_ = search_conditions;
         callback_data_ = callback_data;
         callback_ = callback;
         assert(callback_ != nullptr);
@@ -1919,18 +1933,19 @@ public:
             request_.set_session_id(session_id_);
             request_.set_generate_session_id(generate_session_id_);
             request_.set_batch_size(batch_size_);
-            if (search_conditions_)
+            if (!search_conditions_.empty())
             {
-                for (auto &cond : *search_conditions_)
+                for (auto &cond : search_conditions_)
                 {
                     remote::SearchCondition *rcond =
                         request_.add_search_conditions();
-                    rcond->set_field_name(cond.field_name());
-                    rcond->set_op(cond.op());
-                    rcond->set_value(cond.value());
+                    rcond->set_field_name(
+                        std::move(*cond.mutable_field_name()));
+                    rcond->set_op(std::move(*cond.mutable_op()));
+                    rcond->set_value(std::move(*cond.mutable_value()));
                 }
                 assert(static_cast<size_t>(request_.search_conditions_size()) ==
-                       search_conditions_->size());
+                       search_conditions_.size());
             }
             rpc_request_prepare_ = true;
         }
@@ -2151,7 +2166,7 @@ public:
 
     const std::vector<remote::SearchCondition> *LocalSearchConditionsPtr()
     {
-        return search_conditions_;
+        return &search_conditions_;
     }
 
 private:
@@ -2174,7 +2189,7 @@ private:
     std::string session_id_;
     bool generate_session_id_{true};
     uint32_t batch_size_;
-    const std::vector<remote::SearchCondition> *search_conditions_;
+    std::vector<remote::SearchCondition> search_conditions_;
 
     // reuslt
     ::EloqDS::remote::CommonResult result_;
@@ -2859,27 +2874,6 @@ void FetchBucketDataCallback(void *data,
                              DataStoreServiceClient &client,
                              const remote::CommonResult &result);
 
-struct FetchBucketDataCallbackData
-{
-    FetchBucketDataCallbackData(
-        txservice::FetchBucketDataCc *fetch_bucket_data_cc)
-        : fetch_bucket_data_cc_(fetch_bucket_data_cc)
-    {
-    }
-
-    txservice::FetchBucketDataCc *fetch_bucket_data_cc_;
-    std::string bucket_kv_start_key_;  // key owner
-    std::string bucket_kv_end_key_;
-    std::string session_id_;
-    std::vector<remote::SearchCondition> search_cond_;
-};
-
-/**
- * Callback for fetching archive records.
- *
- * Handles the completion of archive record fetch operations and processes the
- * result.
- */
 void FetchArchivesCallback(void *data,
                            ::google::protobuf::Closure *closure,
                            DataStoreServiceClient &client,
