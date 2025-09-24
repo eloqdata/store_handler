@@ -1758,7 +1758,6 @@ void RocksDBHandler::ParallelIterateTable(
         size_t cnt = 0;
         for (it->SeekToFirst(); it->Valid(); it->Next())
         {
-            // TODO(lokax): decode bucket id
             rocksdb::Slice rocksdb_key = it->key();
             uint16_t bucket_id =
                 DecodeBucketIdFromKvKey(rocksdb_key.data(), rocksdb_key.size());
@@ -1836,7 +1835,6 @@ void RocksDBHandler::ParallelIterateTable(
 
             assert(current_batch_key_cnt <= batch_size);
 
-            // TODO(lokax):
             if (current_batch_key_cnt >= batch_size)
             {
                 if (cancel_data_loading_on_error->load(
