@@ -610,7 +610,9 @@ private:
 
     bool IsOwnerOfShard(uint32_t shard_id)
     {
-        return shard_id_ == shard_id;
+        return shard_status_.load(std::memory_order_acquire) !=
+                   DSShardStatus::Closed &&
+               shard_id_ == shard_id;
     }
 
     DataStore *GetDataStore(uint32_t shard_id)
