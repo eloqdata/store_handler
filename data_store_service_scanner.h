@@ -286,6 +286,7 @@ class DataStoreServiceHashPartitionScanner
 public:
     DataStoreServiceHashPartitionScanner(
         DataStoreServiceClient *client,
+        const txservice::CatalogFactory *catalog_factory,
         const txservice::KeySchema *key_sch,
         const txservice::RecordSchema *rec_sch,
         const txservice::TableName &table_name,
@@ -315,6 +316,7 @@ protected:
 private:
     void AddScanTuple(SinglePartitionScanner *part_scanner, uint32_t part_id);
     // scanner parameters
+    const txservice::CatalogFactory *catalog_factory_;
     const txservice::KeySchema *key_sch_;
     const txservice::RecordSchema *rec_sch_;
     const txservice::KVCatalogInfo *kv_info_;
