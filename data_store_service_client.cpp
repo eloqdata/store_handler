@@ -2826,7 +2826,7 @@ void DataStoreServiceClient::CreateSnapshotForBackupInternal(
         closure->PrepareRequest(false);
         uint32_t node_index = GetOwnerNodeIndexOfShard(shard_id);
         closure->SetRemoteNodeIndex(node_index);
-        auto channel = &dss_nodes_[node_index].channel_;
+        auto *channel = dss_nodes_[node_index].Channel();
 
         EloqDS::remote::DataStoreRpcService_Stub stub(channel);
         brpc::Controller &cntl = *closure->Controller();
@@ -2985,10 +2985,9 @@ bool DataStoreServiceClient::UpdateOwnerNodeIndexOfShard(
             return false;
         }
         auto &node = dss_nodes_[free_index];
-        node.host_name_ = dss_nodes_[old_node_index].host_name_;
-        node.port_ = dss_nodes_[old_node_index].port_;
-        node.shard_verion_ = dss_nodes_[old_node_index].shard_verion_;
-        node.channel_.Init(node.host_name_.c_str(), node.port_, nullptr);
+        node.Reset(dss_nodes_[old_node_index].HostName(),
+                   dss_nodes_[old_node_index].Port(),
+                   dss_nodes_[old_node_index].ShardVersion());
         if (dss_shards_[shard_id].compare_exchange_strong(old_node_index,
                                                           free_index))
         {
@@ -3083,7 +3082,7 @@ bool DataStoreServiceClient::UpgradeShardVersion(uint32_t shard_id,
 
     uint32_t node_index = dss_shards_[shard_id].load(std::memory_order_acquire);
     auto &node_ref = dss_nodes_[node_index];
-    if (node_ref.shard_verion_ < shard_version)
+    if (node_ref.ShardVersion() < shard_version)
     {
         uint64_t expect_val = 0;
         uint64_t current_ts =
@@ -3107,10 +3106,7 @@ bool DataStoreServiceClient::UpgradeShardVersion(uint32_t shard_id,
             return false;
         }
         auto &free_node_ref = dss_nodes_[free_node_index];
-        free_node_ref.host_name_ = host_name;
-        free_node_ref.port_ = port;
-        free_node_ref.shard_verion_ = shard_version;
-        free_node_ref.channel_.Init(host_name.c_str(), port, nullptr);
+        free_node_ref.Reset(host_name, port, shard_version);
         if (!dss_shards_[shard_id].compare_exchange_strong(node_index,
                                                            free_node_index))
         {
@@ -3217,7 +3213,7 @@ void DataStoreServiceClient::ReadInternal(ReadClosure *read_closure)
         uint32_t node_index = GetOwnerNodeIndexOfShard(
             GetShardIdByPartitionId(read_closure->PartitionId()));
         read_closure->SetRemoteNodeIndex(node_index);
-        auto channel = &dss_nodes_[node_index].channel_;
+        auto *channel = dss_nodes_[node_index].Channel();
 
         EloqDS::remote::DataStoreRpcService_Stub stub(channel);
         brpc::Controller &cntl = *read_closure->Controller();
@@ -3270,7 +3266,7 @@ void DataStoreServiceClient::DeleteRangeInternal(
         uint32_t node_index = GetOwnerNodeIndexOfShard(
             GetShardIdByPartitionId(delete_range_clouse->PartitionId()));
         delete_range_clouse->SetRemoteNodeIndex(node_index);
-        auto channel = &dss_nodes_[node_index].channel_;
+        auto *channel = dss_nodes_[node_index].Channel();
 
         EloqDS::remote::DataStoreRpcService_Stub stub(channel);
         brpc::Controller &cntl = *delete_range_clouse->Controller();
@@ -3319,7 +3315,7 @@ void DataStoreServiceClient::FlushDataInternal(
         flush_data_closure->PrepareRequest(false);
         uint32_t node_index = GetOwnerNodeIndexOfShard(shard_id);
         flush_data_closure->SetRemoteNodeIndex(node_index);
-        auto channel = &dss_nodes_[node_index].channel_;
+        auto *channel = dss_nodes_[node_index].Channel();
 
         EloqDS::remote::DataStoreRpcService_Stub stub(channel);
         brpc::Controller &cntl = *flush_data_closure->Controller();
@@ -3370,7 +3366,7 @@ void DataStoreServiceClient::DropTableInternal(
         drop_table_closure->PrepareRequest(false);
         uint32_t node_index = GetOwnerNodeIndexOfShard(shard_id);
         drop_table_closure->SetRemoteNodeIndex(node_index);
-        auto channel = &dss_nodes_[node_index].channel_;
+        auto *channel = dss_nodes_[node_index].Channel();
 
         EloqDS::remote::DataStoreRpcService_Stub stub(channel);
         brpc::Controller &cntl = *drop_table_closure->Controller();
@@ -3439,7 +3435,7 @@ void DataStoreServiceClient::ScanNextInternal(
         uint32_t node_index = GetOwnerNodeIndexOfShard(
             GetShardIdByPartitionId(scan_next_closure->PartitionId()));
         scan_next_closure->SetRemoteNodeIndex(node_index);
-        auto channel = &dss_nodes_[node_index].channel_;
+        auto *channel = dss_nodes_[node_index].Channel();
 
         EloqDS::remote::DataStoreRpcService_Stub stub(channel);
         brpc::Controller &cntl = *scan_next_closure->Controller();
@@ -3491,7 +3487,7 @@ void DataStoreServiceClient::ScanCloseInternal(
         uint32_t node_index = GetOwnerNodeIndexOfShard(
             GetShardIdByPartitionId(scan_next_closure->PartitionId()));
         scan_next_closure->SetRemoteNodeIndex(node_index);
-        auto channel = &dss_nodes_[node_index].channel_;
+        auto *channel = dss_nodes_[node_index].Channel();
 
         EloqDS::remote::DataStoreRpcService_Stub stub(channel);
         brpc::Controller &cntl = *scan_next_closure->Controller();
@@ -3810,7 +3806,7 @@ void DataStoreServiceClient::BatchWriteRecordsInternal(
         closure->PrepareRequest(false);
         uint32_t node_index = GetOwnerNodeIndexOfShard(req_shard_id);
         closure->SetRemoteNodeIndex(node_index);
-        auto channel = &dss_nodes_[node_index].channel_;
+        auto *channel = dss_nodes_[node_index].Channel();
 
         // send request
         remote::DataStoreRpcService_Stub stub(channel);

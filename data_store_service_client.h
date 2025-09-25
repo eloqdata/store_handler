@@ -84,10 +84,11 @@ public:
         assert(all_shards.size() == 1);
         for (auto &[shard_id, shard] : all_shards)
         {
-            auto &node_ref = dss_nodes_[shard_id];
-            node_ref.host_name_ = shard.nodes_[0].host_name_;
-            node_ref.port_ = shard.nodes_[0].port_;
-            node_ref.shard_verion_ = shard.version_;
+            uint32_t node_idx = FindFreeNodeIndex();
+            auto &node_ref = dss_nodes_[node_idx];
+            node_ref.Reset(shard.nodes_[0].host_name_,
+                           shard.nodes_[0].port_,
+                           shard.version_);
             dss_shards_[shard_id].store(shard_id);
         }
 
@@ -667,16 +668,46 @@ private:
         }
         DssNode &operator=(const DssNode &) = delete;
 
-        std::string host_name_;
-        uint16_t port_;
-        brpc::Channel channel_;
-        uint64_t shard_verion_;
+        void Reset(const std::string hostname,
+                   uint16_t port,
+                   uint64_t shard_version)
+        {
+            assert(expired_ts_.load(std::memory_order_acquire) == 0);
+            host_name_ = hostname;
+            port_ = port;
+            shard_verion_ = shard_version;
+            channel_.Init(host_name_.c_str(), port_, nullptr);
+        }
+
+        const std::string &HostName() const
+        {
+            return host_name_;
+        }
+        uint16_t Port() const
+        {
+            return port_;
+        }
+        uint64_t ShardVersion() const
+        {
+            return shard_verion_;
+        }
+        brpc::Channel *Channel()
+        {
+            assert(!host_name_.empty() && port_ != 0);
+            return &channel_;
+        }
 
         // expired_ts_ is the timestamp when the node is expired.
         // If expired_ts_ is 0, the node is not expired.
         // If expired_ts_ is not 0, the node is expired and the value is the
         // timestamp when the node is expired.
         std::atomic<uint64_t> expired_ts_{1U};
+
+    private:
+        std::string host_name_;
+        uint16_t port_;
+        brpc::Channel channel_;
+        uint64_t shard_verion_;
     };
     // Cached leader nodes info of data shard.
     std::array<DssNode, 1024> dss_nodes_;
