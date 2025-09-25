@@ -150,8 +150,7 @@ public:
           received_snapshot_path_(storage_path_ + "/received_snapshot/"),
           create_db_if_missing_(create_if_missing),
           tx_enable_cache_replacement_(tx_enable_cache_replacement),
-          ttl_compaction_filter_(nullptr),
-          ongoing_write_requests_(0)
+          ttl_compaction_filter_(nullptr)
     {
         info_log_level_ = StringToInfoLogLevel(config.info_log_level_);
         query_worker_pool_ =
@@ -229,21 +228,6 @@ public:
     DSShardStatus FetchDSShardStatus() const;
 
 protected:
-    /**
-     * @brief Wait for all pending writes to complete.
-     */
-    void WaitForPendingWrites();
-
-    /**
-     * @brief Increase the pending write counter.
-     */
-    void IncreaseWriteCounter();
-
-    /**
-     * @brief Decrease the pending write counter.
-     */
-    void DecreaseWriteCounter();
-
 #ifdef DATA_STORE_TYPE_ELOQDSS_ROCKSDB_CLOUD_S3
     virtual rocksdb::DBCloud *GetDBPtr() = 0;
 #else
@@ -336,7 +320,5 @@ protected:
     std::unique_ptr<ThreadWorkerPool> query_worker_pool_;
     std::shared_mutex db_mux_;
     std::mutex ddl_mux_;
-
-    std::atomic<size_t> ongoing_write_requests_{0};
 };
 }  // namespace EloqDS

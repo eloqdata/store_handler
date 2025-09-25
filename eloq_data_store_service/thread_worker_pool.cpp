@@ -76,15 +76,16 @@ size_t ThreadWorkerPool::WorkQueueSize()
     return work_queue_.size();
 }
 
-void ThreadWorkerPool::SubmitWork(std::function<void()> work)
+bool ThreadWorkerPool::SubmitWork(std::function<void()> work)
 {
     std::unique_lock<std::mutex> lk(work_queue_mutex_);
     if (shutdown_indicator_.load(std::memory_order_acquire))
     {
-        return;
+        return false;
     }
     work_queue_.push_back(std::move(work));
     work_queue_cv_.notify_one();
+    return true;
 }
 
 void ThreadWorkerPool::Shutdown()
