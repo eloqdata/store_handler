@@ -858,6 +858,11 @@ public:
         return is_local_request_;
     }
 
+    void SetRemoteNodeIndex(uint32_t remote_node_index)
+    {
+        remote_node_index_ = remote_node_index;
+    }
+
 private:
     bool is_local_request_{false};
     bool rpc_request_prepare_{false};
@@ -1088,6 +1093,11 @@ public:
         return shard_ids_;
     }
 
+    void SetRemoteNodeIndex(uint32_t remote_node_index)
+    {
+        remote_node_index_ = remote_node_index;
+    }
+
 private:
     brpc::Controller cntl_;
     ::EloqDS::remote::FlushDataRequest request_;
@@ -1311,6 +1321,11 @@ public:
         }
     }
 
+    void SetRemoteNodeIndex(uint32_t remote_node_index)
+    {
+        remote_node_index_ = remote_node_index;
+    }
+
 private:
     brpc::Controller cntl_;
     ::EloqDS::remote::DeleteRangeRequest request_;
@@ -1525,6 +1540,11 @@ public:
     std::vector<uint32_t> &UnfinishedShards()
     {
         return shard_ids_;
+    }
+
+    void SetRemoteNodeIndex(uint32_t remote_node_index)
+    {
+        remote_node_index_ = remote_node_index;
     }
 
 private:
@@ -1802,6 +1822,11 @@ public:
     uint16_t PartsCountPerRecord()
     {
         return parts_cnt_per_record_;
+    }
+
+    void SetRemoteNodeIndex(uint32_t remote_node_index)
+    {
+        remote_node_index_ = remote_node_index;
     }
 
 private:
@@ -2171,6 +2196,11 @@ public:
         return search_conditions_;
     }
 
+    void SetRemoteNodeIndex(uint32_t remote_node_index)
+    {
+        remote_node_index_ = remote_node_index;
+    }
+
 private:
     brpc::Controller cntl_;
     ::EloqDS::remote::ScanRequest request_;
@@ -2314,7 +2344,6 @@ public:
                     if (retry_count_ < ds_service_client_->retry_limit_)
                     {
                         self_guard.Release();
-                        channel_ = nullptr;
                         retry_count_++;
                         ds_service_client_->CreateSnapshotForBackupInternal(
                             this);
@@ -2344,7 +2373,6 @@ public:
             if (retry_count_ < ds_service_client_->retry_limit_)
             {
                 self_guard.Release();
-                channel_ = nullptr;
                 response_.Clear();
                 cntl_.Reset();
                 retry_count_++;
@@ -2423,6 +2451,11 @@ public:
     ::EloqDS::remote::CreateSnapshotForBackupResponse *RemoteResponse()
     {
         return &response_;
+    }
+
+    void SetRemoteNodeIndex(uint32_t remote_node_index)
+    {
+        remote_node_index_ = remote_node_index;
     }
 
 private:

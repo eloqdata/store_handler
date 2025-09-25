@@ -71,16 +71,26 @@ public:
         txservice::CatalogFactory *catalog_factory[3],
         const DataStoreServiceClusterManager &cluster_manager,
         DataStoreService *data_store_service = nullptr)
-        : ds_serv_shutdown_indicator_(false),
-          catalog_factory_array_{catalog_factory[0],
+        : catalog_factory_array_{catalog_factory[0],
                                  catalog_factory[1],
                                  catalog_factory[2],
                                  &range_catalog_factory_,
                                  &hash_catalog_factory_},
-          cluster_manager_(cluster_manager),
-          data_store_service_(data_store_service),
-          flying_remote_fetch_count_(0)
+          data_store_service_(data_store_service)
     {
+        // Init dss cluster config.
+        dss_topology_version_ = cluster_manager.GetTopologyVersion();
+        auto all_shards = cluster_manager.GetAllShards();
+        assert(all_shards.size() == 1);
+        for (auto &[shard_id, shard] : all_shards)
+        {
+            auto &node_ref = dss_nodes_[shard_id];
+            node_ref.host_name_ = shard.nodes_[0].host_name_;
+            node_ref.port_ = shard.nodes_[0].port_;
+            node_ref.shard_verion_ = shard.version_;
+            dss_shards_[shard_id].store(shard_id);
+        }
+
         if (data_store_service_ != nullptr)
         {
             data_store_service_->AddListenerForUpdateConfig(
@@ -361,11 +371,6 @@ public:
 
     void OnShutdown() override;
 
-    void HandleShardingError(const ::EloqDS::remote::CommonResult &result)
-    {
-        cluster_manager_.HandleShardingError(result);
-    }
-
     /**
      * Serialize a record with is_deleted flag and record string.
      * @param is_deleted
@@ -605,23 +610,18 @@ private:
 #endif
     }
 
+    const txservice::CatalogFactory *GetCatalogFactory(
+        txservice::TableEngine table_engine)
+    {
+        return catalog_factory_array_.at(static_cast<int>(table_engine) - 1);
+    }
+
     /**
      * @brief Check if the shard_id is local to the current node.
      * @param shard_id
      * @return true if the shard_id is local to the current node.
      */
     bool IsLocalShard(uint32_t shard_id);
-
-    uint32_t GetShardIdByPartitionId(int32_t partition_id)
-    {
-        return cluster_manager_.GetShardIdByPartitionId(partition_id);
-    }
-
-    const txservice::CatalogFactory *GetCatalogFactory(
-        txservice::TableEngine table_engine)
-    {
-        return catalog_factory_array_.at(static_cast<int>(table_engine) - 1);
-    }
 
     /**
      * @brief Check if the partition_id is local to the current node.
@@ -630,15 +630,18 @@ private:
      */
     bool IsLocalPartition(int32_t partition_id);
 
-    inline uint32_t GetShardIdByPartitionId(int32_t partition_id);
-    inline uint32_t AllDataShardCount() const;
-    inline uint32_t GetOwnerNodeIndexOfShard(uint32_t shard_id) const;
-    inline brpc::Channel *GetChannelOfNodeIndex(uint32_t node_index);
+    uint32_t GetShardIdByPartitionId(int32_t partition_id) const;
+    uint32_t AllDataShardCount() const;
+    uint32_t GetOwnerNodeIndexOfShard(uint32_t shard_id) const;
     bool UpdateOwnerNodeIndexOfShard(uint32_t shard_id,
                                      uint32_t old_node_index,
                                      uint32_t &new_node_index);
     uint32_t FindFreeNodeIndex();
-
+    void HandleShardingError(const ::EloqDS::remote::CommonResult &result);
+    bool UpgradeShardVersion(uint32_t shard_id,
+                             uint64_t shard_version,
+                             const std::string &host_name,
+                             uint16_t port);
 
     txservice::EloqHashCatalogFactory hash_catalog_factory_{};
     txservice::EloqRangeCatalogFactory range_catalog_factory_{};
@@ -646,18 +649,28 @@ private:
     // EngineServer TxService and DataStoreHandler
     std::array<const txservice::CatalogFactory *, 5> catalog_factory_array_;
 
-
-    bthread::Mutex ds_service_mutex_;
-    bthread::ConditionVariable ds_service_cv_;
-    std::atomic<bool> ds_serv_shutdown_indicator_;
+    // bthread::Mutex ds_service_mutex_;
+    // bthread::ConditionVariable ds_service_cv_;
+    // std::atomic<bool> ds_serv_shutdown_indicator_;
     // point to the data store service if it is colocated
     DataStoreService *data_store_service_;
 
     struct DssNode
     {
+        DssNode() = default;
+        ~DssNode() = default;
+        DssNode(const DssNode &rhs)
+            : host_name_(rhs.host_name_),
+              port_(rhs.port_),
+              shard_verion_(rhs.shard_verion_)
+        {
+        }
+        DssNode &operator=(const DssNode &) = delete;
+
         std::string host_name_;
         uint16_t port_;
         brpc::Channel channel_;
+        uint64_t shard_verion_;
 
         // expired_ts_ is the timestamp when the node is expired.
         // If expired_ts_ is 0, the node is not expired.
@@ -665,12 +678,13 @@ private:
         // timestamp when the node is expired.
         std::atomic<uint64_t> expired_ts_{1U};
     };
-    // Cached nodes info of data store service.
-    std::vector<DssNode> dss_nodes_{1024};
+    // Cached leader nodes info of data shard.
+    std::array<DssNode, 1024> dss_nodes_;
+    const uint64_t NodeExpiredTime = 10 * 1000 * 1000;  // 10s
     // Now only support one shard. dss_shards_ caches the index in dss_nodes_ of
     // shard owner.
-    std::vector<std::atomic<uint32_t>> dss_shards_{1, UINT32_MAX};
-    const uint64_t NodeExpiredTime = 10 * 1000 * 1000;  // 10s
+    std::array<std::atomic<uint32_t>, 1> dss_shards_;
+    std::atomic<uint64_t> dss_topology_version_{0};
 
     // std::atomic<uint64_t> flying_remote_fetch_count_{0};
     // // Work queue for fetch records from primary node

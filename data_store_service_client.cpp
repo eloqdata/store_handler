@@ -85,13 +85,6 @@ static const std::string_view KEY_SEPARATOR("\\");
 
 DataStoreServiceClient::~DataStoreServiceClient()
 {
-    {
-        std::unique_lock<bthread::Mutex> lk(ds_service_mutex_);
-        ds_serv_shutdown_indicator_.store(true, std::memory_order_release);
-        ds_service_cv_.notify_all();
-        LOG(INFO) << "Notify ds_serv_shutdown_indicator";
-    }
-
     upsert_table_worker_.Shutdown();
 }
 
@@ -109,15 +102,33 @@ DataStoreServiceClient::~DataStoreServiceClient()
 void DataStoreServiceClient::SetupConfig(
     const DataStoreServiceClusterManager &cluster_manager)
 {
-    for (const auto &[_, group] : cluster_manager.GetAllShards())
+    assert(cluster_manager.GetShardCount() == 1);
+    auto current_version =
+        dss_topology_version_.load(std::memory_order_acquire);
+    auto new_version = cluster_manager.GetTopologyVersion();
+    if (current_version < cluster_manager.GetTopologyVersion() &&
+        dss_topology_version_.compare_exchange_strong(current_version,
+                                                      new_version))
     {
-        for (const auto &node : group.nodes_)
+        for (const auto &[_, group] : cluster_manager.GetAllShards())
         {
-            LOG(INFO) << "Node Hostname: " << node.host_name_
-                      << ", Port: " << node.port_;
+            for (const auto &node : group.nodes_)
+            {
+                LOG(INFO) << "Node Hostname: " << node.host_name_
+                          << ", Port: " << node.port_;
+            }
+            // The first node is the owner of shard.
+            assert(group.nodes_.size() > 0);
+            while (!UpgradeShardVersion(group.shard_id_,
+                                        group.version_,
+                                        group.nodes_[0].host_name_,
+                                        group.nodes_[0].port_))
+            {
+                LOG(INFO) << "UpgradeShardVersion failed, retry";
+                bthread_usleep(1000000);
+            }
         }
     }
-    cluster_manager_ = cluster_manager;
 }
 
 /**
@@ -2814,7 +2825,7 @@ void DataStoreServiceClient::CreateSnapshotForBackupInternal(
         // Handle remote shard
         closure->PrepareRequest(false);
         uint32_t node_index = GetOwnerNodeIndexOfShard(shard_id);
-        closure->remote_node_index_ = node_index;
+        closure->SetRemoteNodeIndex(node_index);
         auto channel = &dss_nodes_[node_index].channel_;
 
         EloqDS::remote::DataStoreRpcService_Stub stub(channel);
@@ -2927,7 +2938,8 @@ bool DataStoreServiceClient::IsLocalPartition(int32_t partition_id)
     return IsLocalShard(GetShardIdByPartitionId(partition_id));
 }
 
-uint32_t DataStoreServiceClient::GetShardIdByPartitionId(int32_t partition_id)
+uint32_t DataStoreServiceClient::GetShardIdByPartitionId(
+    int32_t partition_id) const
 {
     // Now, only support one shard.
     return 0;
@@ -2945,16 +2957,6 @@ uint32_t DataStoreServiceClient::GetOwnerNodeIndexOfShard(
     return dss_shards_[shard_id].load(std::memory_order_acquire);
 }
 
-brpc::Channel *DataStoreServiceClient::GetChannelOfNodeIndex(
-    uint32_t node_index)
-{
-    if (node_index >= dss_nodes_.size())
-    {
-        return nullptr;
-    }
-    return &dss_nodes_[node_index].channel_;
-}
-
 bool DataStoreServiceClient::UpdateOwnerNodeIndexOfShard(
     uint32_t shard_id, uint32_t old_node_index, uint32_t &new_node_index)
 {
@@ -2965,6 +2967,10 @@ bool DataStoreServiceClient::UpdateOwnerNodeIndexOfShard(
     }
 
     uint64_t expect_val = 0;
+    uint64_t current_ts =
+        std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::system_clock::now().time_since_epoch())
+            .count();
 
     if (dss_nodes_[old_node_index].expired_ts_.compare_exchange_strong(
             expect_val, current_ts))
@@ -2974,15 +2980,29 @@ bool DataStoreServiceClient::UpdateOwnerNodeIndexOfShard(
         if (free_index == dss_nodes_.size())
         {
             LOG(ERROR) << "Find free node index failed";
+            dss_nodes_[old_node_index].expired_ts_.store(
+                expect_val, std::memory_order_release);
             return false;
         }
         auto &node = dss_nodes_[free_index];
         node.host_name_ = dss_nodes_[old_node_index].host_name_;
         node.port_ = dss_nodes_[old_node_index].port_;
+        node.shard_verion_ = dss_nodes_[old_node_index].shard_verion_;
         node.channel_.Init(node.host_name_.c_str(), node.port_, nullptr);
-        dss_shards_[shard_id].store(free_index, std::memory_order_release);
-        new_node_index = free_index;
-        return true;
+        if (dss_shards_[shard_id].compare_exchange_strong(old_node_index,
+                                                          free_index))
+        {
+            new_node_index = free_index;
+            return true;
+        }
+        else
+        {
+            DLOG(INFO) << "Other thread updated the data shard, shard_id:"
+                       << shard_id;
+            node.expired_ts_.store(1, std::memory_order_release);
+            new_node_index = old_node_index;
+            return true;
+        }
     }
     else
     {
@@ -3010,6 +3030,95 @@ uint32_t DataStoreServiceClient::FindFreeNodeIndex()
     }
     // not found
     return dss_nodes_.size();
+}
+
+void DataStoreServiceClient::HandleShardingError(
+    const ::EloqDS::remote::CommonResult &result)
+{
+    assert(result.error_code() ==
+           static_cast<uint32_t>(
+               ::EloqDS::remote::DataStoreError::REQUESTED_NODE_NOT_OWNER));
+
+    auto &new_key_sharding = result.new_key_sharding();
+    auto error_type = new_key_sharding.type();
+    if (error_type ==
+        ::EloqDS::remote::KeyShardingErrorType::PrimaryNodeChanged)
+    {
+        uint32_t shard_id = new_key_sharding.shard_id();
+        uint64_t shard_version = new_key_sharding.shard_version();
+        auto &primary_node = new_key_sharding.new_primary_node();
+        DSSNode new_primary_node;
+        while (!UpgradeShardVersion(shard_id,
+                                    shard_version,
+                                    primary_node.host_name(),
+                                    primary_node.port()))
+        {
+            DLOG(INFO) << "Upgrade shard version failed, shard_id: "
+                       << shard_id;
+            bthread_usleep(10000);
+            continue;
+        }
+    }
+    else
+    {
+        assert(false);
+        // the whole node group has changed
+        LOG(FATAL) << "The topology of data shards is changed";
+        // TODO(lzx): handle the topology of cluster change.
+    }
+}
+
+bool DataStoreServiceClient::UpgradeShardVersion(uint32_t shard_id,
+                                                 uint64_t shard_version,
+                                                 const std::string &host_name,
+                                                 uint16_t port)
+{
+    if (shard_id >= dss_shards_.size())
+    {
+        assert(false);
+        // Now only support one shard.
+        LOG(FATAL) << "Shard id not found, shard_id: " << shard_id;
+        return true;
+    }
+
+    uint32_t node_index = dss_shards_[shard_id].load(std::memory_order_acquire);
+    auto &node_ref = dss_nodes_[node_index];
+    if (node_ref.shard_verion_ < shard_version)
+    {
+        uint64_t expect_val = 0;
+        uint64_t current_ts =
+            std::chrono::duration_cast<std::chrono::microseconds>(
+                std::chrono::system_clock::now().time_since_epoch())
+                .count();
+        if (!node_ref.expired_ts_.compare_exchange_strong(expect_val,
+                                                          current_ts))
+        {
+            // Other thread is updating the shard, retry.
+            DLOG(INFO) << "Other thread is updating the data shard, shard_id: "
+                       << shard_id;
+            return false;
+        }
+
+        uint32_t free_node_index = FindFreeNodeIndex();
+        if (free_node_index == dss_nodes_.size())
+        {
+            DLOG(INFO) << "Find free node index failed";
+            node_ref.expired_ts_.store(expect_val, std::memory_order_release);
+            return false;
+        }
+        auto &free_node_ref = dss_nodes_[free_node_index];
+        free_node_ref.host_name_ = host_name;
+        free_node_ref.port_ = port;
+        free_node_ref.shard_verion_ = shard_version;
+        free_node_ref.channel_.Init(host_name.c_str(), port, nullptr);
+        if (!dss_shards_[shard_id].compare_exchange_strong(node_index,
+                                                           free_node_index))
+        {
+            assert(false);
+            free_node_ref.expired_ts_.store(1, std::memory_order_release);
+        }
+    }
+    return true;
 }
 
 txservice::store::DataStoreHandler::DataStoreOpStatus
@@ -3082,40 +3191,40 @@ void DataStoreServiceClient::Read(const std::string_view kv_table_name,
                                   void *callback_data,
                                   DataStoreCallback callback)
 {
-    ReadClosure *read_clouse = read_closure_pool_.NextObject();
-    read_clouse->Reset(
+    ReadClosure *read_closure = read_closure_pool_.NextObject();
+    read_closure->Reset(
         this, kv_table_name, partition_id, key, callback_data, callback);
-    ReadInternal(read_clouse);
+    ReadInternal(read_closure);
 }
 
-void DataStoreServiceClient::ReadInternal(ReadClosure *read_clouse)
+void DataStoreServiceClient::ReadInternal(ReadClosure *read_closure)
 {
-    if (IsLocalPartition(read_clouse->PartitionId()))
+    if (IsLocalPartition(read_closure->PartitionId()))
     {
-        read_clouse->PrepareRequest(true);
-        data_store_service_->Read(read_clouse->TableName(),
-                                  read_clouse->PartitionId(),
-                                  read_clouse->Key(),
-                                  &read_clouse->LocalValueRef(),
-                                  &read_clouse->LocalTsRef(),
-                                  &read_clouse->LocalTtlRef(),
-                                  &read_clouse->LocalResultRef(),
-                                  read_clouse);
+        read_closure->PrepareRequest(true);
+        data_store_service_->Read(read_closure->TableName(),
+                                  read_closure->PartitionId(),
+                                  read_closure->Key(),
+                                  &read_closure->LocalValueRef(),
+                                  &read_closure->LocalTsRef(),
+                                  &read_closure->LocalTtlRef(),
+                                  &read_closure->LocalResultRef(),
+                                  read_closure);
     }
     else
     {
-        read_clouse->PrepareRequest(false);
+        read_closure->PrepareRequest(false);
         uint32_t node_index = GetOwnerNodeIndexOfShard(
-            GetShardIdByPartitionId(read_clouse->PartitionId()));
-        read_clouse->remote_node_index_ = node_index;
+            GetShardIdByPartitionId(read_closure->PartitionId()));
+        read_closure->SetRemoteNodeIndex(node_index);
         auto channel = &dss_nodes_[node_index].channel_;
 
         EloqDS::remote::DataStoreRpcService_Stub stub(channel);
-        brpc::Controller &cntl = *read_clouse->Controller();
+        brpc::Controller &cntl = *read_closure->Controller();
         cntl.set_timeout_ms(5000);
-        auto *req = read_clouse->ReadRequest();
-        auto *resp = read_clouse->ReadResponse();
-        stub.Read(&cntl, req, resp, read_clouse);
+        auto *req = read_closure->ReadRequest();
+        auto *resp = read_closure->ReadResponse();
+        stub.Read(&cntl, req, resp, read_closure);
     }
 }
 
@@ -3160,7 +3269,7 @@ void DataStoreServiceClient::DeleteRangeInternal(
         delete_range_clouse->PrepareRequest(false);
         uint32_t node_index = GetOwnerNodeIndexOfShard(
             GetShardIdByPartitionId(delete_range_clouse->PartitionId()));
-        delete_range_clouse->remote_node_index_ = node_index;
+        delete_range_clouse->SetRemoteNodeIndex(node_index);
         auto channel = &dss_nodes_[node_index].channel_;
 
         EloqDS::remote::DataStoreRpcService_Stub stub(channel);
@@ -3209,7 +3318,7 @@ void DataStoreServiceClient::FlushDataInternal(
     {
         flush_data_closure->PrepareRequest(false);
         uint32_t node_index = GetOwnerNodeIndexOfShard(shard_id);
-        flush_data_closure->remote_node_index_ = node_index;
+        flush_data_closure->SetRemoteNodeIndex(node_index);
         auto channel = &dss_nodes_[node_index].channel_;
 
         EloqDS::remote::DataStoreRpcService_Stub stub(channel);
@@ -3260,7 +3369,7 @@ void DataStoreServiceClient::DropTableInternal(
     {
         drop_table_closure->PrepareRequest(false);
         uint32_t node_index = GetOwnerNodeIndexOfShard(shard_id);
-        drop_table_closure->remote_node_index_ = node_index;
+        drop_table_closure->SetRemoteNodeIndex(node_index);
         auto channel = &dss_nodes_[node_index].channel_;
 
         EloqDS::remote::DataStoreRpcService_Stub stub(channel);
@@ -3329,7 +3438,7 @@ void DataStoreServiceClient::ScanNextInternal(
         scan_next_closure->PrepareRequest(false);
         uint32_t node_index = GetOwnerNodeIndexOfShard(
             GetShardIdByPartitionId(scan_next_closure->PartitionId()));
-        scan_next_closure->remote_node_index_ = node_index;
+        scan_next_closure->SetRemoteNodeIndex(node_index);
         auto channel = &dss_nodes_[node_index].channel_;
 
         EloqDS::remote::DataStoreRpcService_Stub stub(channel);
@@ -3381,7 +3490,7 @@ void DataStoreServiceClient::ScanCloseInternal(
         scan_next_closure->PrepareRequest(false);
         uint32_t node_index = GetOwnerNodeIndexOfShard(
             GetShardIdByPartitionId(scan_next_closure->PartitionId()));
-        scan_next_closure->remote_node_index_ = node_index;
+        scan_next_closure->SetRemoteNodeIndex(node_index);
         auto channel = &dss_nodes_[node_index].channel_;
 
         EloqDS::remote::DataStoreRpcService_Stub stub(channel);
@@ -3638,27 +3747,6 @@ bool DataStoreServiceClient::DeleteTableStatistics(
     return true;
 }
 
-std::shared_ptr<brpc::Channel>
-DataStoreServiceClient::UpdateDataStoreServiceChannelByPartitionId(
-    uint32_t partition_id)
-{
-    return cluster_manager_.UpdateDataStoreServiceChannelByPartitionId(
-        partition_id);
-}
-
-std::shared_ptr<brpc::Channel>
-DataStoreServiceClient::UpdateDataStoreServiceChannelByShardId(
-    uint32_t shard_id)
-{
-    return cluster_manager_.UpdateDataStoreServiceChannelByShardId(shard_id);
-}
-
-std::shared_ptr<brpc::Channel>
-DataStoreServiceClient::UpdateDataStoreServiceChannel(const DSSNode &node)
-{
-    return cluster_manager_.UpdateDataStoreServiceChannel(node);
-}
-
 void DataStoreServiceClient::BatchWriteRecords(
     std::string_view kv_table_name,
     int32_t partition_id,
@@ -3721,7 +3809,7 @@ void DataStoreServiceClient::BatchWriteRecordsInternal(
         // prepare request
         closure->PrepareRequest(false);
         uint32_t node_index = GetOwnerNodeIndexOfShard(req_shard_id);
-        closure->remote_node_index_ = node_index;
+        closure->SetRemoteNodeIndex(node_index);
         auto channel = &dss_nodes_[node_index].channel_;
 
         // send request
