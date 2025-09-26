@@ -235,9 +235,14 @@ protected:
 #endif
 
 protected:
-    const std::string BuildKey(const std::string_view table_name,
-                               uint32_t partition_id,
-                               const std::string_view key);
+    std::string BuildKey(const std::string_view table_name,
+                         uint32_t partition_id,
+                         const std::string_view key);
+
+    std::string BuildKey(const std::string_view table_name,
+                         uint32_t partition_id,
+                         const ReadRequest *read_request);
+
     const std::string BuildKeyForDebug(
         const std::unique_ptr<rocksdb::Slice[]> &key_slices, size_t slice_size);
 
@@ -246,6 +251,7 @@ protected:
     void BuildKey(const std::string_view prefix,
                   const std::string_view key,
                   std::string &key_out);
+
     void BuildKeyPrefixSlices(
         const std::string_view table_name,
         const std::string_view partition_id,
@@ -279,7 +285,6 @@ protected:
 
     rocksdb::InfoLogLevel StringToInfoLogLevel(
         const std::string &log_level_str);
-
 
 protected:
     rocksdb::InfoLogLevel info_log_level_;

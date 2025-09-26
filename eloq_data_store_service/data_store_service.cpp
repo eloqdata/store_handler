@@ -19,6 +19,8 @@
  *    <http://www.gnu.org/licenses/>.
  *
  */
+#include "data_store_service.h"
+
 #include <brpc/closure_guard.h>
 #include <brpc/server.h>
 
@@ -34,7 +36,6 @@
 #include <vector>
 
 #include "data_store_fault_inject.h"  // ACTION_FAULT_INJECTOR
-#include "data_store_service.h"
 #include "internal_request.h"
 #include "object_pool.h"
 
@@ -402,7 +403,7 @@ void DataStoreService::Read(::google::protobuf::RpcController *controller,
 
 void DataStoreService::Read(const std::string_view table_name,
                             const uint32_t partition_id,
-                            const std::string_view key,
+                            const std::vector<std::string_view> &key,
                             std::string *record,
                             uint64_t *ts,
                             uint64_t *ttl,
@@ -433,7 +434,7 @@ void DataStoreService::Read(const std::string_view table_name,
     assert(data_store_ != nullptr);
     ReadLocalRequest *req = local_read_request_pool_.NextObject();
     req->Reset(
-        this, table_name, partition_id, key, record, ts, ttl, result, done);
+        this, table_name, partition_id, &key, record, ts, ttl, result, done);
     data_store_->Read(req);
 }
 
@@ -865,6 +866,7 @@ void DataStoreService::ScanNext(
     const std::vector<remote::SearchCondition> *search_conditions,
     std::vector<ScanTuple> *items,
     std::string *session_id,
+    bool generate_session_id,
     ::EloqDS::remote::CommonResult *result,
     ::google::protobuf::Closure *done)
 {
@@ -902,6 +904,7 @@ void DataStoreService::ScanNext(
                search_conditions,
                items,
                session_id,
+               generate_session_id,
                result,
                done);
 
@@ -1008,7 +1011,7 @@ void DataStoreService::ScanClose(const std::string_view table_name,
     assert(data_store_ != nullptr);
 
     ScanLocalRequest *req = local_scan_request_pool_.NextObject();
-    req->Reset(this, table_name, partition_id, session_id, result, done);
+    req->Reset(this, table_name, partition_id, session_id, false, result, done);
 
     data_store_->ScanClose(req);
 }
