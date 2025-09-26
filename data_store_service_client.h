@@ -89,9 +89,9 @@ public:
 
         AppendPreBuiltTable(txservice::Sequences::table_name_);
 
-        be_bucket_ids_.reserve(txservice::Sharder::ToTalRangeBuckets());
+        be_bucket_ids_.reserve(txservice::Sharder::TotalRangeBuckets());
         for (uint16_t bucket_id = 0;
-             bucket_id < txservice::Sharder::ToTalRangeBuckets();
+             bucket_id < txservice::Sharder::TotalRangeBuckets();
              ++bucket_id)
         {
             uint16_t be_bucket_id = EloqShare::host_to_big_endian(bucket_id);
