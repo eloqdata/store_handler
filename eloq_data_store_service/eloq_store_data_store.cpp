@@ -100,7 +100,7 @@ EloqStoreDataStore::EloqStoreDataStore(uint32_t shard_id,
 
 void EloqStoreDataStore::Read(ReadRequest *read_req)
 {
-    ::eloqstore::TableIdent eloq_store_table_id;
+    ::eloqstore::TablePartitionIdent eloq_store_table_id;
     eloq_store_table_id.tbl_name_ = read_req->GetTableName();
     eloq_store_table_id.partition_id_ = read_req->GetPartitionId();
 
@@ -166,7 +166,7 @@ void EloqStoreDataStore::OnRead(::eloqstore::KvRequest *req)
 
 void EloqStoreDataStore::BatchWriteRecords(WriteRecordsRequest *write_req)
 {
-    ::eloqstore::TableIdent eloq_store_table_id;
+    ::eloqstore::TablePartitionIdent eloq_store_table_id;
     eloq_store_table_id.tbl_name_ = write_req->GetTableName();
     eloq_store_table_id.partition_id_ = write_req->GetPartitionId();
 
@@ -280,7 +280,7 @@ void EloqStoreDataStore::DeleteRange(DeleteRangeRequest *delete_range_req)
 
     // Truncate from start key.
 
-    ::eloqstore::TableIdent eloq_store_table_id;
+    ::eloqstore::TablePartitionIdent eloq_store_table_id;
     eloq_store_table_id.tbl_name_ = delete_range_req->GetTableName(),
     eloq_store_table_id.partition_id_ = delete_range_req->GetPartitionId();
 
@@ -424,7 +424,7 @@ void EloqStoreDataStore::ScanNext(ScanRequest *scan_req)
         return;
     }
 
-    ::eloqstore::TableIdent eloq_store_table_id;
+    ::eloqstore::TablePartitionIdent eloq_store_table_id;
     eloq_store_table_id.tbl_name_ = scan_req->GetTableName();
     eloq_store_table_id.partition_id_ = scan_req->GetPartitionId();
 
@@ -550,7 +550,7 @@ void EloqStoreDataStore::CreateSnapshotForBackup(
 
 void EloqStoreDataStore::ScanDelete(DeleteRangeRequest *delete_range_req)
 {
-    ::eloqstore::TableIdent eloq_store_table_id;
+    ::eloqstore::TablePartitionIdent eloq_store_table_id;
     eloq_store_table_id.tbl_name_ = delete_range_req->GetTableName();
     eloq_store_table_id.partition_id_ = delete_range_req->GetPartitionId();
 
@@ -747,7 +747,7 @@ void EloqStoreDataStore::Floor(ScanRequest *scan_req)
 {
     assert(scan_req->BatchSize() == 1);
 
-    ::eloqstore::TableIdent eloq_store_table_id;
+    ::eloqstore::TablePartitionIdent eloq_store_table_id;
     eloq_store_table_id.tbl_name_ = scan_req->GetTableName();
     eloq_store_table_id.partition_id_ = scan_req->GetPartitionId();
 
