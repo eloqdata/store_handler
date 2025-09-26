@@ -865,7 +865,7 @@ bool DataStoreServiceClusterManager::SwitchShardToReadWrite(
 
     topology_.UpdateDSShardStatus(shard_id, DSShardStatus::ReadWrite);
     DLOG(INFO) << "SwitchToReadWrite, shard " << shard_id
-               << " status: " << shard_status;
+               << " status: " << static_cast<int>(shard_status);
     return true;
 }
 

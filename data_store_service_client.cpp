@@ -106,7 +106,7 @@ void DataStoreServiceClient::SetupConfig(
     auto current_version =
         dss_topology_version_.load(std::memory_order_acquire);
     auto new_version = cluster_manager.GetTopologyVersion();
-    if (current_version < cluster_manager.GetTopologyVersion() &&
+    if (current_version <= cluster_manager.GetTopologyVersion() &&
         dss_topology_version_.compare_exchange_strong(current_version,
                                                       new_version))
     {
@@ -127,6 +127,8 @@ void DataStoreServiceClient::SetupConfig(
                 LOG(INFO) << "UpgradeShardVersion failed, retry";
                 bthread_usleep(1000000);
             }
+            LOG(INFO) << "UpgradeShardVersion success, shard_id:"
+                      << group.shard_id_ << ", version:" << group.version_;
         }
     }
 }
