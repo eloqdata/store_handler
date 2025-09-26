@@ -106,8 +106,7 @@ private:
     const EloqKV::EloqKey start_key_;  // pk or (sk,pk)
     const bool inclusive_;
     bool scan_forward_;
-    const std::vector<txservice::store::DataStoreSearchCond>
-        pushdown_condition_;
+    const std::vector<txservice::DataStoreSearchCond> pushdown_condition_;
     bool initialized_{false};
 
     std::shared_lock<std::shared_mutex> db_lock_;
