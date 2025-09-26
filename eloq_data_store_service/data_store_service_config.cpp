@@ -865,7 +865,7 @@ bool DataStoreServiceClusterManager::SwitchShardToReadWrite(
 
     topology_.UpdateDSShardStatus(shard_id, DSShardStatus::ReadWrite);
     DLOG(INFO) << "SwitchToReadWrite, shard " << shard_id
-               << " status: " << shard_status;
+               << " status: " << static_cast<int>(shard_status);
     return true;
 }
 
@@ -919,6 +919,7 @@ void DataStoreServiceClusterManager::PrepareShardingError(
         {
             auto *new_shard = new_shards->add_shards();
             new_shard->set_shard_id(shard_id);
+            new_shard->set_shard_version(shard.version_);
             for (const auto &node : shard.nodes_)
             {
                 auto *new_node = new_shard->add_member_nodes();
@@ -932,12 +933,14 @@ void DataStoreServiceClusterManager::PrepareShardingError(
         // Same shard but primary changed - just send new primary
         key_sharding_changed_message->set_type(
             ::EloqDS::remote::KeyShardingErrorType::PrimaryNodeChanged);
+        auto shard_version = topology_.FetchDSShardVersion(shard_id);
         DSSNode primary_node = topology_.GetPrimaryNode(shard_id);
         auto *new_primary_node =
             key_sharding_changed_message->mutable_new_primary_node();
         new_primary_node->set_host_name(primary_node.host_name_);
         new_primary_node->set_port(primary_node.port_);
         key_sharding_changed_message->set_shard_id(shard_id);
+        key_sharding_changed_message->set_shard_version(shard_version);
     }
 }
 

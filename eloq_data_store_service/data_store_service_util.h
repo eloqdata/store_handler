@@ -38,6 +38,9 @@ enum DSShardStatus : uint8_t
     ReadWrite = 2,
     // Node is closed
     Closed = 3,
+    // Node is opening data store.
+    Starting = 4
+
 };
 
 // TODO(liunyl): define error code
