@@ -21,6 +21,7 @@
  */
 #pragma once
 
+#include <cstdint>
 #include <deque>
 #include <map>
 #include <memory>
@@ -32,6 +33,8 @@
 #include "eloq_data_store_service/data_store_service.h"
 #include "eloq_data_store_service/ds_request.pb.h"
 #include "eloq_data_store_service/thread_worker_pool.h"
+#include "store_util.h"
+#include "tx_key.h"
 #include "tx_service/include/cc/cc_shard.h"
 #include "tx_service/include/eloq_basic_catalog_factory.h"
 #include "tx_service/include/sequences/sequences.h"
@@ -91,6 +94,15 @@ public:
                    << txservice::Sequences::table_name_sv_;
 
         AppendPreBuiltTable(txservice::Sequences::table_name_);
+
+        be_bucket_ids_.reserve(txservice::Sharder::TotalRangeBuckets());
+        for (uint16_t bucket_id = 0;
+             bucket_id < txservice::Sharder::TotalRangeBuckets();
+             ++bucket_id)
+        {
+            uint16_t be_bucket_id = EloqShare::host_to_big_endian(bucket_id);
+            be_bucket_ids_.push_back(be_bucket_id);
+        }
     }
 
     // The maximum number of retries for RPC requests.
@@ -198,6 +210,16 @@ public:
               uint64_t &version_ts,
               const txservice::TableSchema *table_schema) override;
 
+    std::vector<txservice::DataStoreSearchCond> CreateDataSerachCondition(
+        int32_t obj_type, const std::string_view &pattern) override;
+
+    txservice::store::DataStoreHandler::DataStoreOpStatus FetchBucketData(
+        txservice::FetchBucketDataCc *fetch_bucket_data_cc) override;
+
+    txservice::store::DataStoreHandler::DataStoreOpStatus FetchBucketData(
+        std::vector<txservice::FetchBucketDataCc *> fetch_bucket_data_ccs)
+        override;
+
     DataStoreOpStatus FetchRecord(
         txservice::FetchRecordCc *fetch_cc,
         txservice::FetchSnapshotCc *fetch_snapshot_cc = nullptr) override;
@@ -223,7 +245,7 @@ public:
         const txservice::TxKey &start_key,
         bool inclusive,
         uint8_t key_parts,
-        const std::vector<txservice::store::DataStoreSearchCond> &search_cond,
+        const std::vector<txservice::DataStoreSearchCond> &search_cond,
         const txservice::KeySchema *key_schema,
         const txservice::RecordSchema *rec_schema,
         const txservice::KVCatalogInfo *kv_info,
@@ -343,10 +365,9 @@ public:
      * @param snapshot_files The output snapshot files.
      * @return True if create successfully, otherwise false.
      */
-    bool CreateSnapshotForBackup(
-        const std::string &backup_name,
-        std::vector<std::string> &backup_files,
-        uint64_t backup_ts = 0) override;
+    bool CreateSnapshotForBackup(const std::string &backup_name,
+                                 std::vector<std::string> &backup_files,
+                                 uint64_t backup_ts = 0) override;
 
     bool NeedCopyRange() const override;
 
@@ -417,6 +438,15 @@ public:
     static uint32_t HashArchiveKey(const std::string &kv_table_name,
                                    const txservice::TxKey &tx_key);
 
+    static void EncodeKvKeyForHashPart(uint16_t bucket_id,
+                                       std::string &key_out);
+    static void EncodeKvKeyForHashPart(uint16_t bucket_id,
+                                       const std::string_view &tx_key,
+                                       std::string &key_out);
+
+    static std::string_view DecodeKvKeyForHashPart(const char *data,
+                                                   size_t size);
+
     // NOTICE: be_commit_ts is the big endian encode value of commit_ts
     static std::string EncodeArchiveKey(std::string_view table_name,
                                         std::string_view key,
@@ -460,7 +490,7 @@ public:
 private:
     int32_t MapKeyHashToPartitionId(const txservice::TxKey &key) const
     {
-        return key.Hash() & 0x3FF;
+        return txservice::Sharder::MapKeyHashToHashPartitionId(key.Hash());
     }
 
     // =====================================================
@@ -470,6 +500,7 @@ private:
 
     void Read(const std::string_view kv_table_name,
               const uint32_t partition_id,
+              const std::string_view be_bucket_id,
               const std::string_view key,
               void *callback_data,
               DataStoreCallback callback);
@@ -498,19 +529,19 @@ private:
      * Helper methods for concurrent PutAll implementation
      */
     void PreparePartitionBatches(
-        PartitionFlushState& partition_state,
-        const std::vector<std::pair<size_t, size_t>>& flush_recs,
-        const std::vector<std::unique_ptr<txservice::FlushTaskEntry>>& entries,
-        const txservice::TableName& table_name,
+        PartitionFlushState &partition_state,
+        const std::vector<std::pair<size_t, size_t>> &flush_recs,
+        const std::vector<std::unique_ptr<txservice::FlushTaskEntry>> &entries,
+        const txservice::TableName &table_name,
         uint16_t parts_cnt_per_key,
         uint16_t parts_cnt_per_record,
         uint64_t now);
 
     void PrepareRangePartitionBatches(
-        PartitionFlushState& partition_state,
-        const std::vector<size_t>& flush_recs,
-        const std::vector<std::unique_ptr<txservice::FlushTaskEntry>>& entries,
-        const txservice::TableName& table_name,
+        PartitionFlushState &partition_state,
+        const std::vector<size_t> &flush_recs,
+        const std::vector<std::unique_ptr<txservice::FlushTaskEntry>> &entries,
+        const txservice::TableName &table_name,
         uint16_t parts_cnt_per_key,
         uint16_t parts_cnt_per_record,
         uint64_t now);
@@ -538,18 +569,20 @@ private:
 
     void FlushDataInternal(FlushDataClosure *flush_data_closure);
 
-    void ScanNext(const std::string_view table_name,
-                  uint32_t partition_id,
-                  const std::string_view start_key,
-                  const std::string_view end_key,
-                  const std::string_view session_id,
-                  bool inclusive_start,
-                  bool inclusive_end,
-                  bool scan_forward,
-                  uint32_t batch_size,
-                  const std::vector<remote::SearchCondition> *search_conditions,
-                  void *callback_data,
-                  DataStoreCallback callback);
+    void ScanNext(
+        const std::string_view table_name,
+        uint32_t partition_id,
+        const std::string_view start_key,
+        const std::string_view end_key,
+        const std::string_view session_id,
+        bool generate_session,
+        bool inclusive_start,
+        bool inclusive_end,
+        bool scan_forward,
+        uint32_t batch_size,
+        const std::vector<txservice::DataStoreSearchCond> *search_conditions,
+        void *callback_data,
+        DataStoreCallback callback);
 
     void ScanNextInternal(ScanNextClosure *scan_next_closure);
 
@@ -641,6 +674,13 @@ private:
      */
     bool IsLocalPartition(int32_t partition_id);
 
+    std::string_view EncodeBucketId(uint16_t bucket_id)
+    {
+        uint16_t &be_bucket_id = be_bucket_ids_[bucket_id];
+        return std::string_view(reinterpret_cast<const char *>(&be_bucket_id),
+                                sizeof(uint16_t));
+    }
+
     bthread::Mutex ds_service_mutex_;
     bthread::ConditionVariable ds_service_cv_;
     std::atomic<bool> ds_serv_shutdown_indicator_;
@@ -666,6 +706,8 @@ private:
         pre_built_table_names_;
     ThreadWorkerPool upsert_table_worker_{1};
 
+    std::vector<uint16_t> be_bucket_ids_;
+
     friend class ReadClosure;
     friend class BatchWriteRecordsClosure;
     friend class FlushDataClosure;
@@ -674,14 +716,18 @@ private:
     friend class ScanNextClosure;
     friend class CreateSnapshotForBackupClosure;
     friend void PartitionBatchCallback(void *data,
-                                      ::google::protobuf::Closure *closure,
-                                      DataStoreServiceClient &client,
-                                      const remote::CommonResult &result);
+                                       ::google::protobuf::Closure *closure,
+                                       DataStoreServiceClient &client,
+                                       const remote::CommonResult &result);
     friend class SinglePartitionScanner;
     friend void FetchAllDatabaseCallback(void *data,
                                          ::google::protobuf::Closure *closure,
                                          DataStoreServiceClient &client,
                                          const remote::CommonResult &result);
+    friend void FetchBucketDataCallback(void *data,
+                                        ::google::protobuf::Closure *closure,
+                                        DataStoreServiceClient &client,
+                                        const remote::CommonResult &result);
     friend void DiscoverAllTableNamesCallback(
         void *data,
         ::google::protobuf::Closure *closure,

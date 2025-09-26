@@ -57,7 +57,7 @@ public:
         const txservice::KVCatalogInfo *kv_info,
         const EloqKV::EloqKey *start_key,
         bool inclusive,
-        const std::vector<txservice::store::DataStoreSearchCond> &pushdown_cond,
+        const std::vector<txservice::DataStoreSearchCond> &pushdown_cond,
         bool scan_forward)
         : db_(db),
           cfh_(cfh),
@@ -103,8 +103,7 @@ private:
     const EloqKV::EloqKey start_key_;  // pk or (sk,pk)
     const bool inclusive_;
     bool scan_forward_;
-    const std::vector<txservice::store::DataStoreSearchCond>
-        pushdown_condition_;
+    const std::vector<txservice::DataStoreSearchCond> pushdown_condition_;
     bool initialized_{false};
 
     std::unique_ptr<rocksdb::Iterator> iter_{nullptr};
