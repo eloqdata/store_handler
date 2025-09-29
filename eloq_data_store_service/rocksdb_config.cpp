@@ -272,6 +272,9 @@ DEFINE_uint32(rocksdb_cloud_db_file_deletion_delay_sec,
 DEFINE_uint32(rocksdb_cloud_warm_up_thread_num,
               1,
               "Rocksdb cloud warm up thread number");
+DEFINE_bool(rocksdb_cloud_run_purger,
+            true,
+            "Rocksdb cloud run purger");
 DEFINE_uint32(rocksdb_cloud_purger_periodicity_secs,
               10 * 60, /*10 minutes*/
               "Rocksdb cloud purger periodicity seconds");
@@ -555,6 +558,12 @@ RocksDBCloudConfig::RocksDBCloudConfig(const INIReader &config)
             : config.GetInteger("store",
                                 "rocksdb_cloud_db_file_deletion_delay_sec",
                                 FLAGS_rocksdb_cloud_db_file_deletion_delay_sec);
+    bool rocksdb_cloud_run_purger =
+        !CheckCommandLineFlagIsDefault("rocksdb_cloud_run_purger")
+            ? FLAGS_rocksdb_cloud_run_purger
+            : config.GetBoolean("store",
+                                "rocksdb_cloud_run_purger",
+                                FLAGS_rocksdb_cloud_run_purger);
     uint64_t rocksdb_cloud_purger_periodicity_secs =
         !CheckCommandLineFlagIsDefault(
             "rocksdb_cloud_purger_periodicity_secs")
@@ -569,6 +578,7 @@ RocksDBCloudConfig::RocksDBCloudConfig(const INIReader &config)
         rocksdb_cloud_sst_file_cache_num_shard_bits;
     db_ready_timeout_us_ = rocksdb_cloud_db_ready_timeout_sec * 1000000;
     db_file_deletion_delay_ = rocksdb_cloud_db_file_deletion_delay_sec;
+    run_purger_ = rocksdb_cloud_run_purger;
     purger_periodicity_millis_ = rocksdb_cloud_purger_periodicity_secs * 1000;
 
     s3_endpoint_url_ =
