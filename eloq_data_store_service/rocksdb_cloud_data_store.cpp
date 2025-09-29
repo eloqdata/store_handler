@@ -322,7 +322,7 @@ bool RocksDBCloudDataStore::StartDB()
     cfs_options_.resync_on_open = true;
 
     // run cloud file purger to delete obsolete files
-    cfs_options_.run_purger = true;
+    cfs_options_.run_purger = cloud_config_.run_purger_;
     cfs_options_.purger_periodicity_millis =
         cloud_config_.purger_periodicity_millis_;
 
