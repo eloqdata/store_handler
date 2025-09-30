@@ -28,16 +28,19 @@
 namespace EloqDS
 {
 // Node status in DSS
-enum DSShardStatus
+enum DSShardStatus : uint8_t
 {
     // Node status is unknown, can be dead or alive, need to check
-    Unknown = 0,
+    // Unknown = 0,
     // Node is online with read only mode
     ReadOnly = 1,
     // Node is online with read write mode
     ReadWrite = 2,
     // Node is closed
     Closed = 3,
+    // Node is opening data store.
+    Starting = 4
+
 };
 
 // TODO(liunyl): define error code
