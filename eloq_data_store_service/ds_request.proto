@@ -79,7 +79,8 @@ message KeyShardingChanged {
   KeyShardingErrorType type = 1;
   DSSNodeBuf new_primary_node = 2;
   uint32 shard_id = 3;
-  DSSClusterConfig new_cluster_config = 4;
+  uint64 shard_version = 4;
+  DSSClusterConfig new_cluster_config = 5;
 }
 
 message CommonResult {
