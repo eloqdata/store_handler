@@ -603,6 +603,15 @@ bool RocksDBCloudDataStore::OpenCloudDB(
         cfs_impl->GetStorageProvider());
     options.listeners.emplace_back(db_event_listener);
 
+    // The max_open_files default value is -1, it cause DB open all files on
+    // DB::Open() This behavior causes 2 effects,
+    // 1. DB::Open() will be slow
+    // 2. During DB::Open, some of the opened sst files keep in LRUCache will be
+    // deleted due to LRU policy, which causes DB::Open failed
+    // set max_open_files to 0 will conflict with
+    // skip_cloud_files_in_getchildren
+    options.max_open_files = 32;
+
     // set ttl compaction filter
     assert(ttl_compaction_filter_ == nullptr);
     ttl_compaction_filter_ = std::make_unique<EloqDS::TTLCompactionFilter>();
@@ -692,6 +701,16 @@ bool RocksDBCloudDataStore::OpenCloudDB(
 
     // Enable auto compactions after blocking purger
     status = db_->SetOptions({{"disable_auto_compactions", "false"}});
+
+    if (!status.ok())
+    {
+        LOG(ERROR) << "Fail to enable auto compactions, error: "
+                   << status.ToString();
+        return false;
+    }
+
+    status = db_->SetOptions(
+        {{"max_open_files", "-1"}});  // restore max_open_files to default value
 
     if (cloud_config_.warm_up_thread_num_ != 0)
     {
