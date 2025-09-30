@@ -600,6 +600,13 @@ public:
         ongoing_write_requests_.fetch_sub(1, std::memory_order_release);
     }
 
+    bool IsOwnerOfShard(uint32_t shard_id) const
+    {
+        return shard_status_.load(std::memory_order_acquire) !=
+                   DSShardStatus::Closed &&
+               shard_id_ == shard_id;
+    }
+
 private:
     uint32_t GetShardIdByPartitionId(int32_t partition_id)
     {
@@ -608,12 +615,6 @@ private:
         // return cluster_manager_.GetShardIdByPartitionId(partition_id);
     }
 
-    bool IsOwnerOfShard(uint32_t shard_id)
-    {
-        return shard_status_.load(std::memory_order_acquire) !=
-                   DSShardStatus::Closed &&
-               shard_id_ == shard_id;
-    }
 
     DataStore *GetDataStore(uint32_t shard_id)
     {

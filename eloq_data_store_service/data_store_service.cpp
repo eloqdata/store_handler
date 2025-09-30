@@ -242,22 +242,38 @@ bool DataStoreService::StartService(bool create_db_if_missing)
 
     auto dss_shards = cluster_manager_.GetShardsForThisNode();
     assert(dss_shards.size() <= 1);
+    assert(shard_status_.load(std::memory_order_acquire) ==
+           DSShardStatus::Closed);
     if (!dss_shards.empty())
     {
         shard_id_ = dss_shards.at(0);
-        shard_status_ = cluster_manager_.FetchDSShardStatus(shard_id_);
-        if (shard_status_ == DSShardStatus::ReadOnly ||
-            shard_status_ == DSShardStatus::ReadWrite)
+        auto open_mode = cluster_manager_.FetchDSShardStatus(shard_id_);
+        if (open_mode == DSShardStatus::ReadOnly ||
+            open_mode == DSShardStatus::ReadWrite)
         {
-            data_store_ = data_store_factory_->CreateDataStore(
-                create_db_if_missing, shard_id_, this, true);
-            if (data_store_ == nullptr)
+            auto expect_status = DSShardStatus::Closed;
+            if (shard_status_.compare_exchange_strong(expect_status,
+                                                      DSShardStatus::Starting))
             {
-                LOG(ERROR) << "Failed to create data store on starting "
-                              "DataStoreService.";
-                return false;
+                data_store_ = data_store_factory_->CreateDataStore(
+                    create_db_if_missing, shard_id_, this, true);
+                if (data_store_ == nullptr)
+                {
+                    LOG(ERROR) << "Failed to create data store on starting "
+                                  "DataStoreService.";
+                    return false;
+                }
+
+                if (open_mode == DSShardStatus::ReadOnly)
+                {
+                    data_store_->SwitchToReadOnly();
+                }
+                shard_status_.store(open_mode, std::memory_order_release);
             }
         }
+
+        DLOG(INFO) << "Created data store shard id:" << shard_id_
+                   << ", shard_status:" << shard_status_;
     }
 
     server_ = std::make_unique<brpc::Server>();
@@ -287,6 +303,28 @@ bool DataStoreService::ConnectAndStartDataStore(uint32_t data_shard_id,
                                                 DSShardStatus open_mode,
                                                 bool create_db_if_missing)
 {
+    if (open_mode == DSShardStatus::Closed)
+    {
+        return true;
+    }
+    assert(open_mode == DSShardStatus::ReadOnly);
+
+    DSShardStatus expect_status = DSShardStatus::Closed;
+    if (!shard_status_.compare_exchange_strong(expect_status,
+                                               DSShardStatus::Starting))
+    {
+        if (expect_status == open_mode)
+        {
+            return true;
+        }
+        while (expect_status == DSShardStatus::Starting)
+        {
+            bthread_usleep(10000);
+            expect_status = shard_status_.load(std::memory_order_acquire);
+        }
+        return expect_status == open_mode;
+    }
+
     assert(data_store_factory_ != nullptr);
     if (data_store_ == nullptr)
     {
@@ -317,11 +355,13 @@ bool DataStoreService::ConnectAndStartDataStore(uint32_t data_shard_id,
         }
     }
 
+    data_store_->SwitchToReadOnly();
     cluster_manager_.SwitchShardToReadOnly(data_shard_id,
                                            DSShardStatus::Closed);
-    assert(shard_status_.load(std::memory_order_acquire) ==
-           DSShardStatus::Closed);
-    shard_status_.store(open_mode, std::memory_order_release);
+
+    expect_status = DSShardStatus::Starting;
+    shard_status_.compare_exchange_strong(
+        expect_status, open_mode, std::memory_order_release);
     return true;
 }
 
@@ -341,7 +381,9 @@ void DataStoreService::Read(::google::protobuf::RpcController *controller,
         return;
     }
 
-    if (shard_status_.load(std::memory_order_acquire) == DSShardStatus::Closed)
+    auto shard_status = shard_status_.load(std::memory_order_acquire);
+    if (shard_status != DSShardStatus::ReadOnly &&
+        shard_status != DSShardStatus::ReadWrite)
     {
         brpc::ClosureGuard done_guard(done);
         auto *result = response->mutable_result();
@@ -376,7 +418,9 @@ void DataStoreService::Read(const std::string_view table_name,
         return;
     }
 
-    if (shard_status_.load(std::memory_order_acquire) == DSShardStatus::Closed)
+    auto shard_status = shard_status_.load(std::memory_order_acquire);
+    if (shard_status != DSShardStatus::ReadOnly &&
+        shard_status != DSShardStatus::ReadWrite)
     {
         brpc::ClosureGuard done_guard(done);
         record->clear();
@@ -834,20 +878,12 @@ void DataStoreService::ScanNext(
     }
 
     auto shard_status = shard_status_.load(std::memory_order_acquire);
-    if (shard_status != DSShardStatus::ReadWrite)
+    if (shard_status != DSShardStatus::ReadWrite &&
+        shard_status != DSShardStatus::ReadOnly)
     {
         brpc::ClosureGuard done_guard(done);
-        if (shard_status == DSShardStatus::Closed)
-        {
-            PrepareShardingError(partition_id, result);
-        }
-        else
-        {
-            assert(shard_status == DSShardStatus::ReadOnly);
-            result->set_error_code(
-                ::EloqDS::remote::DataStoreError::WRITE_TO_READ_ONLY_DB);
-            result->set_error_msg("Write to read-only DB.");
-        }
+        result->set_error_code(::EloqDS::remote::DataStoreError::DB_NOT_OPEN);
+        result->set_error_msg("KV store not opened yet.");
         return;
     }
 
@@ -889,21 +925,13 @@ void DataStoreService::ScanNext(::google::protobuf::RpcController *controller,
     }
 
     auto shard_status = shard_status_.load(std::memory_order_acquire);
-    if (shard_status != DSShardStatus::ReadWrite)
+    if (shard_status != DSShardStatus::ReadWrite &&
+        shard_status != DSShardStatus::ReadOnly)
     {
         brpc::ClosureGuard done_guard(done);
-        if (shard_status == DSShardStatus::Closed)
-        {
-            PrepareShardingError(partition_id, response->mutable_result());
-        }
-        else
-        {
-            assert(shard_status == DSShardStatus::ReadOnly);
-            auto *result = response->mutable_result();
-            result->set_error_code(
-                ::EloqDS::remote::DataStoreError::WRITE_TO_READ_ONLY_DB);
-            result->set_error_msg("Write to read-only DB.");
-        }
+        auto *result = response->mutable_result();
+        result->set_error_code(::EloqDS::remote::DataStoreError::DB_NOT_OPEN);
+        result->set_error_msg("KV store not opened yet.");
         return;
     }
 
@@ -932,21 +960,14 @@ void DataStoreService::ScanClose(::google::protobuf::RpcController *controller,
     }
 
     auto shard_status = shard_status_.load(std::memory_order_acquire);
-    if (shard_status != DSShardStatus::ReadWrite)
+    if (shard_status != DSShardStatus::ReadWrite &&
+        shard_status != DSShardStatus::ReadOnly)
     {
+        assert(false);
         brpc::ClosureGuard done_guard(done);
-        if (shard_status == DSShardStatus::Closed)
-        {
-            PrepareShardingError(partition_id, response->mutable_result());
-        }
-        else
-        {
-            assert(shard_status == DSShardStatus::ReadOnly);
-            auto *result = response->mutable_result();
-            result->set_error_code(
-                ::EloqDS::remote::DataStoreError::WRITE_TO_READ_ONLY_DB);
-            result->set_error_msg("Write to read-only DB.");
-        }
+        auto *result = response->mutable_result();
+        result->set_error_code(::EloqDS::remote::DataStoreError::DB_NOT_OPEN);
+        result->set_error_msg("KV store not opened yet.");
         return;
     }
 
@@ -974,20 +995,13 @@ void DataStoreService::ScanClose(const std::string_view table_name,
     }
 
     auto shard_status = shard_status_.load(std::memory_order_acquire);
-    if (shard_status != DSShardStatus::ReadWrite)
+    if (shard_status != DSShardStatus::ReadWrite &&
+        shard_status != DSShardStatus::ReadOnly)
     {
+        assert(false);
         brpc::ClosureGuard done_guard(done);
-        if (shard_status == DSShardStatus::Closed)
-        {
-            PrepareShardingError(partition_id, result);
-        }
-        else
-        {
-            assert(shard_status == DSShardStatus::ReadOnly);
-            result->set_error_code(
-                ::EloqDS::remote::DataStoreError::WRITE_TO_READ_ONLY_DB);
-            result->set_error_msg("Write to read-only DB.");
-        }
+        result->set_error_code(::EloqDS::remote::DataStoreError::DB_NOT_OPEN);
+        result->set_error_msg("KV store not opened yet.");
         return;
     }
 
@@ -2206,6 +2220,8 @@ bool DataStoreService::SwitchReadOnlyToReadWrite(uint32_t shard_id)
 {
     if (!IsOwnerOfShard(shard_id))
     {
+        DLOG(INFO) << "SwitchReadOnlyToReadWrite failed, shard " << shard_id
+                   << " is not owner";
         return false;
     }
 
