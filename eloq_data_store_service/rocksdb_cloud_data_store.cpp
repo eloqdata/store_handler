@@ -696,7 +696,6 @@ bool RocksDBCloudDataStore::OpenCloudDB(
         ttl_compaction_filter_ = nullptr;
         return false;
     }
-
     if (current_epoch.empty())
     {
         LOG(ERROR) << "Current epoch from db is empty";
@@ -724,7 +723,7 @@ bool RocksDBCloudDataStore::OpenCloudDB(
         return false;
     }
 
-    status = db_->SetOptions(
+    status = db_->SetDBOptions(
         {{"max_open_files", "-1"}});  // restore max_open_files to default value
 
     if (!status.ok())
