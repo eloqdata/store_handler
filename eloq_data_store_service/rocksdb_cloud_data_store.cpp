@@ -610,7 +610,8 @@ bool RocksDBCloudDataStore::OpenCloudDB(
     // deleted due to LRU policy, which causes DB::Open failed
     // set max_open_files to 0 will conflict with
     // skip_cloud_files_in_getchildren
-    options.max_open_files = 32;
+    // Given a smaller value here to avoid opening too many files
+    options.max_open_files = 128;
 
     // set ttl compaction filter
     assert(ttl_compaction_filter_ == nullptr);
