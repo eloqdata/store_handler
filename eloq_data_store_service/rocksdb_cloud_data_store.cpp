@@ -674,7 +674,11 @@ bool RocksDBCloudDataStore::OpenCloudDB(
     {
         LOG(ERROR) << "Fail to pause background work, error: "
                    << status.ToString();
-        db_->ContinueBackgroundWork();
+        // Clean up the partially initialized database
+        db_->Close();
+        delete db_;
+        db_ = nullptr;
+        ttl_compaction_filter_ = nullptr;
         return false;
     }
 
@@ -685,9 +689,14 @@ bool RocksDBCloudDataStore::OpenCloudDB(
     {
         LOG(ERROR) << "Fail to get current epoch from db, error: "
                    << status.ToString();
-        db_->ContinueBackgroundWork();
+        // Clean up the partially initialized database
+        db_->Close();
+        delete db_;
+        db_ = nullptr;
+        ttl_compaction_filter_ = nullptr;
         return false;
     }
+
     if (current_epoch.empty())
     {
         LOG(ERROR) << "Current epoch from db is empty";
@@ -707,11 +716,28 @@ bool RocksDBCloudDataStore::OpenCloudDB(
     {
         LOG(ERROR) << "Fail to enable auto compactions, error: "
                    << status.ToString();
+        // Clean up the partially initialized database
+        db_->Close();
+        delete db_;
+        db_ = nullptr;
+        ttl_compaction_filter_ = nullptr;
         return false;
     }
 
     status = db_->SetOptions(
         {{"max_open_files", "-1"}});  // restore max_open_files to default value
+
+    if (!status.ok())
+    {
+        LOG(ERROR) << "Fail to set max_open_files to -1, error: "
+                   << status.ToString();
+        // Clean up the partially initialized database
+        db_->Close();
+        delete db_;
+        db_ = nullptr;
+        ttl_compaction_filter_ = nullptr;
+        return false;
+    }
 
     if (cloud_config_.warm_up_thread_num_ != 0)
     {
