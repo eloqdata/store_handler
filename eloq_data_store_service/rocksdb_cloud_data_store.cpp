@@ -396,9 +396,12 @@ bool RocksDBCloudDataStore::StartDB()
         LOG(ERROR) << "Failed to find max term from cloud manifest file for "
                       "branch: "
                    << cloud_config_.branch_name_;
+        // this is a new db
+        cookie_on_open = "";
+        new_cookie_on_open = MakeCloudManifestCookie(
+            cloud_config_.branch_name_, dss_shard_id, 0);
     }
-
-    if (max_term != -1)
+    else if (max_term != -1)
     {
         cookie_on_open = MakeCloudManifestCookie(
             cloud_config_.branch_name_, dss_shard_id, max_term);
@@ -407,8 +410,8 @@ bool RocksDBCloudDataStore::StartDB()
     }
     else
     {
-        // this is a new db
-        cookie_on_open = "";
+        // this is snapshot restore case, no valid cloud manifest file
+        cookie_on_open = cloud_config_.branch_name_;
         new_cookie_on_open = MakeCloudManifestCookie(
             cloud_config_.branch_name_, dss_shard_id, 0);
     }
