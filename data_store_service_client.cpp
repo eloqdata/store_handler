@@ -206,7 +206,6 @@ bool DataStoreServiceClient::PutAll(
         std::unordered_map<uint32_t, std::vector<std::pair<size_t, size_t>>>
             hash_partitions_map;
         std::unordered_map<uint32_t, std::vector<size_t>> range_partitions_map;
-        std::unordered_map<uint32_t, size_t> partition_record_cnt;
 
         size_t flush_task_entry_idx = 0;
         for (auto &entry : entries)
@@ -232,9 +231,6 @@ bool DataStoreServiceClient::PutAll(
                     }
                     it->second.emplace_back(
                         std::make_pair(flush_task_entry_idx, i));
-
-                    partition_record_cnt.try_emplace(kv_partition_id, 0);
-                    partition_record_cnt[kv_partition_id]++;
                 }
             }
             else
@@ -246,8 +242,6 @@ bool DataStoreServiceClient::PutAll(
                 auto [it, inserted] =
                     range_partitions_map.try_emplace(parition_id);
                 it->second.emplace_back(flush_task_entry_idx);
-                partition_record_cnt.try_emplace(parition_id, 0);
-                partition_record_cnt[parition_id] += batch.size();
             }
             flush_task_entry_idx++;
         }
@@ -4313,6 +4307,9 @@ void DataStoreServiceClient::PrepareRangePartitionBatches(
     size_t write_batch_size = 0;
     PartitionBatchRequest batch_request;
 
+    bool enabled_mvcc =
+        txservice::Sharder::Instance().GetLocalCcShards()->EnableMvcc();
+
     auto PrepareRecordData = [&](txservice::FlushRecord &ckpt_rec,
                                  size_t &batch_size,
                                  PartitionBatchRequest &batch_request)
@@ -4336,7 +4333,14 @@ void DataStoreServiceClient::PrepareRangePartitionBatches(
         }
         batch_size += sizeof(uint64_t);
 
-        batch_request.op_types.push_back(WriteOpType::PUT);
+        if (is_deleted && !enabled_mvcc)
+        {
+            batch_request.op_types.push_back(WriteOpType::DELETE);
+        }
+        else
+        {
+            batch_request.op_types.push_back(WriteOpType::PUT);
+        }
         batch_size += sizeof(WriteOpType);
 
         SerializeTxRecord(is_deleted,

@@ -702,8 +702,8 @@ void RocksDBDataStoreCommon::ScanNext(ScanRequest *scan_req)
     query_worker_pool_->SubmitWork(
         [this, scan_req]()
         {
-            DLOG(INFO) << "RocksDBDataStoreCommon::ScanNext "
-                       << scan_req->GetPartitionId();
+            // DLOG(INFO) << "RocksDBDataStoreCommon::ScanNext "
+            //            << scan_req->GetPartitionId();
             PoolableGuard poolable_guard(scan_req);
 
             uint32_t partition_id = scan_req->GetPartitionId();
