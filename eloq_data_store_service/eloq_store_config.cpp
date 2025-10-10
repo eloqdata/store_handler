@@ -171,12 +171,6 @@ EloqStoreConfig::EloqStoreConfig(const INIReader &config_reader,
                    : config_reader.GetInteger("store",
                                               "eloq_store_gc_threads",
                                               FLAGS_eloq_store_gc_threads));
-    eloqstore_configs_.rclone_threads =
-        !CheckCommandLineFlagIsDefault("eloq_store_cloud_worker_count")
-            ? FLAGS_eloq_store_cloud_worker_count
-            : config_reader.GetInteger("store",
-                                       "eloq_store_cloud_worker_count",
-                                       FLAGS_eloq_store_cloud_worker_count);
     LOG_IF(INFO, !eloqstore_configs_.cloud_store_path.empty())
         << "EloqStore cloud store enabled";
     eloqstore_configs_.data_page_restart_interval =
@@ -280,7 +274,6 @@ EloqStoreConfig::EloqStoreConfig(const INIReader &config_reader,
             : config_reader.GetInteger("store",
                                        "eloq_store_local_space_limit",
                                        FLAGS_eloq_store_local_space_limit);
-    eloqstore_configs_.local_space_limit /= eloqstore_configs_.num_threads;
     eloqstore_configs_.reserve_space_ratio =
         !CheckCommandLineFlagIsDefault("eloq_store_reserve_space_ratio")
             ? FLAGS_eloq_store_reserve_space_ratio
