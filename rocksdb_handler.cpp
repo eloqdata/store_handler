@@ -1244,10 +1244,10 @@ RocksDBHandler::CreateDataSerachCondition(int32_t obj_type,
     return pushed_cond;
 }
 
-std::function<void()> RocksDBHandler::GenerateFetchBucketWork(
+std::function<void(size_t)> RocksDBHandler::GenerateFetchBucketWork(
     txservice::FetchBucketDataCc *fetch_bucket_data_cc)
 {
-    return [this, fetch_bucket_data_cc]()
+    return [this, fetch_bucket_data_cc](size_t)
     {
         std::shared_lock<std::shared_mutex> db_lk(db_mux_);
         auto db = GetDBPtr();
@@ -1404,7 +1404,7 @@ txservice::store::DataStoreHandler::DataStoreOpStatus
 RocksDBHandler::FetchBucketData(
     std::vector<txservice::FetchBucketDataCc *> fetch_bucket_data_ccs)
 {
-    std::vector<std::function<void()>> work;
+    std::vector<std::function<void(size_t)>> work;
     for (auto *fetch_bucket_data_cc : fetch_bucket_data_ccs)
     {
         work.push_back(GenerateFetchBucketWork(fetch_bucket_data_cc));
