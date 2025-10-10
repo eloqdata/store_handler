@@ -384,7 +384,7 @@ public:
     std::vector<txservice::DataStoreSearchCond> CreateDataSerachCondition(
         int32_t obj_type, const std::string_view &pattern) override;
 
-    std::function<void()> GenerateFetchBucketWork(
+    std::function<void(size_t)> GenerateFetchBucketWork(
         txservice::FetchBucketDataCc *fetch_bucket_data_cc);
 
     txservice::store::DataStoreHandler::DataStoreOpStatus FetchBucketData(
