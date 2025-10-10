@@ -71,7 +71,6 @@
 #include "redis_zset_object.h"
 #include "rocksdb/iostats_context.h"
 #include "rocksdb/rate_limiter.h"
-#include "rocksdb_scanner.h"
 #include "store_util.h"
 #include "tx_key.h"
 #include "tx_record.h"
@@ -1425,41 +1424,6 @@ RocksDBHandler::FetchBucketData(
     query_worker_pool_->SubmitWork(
         GenerateFetchBucketWork(fetch_bucket_data_cc));
     return DataStoreOpStatus::Success;
-}
-
-std::unique_ptr<txservice::store::DataStoreScanner> RocksDBHandler::ScanForward(
-    const txservice::TableName &table_name,
-    uint32_t ng_id,
-    const txservice::TxKey &start_key,
-    bool inclusive,
-    uint8_t key_parts,
-    const std::vector<txservice::DataStoreSearchCond> &search_cond,
-    const txservice::KeySchema *key_schema,
-    const txservice::RecordSchema *rec_schema,
-    const txservice::KVCatalogInfo *kv_info,
-    bool scan_foward)
-{
-    const std::string &kv_cf_name = kv_info->kv_table_name_;
-    rocksdb::ColumnFamilyHandle *cfh = GetColumnFamilyHandler(kv_cf_name);
-    if (cfh == nullptr)
-    {
-        LOG(ERROR) << "Failed to get column family, cf name: " << kv_cf_name;
-        return nullptr;
-    }
-
-    std::unique_ptr<RocksDBScanner> scanner =
-        std::make_unique<RocksDBScanner>(GetDBPtr(),
-                                         cfh,
-                                         key_schema,
-                                         rec_schema,
-                                         table_name,
-                                         kv_info,
-                                         start_key.GetKey<EloqKV::EloqKey>(),
-                                         inclusive,
-                                         search_cond,
-                                         scan_foward);
-    scanner->Init();
-    return scanner;
 }
 
 txservice::store::DataStoreHandler::DataStoreOpStatus
