@@ -394,18 +394,6 @@ public:
     txservice::store::DataStoreHandler::DataStoreOpStatus FetchBucketData(
         txservice::FetchBucketDataCc *fetch_bucket_data_cc) override;
 
-    std::unique_ptr<txservice::store::DataStoreScanner> ScanForward(
-        const txservice::TableName &table_name,
-        uint32_t ng_id,
-        const txservice::TxKey &start_key,
-        bool inclusive,
-        uint8_t key_parts,
-        const std::vector<txservice::DataStoreSearchCond> &search_cond,
-        const txservice::KeySchema *key_schema,
-        const txservice::RecordSchema *rec_schema,
-        const txservice::KVCatalogInfo *kv_info,
-        bool scan_foward) override;
-
     txservice::store::DataStoreHandler::DataStoreOpStatus LoadRangeSlice(
         const txservice::TableName &table_name,
         const txservice::KVCatalogInfo *kv_info,
