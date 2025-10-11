@@ -114,8 +114,8 @@ void EloqStoreDataStore::Read(ReadRequest *read_req)
     ::eloqstore::ReadRequest &kv_read_req = read_op->EloqStoreRequest();
     kv_read_req.SetArgs(eloq_store_table_id, key);
 
-    LOG(INFO) << "== eloqstore: read, table name = "
-              << read_req->GetTableName();
+    LOG(INFO) << "== eloqstore: read, table name = " << read_req->GetTableName()
+              << ", key = " << key;
 
     uint64_t user_data = reinterpret_cast<uint64_t>(read_op);
     if (!eloq_store_service_->ExecAsyn(&kv_read_req, user_data, OnRead))

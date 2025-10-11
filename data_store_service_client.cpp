@@ -492,6 +492,7 @@ void DataStoreServiceClient::FetchTableCatalog(
 {
     int32_t kv_partition_id = 0;
     std::string_view key = fetch_cc->CatalogName().StringView();
+    LOG(INFO) << "== FetchTableCatalog: key = " << key;
     Read(kv_table_catalogs_name,
          kv_partition_id,
          key,
