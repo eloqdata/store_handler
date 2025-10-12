@@ -331,7 +331,7 @@ bool RocksDBCloudDataStore::StartDB()
     cfs_options_.constant_sst_file_size_in_sst_file_manager = 64 * 1024 * 1024L;
     // Skip listing cloud files in GetChildren when DumpDBSummary to speed
     // up open db
-    cfs_options_.skip_cloud_files_in_getchildren = true;
+    // cfs_options_.skip_cloud_files_in_getchildren = true;
 
     DLOG(INFO) << "RocksDBCloudDataStore::StartDB, purger_periodicity_millis: "
                << cfs_options_.purger_periodicity_millis << " ms"
@@ -445,7 +445,7 @@ bool RocksDBCloudDataStore::OpenCloudDB(
     options.create_missing_column_families = true;
     // boost write performance by enabling unordered write
     options.unordered_write = true;
-    options.paranoid_checks = false;
+    // options.paranoid_checks = false;
 
     // print db statistics every 60 seconds
     if (enable_stats_)
