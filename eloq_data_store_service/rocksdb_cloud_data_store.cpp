@@ -445,6 +445,7 @@ bool RocksDBCloudDataStore::OpenCloudDB(
     options.create_missing_column_families = true;
     // boost write performance by enabling unordered write
     options.unordered_write = true;
+    options.paranoid_checks = false;
 
     // print db statistics every 60 seconds
     if (enable_stats_)
