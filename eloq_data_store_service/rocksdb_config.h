@@ -71,6 +71,26 @@ struct RocksDBConfig
 #if (defined(DATA_STORE_TYPE_ELOQDSS_ROCKSDB_CLOUD_S3) ||                      \
      defined(DATA_STORE_TYPE_ELOQDSS_ROCKSDB_CLOUD_GCS))
 
+struct S3UrlComponents
+{
+    std::string protocol;       // "s3", "http", "https"
+    std::string bucket_name;
+    std::string object_path;
+    std::string endpoint_url;   // derived from http/https URLs
+    bool is_valid{false};
+    std::string error_message;
+};
+
+// Parse S3 URL in format: 
+//   s3://{bucket_name}/{object_path}
+//   http://{host}:{port}/{bucket_name}/{object_path}
+//   https://{host}:{port}/{bucket_name}/{object_path}
+// Examples:
+//   s3://my-bucket/my-path
+//   http://localhost:9000/my-bucket/my-path
+//   https://s3.amazonaws.com/my-bucket/my-path
+S3UrlComponents ParseS3Url(const std::string &s3_url);
+
 struct RocksDBCloudConfig
 {
     RocksDBCloudConfig() = default;
@@ -89,10 +109,14 @@ struct RocksDBCloudConfig
     uint32_t db_ready_timeout_us_;
     uint32_t db_file_deletion_delay_;
     std::string s3_endpoint_url_;
+    std::string s3_url_;  // New URL-based configuration
     size_t warm_up_thread_num_;
     bool run_purger_{true};
     size_t purger_periodicity_millis_{10 * 60 * 1000}; // 10 minutes
     std::string branch_name_;
+
+    // Returns true if S3 URL configuration is being used
+    bool IsS3UrlConfigured() const { return !s3_url_.empty(); }
 };
 
 inline rocksdb::Status NewCloudFileSystem(

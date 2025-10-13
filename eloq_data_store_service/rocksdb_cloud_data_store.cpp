@@ -296,12 +296,12 @@ bool RocksDBCloudDataStore::StartDB()
     }
 #endif
 
-    cfs_options_.src_bucket.SetBucketName(cloud_config_.bucket_name_,
-                                          cloud_config_.bucket_prefix_);
+    cfs_options_.src_bucket.SetBucketName(cloud_config_.bucket_name_);
+    cfs_options_.src_bucket.SetBucketPrefix(cloud_config_.bucket_prefix_);
     cfs_options_.src_bucket.SetRegion(cloud_config_.region_);
     cfs_options_.src_bucket.SetObjectPath(cloud_config_.object_path_);
-    cfs_options_.dest_bucket.SetBucketName(cloud_config_.bucket_name_,
-                                           cloud_config_.bucket_prefix_);
+    cfs_options_.dest_bucket.SetBucketName(cloud_config_.bucket_name_);
+    cfs_options_.dest_bucket.SetBucketPrefix(cloud_config_.bucket_prefix_);
     cfs_options_.dest_bucket.SetRegion(cloud_config_.region_);
     cfs_options_.dest_bucket.SetObjectPath(cloud_config_.object_path_);
     // Add sst_file_cache for accerlating random access on sst files

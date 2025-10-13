@@ -272,9 +272,7 @@ DEFINE_uint32(rocksdb_cloud_db_file_deletion_delay_sec,
 DEFINE_uint32(rocksdb_cloud_warm_up_thread_num,
               1,
               "Rocksdb cloud warm up thread number");
-DEFINE_bool(rocksdb_cloud_run_purger,
-            true,
-            "Rocksdb cloud run purger");
+DEFINE_bool(rocksdb_cloud_run_purger, true, "Rocksdb cloud run purger");
 DEFINE_uint32(rocksdb_cloud_purger_periodicity_secs,
               10 * 60, /*10 minutes*/
               "Rocksdb cloud purger periodicity seconds");
@@ -295,8 +293,111 @@ DEFINE_string(rocksdb_cloud_s3_endpoint_url,
               "S3 compatible object store (e.g. minio) endpoint URL only for "
               "development purpose");
 
+DEFINE_string(rocksdb_cloud_s3_url,
+              "",
+              "RocksDB cloud S3 URL. Format: s3://{bucket}/{path} or "
+              "http(s)://{host}:{port}/{bucket}/{path}. "
+              "Examples: s3://my-bucket/my-path, "
+              "http://localhost:9000/my-bucket/my-path. "
+              "This option takes precedence over legacy configuration options "
+              "if both are provided");
+
 namespace EloqDS
 {
+#if (defined(DATA_STORE_TYPE_ELOQDSS_ROCKSDB_CLOUD_S3) ||                      \
+     defined(DATA_STORE_TYPE_ELOQDSS_ROCKSDB_CLOUD_GCS))
+
+S3UrlComponents ParseS3Url(const std::string &s3_url)
+{
+    S3UrlComponents result;
+
+    if (s3_url.empty())
+    {
+        result.error_message = "S3 URL is empty";
+        return result;
+    }
+
+    // Find protocol separator
+    size_t protocol_end = s3_url.find("://");
+    if (protocol_end == std::string::npos)
+    {
+        result.error_message = "Invalid S3 URL format: missing '://' separator";
+        return result;
+    }
+
+    result.protocol = s3_url.substr(0, protocol_end);
+
+    // Validate protocol
+    if (result.protocol != "s3" && result.protocol != "http" &&
+        result.protocol != "https")
+    {
+        result.error_message = "Invalid protocol '" + result.protocol +
+                               "'. Must be one of: s3, http, https";
+        return result;
+    }
+
+    // Extract the part after protocol
+    size_t path_start = protocol_end + 3;  // Skip "://"
+    if (path_start >= s3_url.length())
+    {
+        result.error_message =
+            "Invalid S3 URL format: no content after protocol";
+        return result;
+    }
+
+    std::string remaining = s3_url.substr(path_start);
+
+    // For http/https, extract the endpoint (host:port) and then the bucket/path
+    // Format: http(s)://{host}:{port}/{bucket_name}/{object_path}
+    if (result.protocol == "http" || result.protocol == "https")
+    {
+        // Find the first slash after the host:port
+        size_t first_slash = remaining.find('/');
+        if (first_slash == std::string::npos)
+        {
+            result.error_message =
+                "Invalid S3 URL format: missing bucket and object path";
+            return result;
+        }
+
+        // Store the full endpoint URL including protocol
+        result.endpoint_url =
+            result.protocol + "://" + remaining.substr(0, first_slash);
+        remaining = remaining.substr(first_slash + 1);
+    }
+
+    // Now extract bucket_name and object_path from remaining
+    // Format: {bucket_name}/{object_path}
+    size_t first_slash = remaining.find('/');
+    if (first_slash == std::string::npos)
+    {
+        result.error_message =
+            "Invalid S3 URL format: missing object path (format: "
+            "{bucket_name}/{object_path})";
+        return result;
+    }
+
+    result.bucket_name = remaining.substr(0, first_slash);
+    result.object_path = remaining.substr(first_slash + 1);
+
+    if (result.bucket_name.empty())
+    {
+        result.error_message = "Bucket name cannot be empty";
+        return result;
+    }
+
+    if (result.object_path.empty())
+    {
+        result.error_message = "Object path cannot be empty";
+        return result;
+    }
+
+    result.is_valid = true;
+    return result;
+}
+
+#endif
+
 bool CheckCommandLineFlagIsDefault(const char *name)
 {
     gflags::CommandLineFlagInfo flag_info;
@@ -509,6 +610,14 @@ RocksDBCloudConfig::RocksDBCloudConfig(const INIReader &config)
 
 #endif
 
+    // Get the S3 URL configuration (new style)
+    s3_url_ =
+        !CheckCommandLineFlagIsDefault("rocksdb_cloud_s3_url")
+            ? FLAGS_rocksdb_cloud_s3_url
+            : config.GetString(
+                  "store", "rocksdb_cloud_s3_url", FLAGS_rocksdb_cloud_s3_url);
+
+    // Get legacy configuration
     bucket_name_ = !CheckCommandLineFlagIsDefault("rocksdb_cloud_bucket_name")
                        ? FLAGS_rocksdb_cloud_bucket_name
                        : config.GetString("store",
@@ -565,8 +674,7 @@ RocksDBCloudConfig::RocksDBCloudConfig(const INIReader &config)
                                 "rocksdb_cloud_run_purger",
                                 FLAGS_rocksdb_cloud_run_purger);
     uint64_t rocksdb_cloud_purger_periodicity_secs =
-        !CheckCommandLineFlagIsDefault(
-            "rocksdb_cloud_purger_periodicity_secs")
+        !CheckCommandLineFlagIsDefault("rocksdb_cloud_purger_periodicity_secs")
             ? FLAGS_rocksdb_cloud_purger_periodicity_secs
             : config.GetInteger("store",
                                 "rocksdb_cloud_purger_periodicity_secs",
@@ -587,6 +695,41 @@ RocksDBCloudConfig::RocksDBCloudConfig(const INIReader &config)
             : config.GetString("store",
                                "rocksdb_cloud_s3_endpoint_url",
                                FLAGS_rocksdb_cloud_s3_endpoint_url);
+
+    // Check if s3_url was explicitly set (prefer URL-based config)
+    // URL-based config takes precedence over legacy config if both are present
+    bool has_s3_url_explicit =
+        !CheckCommandLineFlagIsDefault("rocksdb_cloud_s3_url") ||
+        !config.GetString("store", "rocksdb_cloud_s3_url", "").empty();
+
+    // If using S3 URL configuration, parse it and populate the fields
+    // This overrides any legacy configuration settings
+    if (has_s3_url_explicit)
+    {
+        S3UrlComponents url_components = ParseS3Url(s3_url_);
+        if (!url_components.is_valid)
+        {
+            LOG(FATAL) << "Invalid rocksdb_cloud_s3_url: "
+                       << url_components.error_message
+                       << ". URL format: s3://{bucket}/{path} or "
+                          "http(s)://{host}:{port}/{bucket}/{path}. "
+                       << "Examples: s3://my-bucket/my-path, "
+                       << "http://localhost:9000/my-bucket/my-path";
+        }
+
+        // Populate config fields from parsed URL (overriding legacy configs)
+        bucket_name_ = url_components.bucket_name;
+        bucket_prefix_ = "";  // No prefix in URL-based config
+        object_path_ = url_components.object_path;
+        s3_endpoint_url_ = url_components.endpoint_url;
+
+        LOG(INFO) << "Using S3 URL configuration (overrides legacy config if "
+                     "present): "
+                  << s3_url_ << " (bucket: " << bucket_name_
+                  << ", object_path: " << object_path_ << ", endpoint: "
+                  << (s3_endpoint_url_.empty() ? "default" : s3_endpoint_url_)
+                  << ")";
+    }
 
     warm_up_thread_num_ =
         !CheckCommandLineFlagIsDefault("rocksdb_cloud_warm_up_thread_num")
