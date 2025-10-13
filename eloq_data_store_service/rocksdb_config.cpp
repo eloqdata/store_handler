@@ -696,41 +696,6 @@ RocksDBCloudConfig::RocksDBCloudConfig(const INIReader &config)
                                "rocksdb_cloud_s3_endpoint_url",
                                FLAGS_rocksdb_cloud_s3_endpoint_url);
 
-    // Check if s3_url was explicitly set (prefer URL-based config)
-    // URL-based config takes precedence over legacy config if both are present
-    bool has_s3_url_explicit =
-        !CheckCommandLineFlagIsDefault("rocksdb_cloud_s3_url") ||
-        !config.GetString("store", "rocksdb_cloud_s3_url", "").empty();
-
-    // If using S3 URL configuration, parse it and populate the fields
-    // This overrides any legacy configuration settings
-    if (has_s3_url_explicit)
-    {
-        S3UrlComponents url_components = ParseS3Url(s3_url_);
-        if (!url_components.is_valid)
-        {
-            LOG(FATAL) << "Invalid rocksdb_cloud_s3_url: "
-                       << url_components.error_message
-                       << ". URL format: s3://{bucket}/{path} or "
-                          "http(s)://{host}:{port}/{bucket}/{path}. "
-                       << "Examples: s3://my-bucket/my-path, "
-                       << "http://localhost:9000/my-bucket/my-path";
-        }
-
-        // Populate config fields from parsed URL (overriding legacy configs)
-        bucket_name_ = url_components.bucket_name;
-        bucket_prefix_ = "";  // No prefix in URL-based config
-        object_path_ = url_components.object_path;
-        s3_endpoint_url_ = url_components.endpoint_url;
-
-        LOG(INFO) << "Using S3 URL configuration (overrides legacy config if "
-                     "present): "
-                  << s3_url_ << " (bucket: " << bucket_name_
-                  << ", object_path: " << object_path_ << ", endpoint: "
-                  << (s3_endpoint_url_.empty() ? "default" : s3_endpoint_url_)
-                  << ")";
-    }
-
     warm_up_thread_num_ =
         !CheckCommandLineFlagIsDefault("rocksdb_cloud_warm_up_thread_num")
             ? FLAGS_rocksdb_cloud_warm_up_thread_num
