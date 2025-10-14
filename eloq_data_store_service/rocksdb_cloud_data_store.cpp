@@ -329,8 +329,9 @@ bool RocksDBCloudDataStore::StartDB()
     // Temp fix for very slow open db issue
     // TODO(monkeyzilla): implement customized sst file manager
     cfs_options_.constant_sst_file_size_in_sst_file_manager = 64 * 1024 * 1024L;
-    // Skip listing cloud files in GetChildren when DumpDBSummary to speed
-    // up open db
+    // Skip listing cloud files in GetChildren when DumpDBSummary,
+    // SanitizeOptions, Recover(CheckConsistency), WriteOptions to speed up open
+    // db
     cfs_options_.skip_cloud_files_in_getchildren = true;
 
     DLOG(INFO) << "RocksDBCloudDataStore::StartDB, purger_periodicity_millis: "
@@ -445,6 +446,10 @@ bool RocksDBCloudDataStore::OpenCloudDB(
     options.create_missing_column_families = true;
     // boost write performance by enabling unordered write
     options.unordered_write = true;
+    // skip Consistency check, which compares the actual file size with the size
+    // recorded in the metadata, which can fail when skip_cloud_files_in_getchildren is
+    // set to true
+    options.paranoid_checks = false;
 
     // print db statistics every 60 seconds
     if (enable_stats_)
@@ -603,6 +608,16 @@ bool RocksDBCloudDataStore::OpenCloudDB(
         cfs_impl->GetStorageProvider());
     options.listeners.emplace_back(db_event_listener);
 
+    // The max_open_files default value is -1, it cause DB open all files on
+    // DB::Open() This behavior causes 2 effects,
+    // 1. DB::Open() will be slow
+    // 2. During DB::Open, some of the opened sst files keep in LRUCache will be
+    // deleted due to LRU policy, which causes DB::Open failed
+    // set max_open_files to 0 will conflict with
+    // skip_cloud_files_in_getchildren
+    // Given a smaller value here to avoid opening too many files
+    options.max_open_files = 128;
+
     // set ttl compaction filter
     assert(ttl_compaction_filter_ == nullptr);
     ttl_compaction_filter_ = std::make_unique<EloqDS::TTLCompactionFilter>();
@@ -664,7 +679,11 @@ bool RocksDBCloudDataStore::OpenCloudDB(
     {
         LOG(ERROR) << "Fail to pause background work, error: "
                    << status.ToString();
-        db_->ContinueBackgroundWork();
+        // Clean up the partially initialized database
+        db_->Close();
+        delete db_;
+        db_ = nullptr;
+        ttl_compaction_filter_ = nullptr;
         return false;
     }
 
@@ -675,7 +694,11 @@ bool RocksDBCloudDataStore::OpenCloudDB(
     {
         LOG(ERROR) << "Fail to get current epoch from db, error: "
                    << status.ToString();
-        db_->ContinueBackgroundWork();
+        // Clean up the partially initialized database
+        db_->Close();
+        delete db_;
+        db_ = nullptr;
+        ttl_compaction_filter_ = nullptr;
         return false;
     }
     if (current_epoch.empty())
@@ -692,6 +715,33 @@ bool RocksDBCloudDataStore::OpenCloudDB(
 
     // Enable auto compactions after blocking purger
     status = db_->SetOptions({{"disable_auto_compactions", "false"}});
+
+    if (!status.ok())
+    {
+        LOG(ERROR) << "Fail to enable auto compactions, error: "
+                   << status.ToString();
+        // Clean up the partially initialized database
+        db_->Close();
+        delete db_;
+        db_ = nullptr;
+        ttl_compaction_filter_ = nullptr;
+        return false;
+    }
+
+    status = db_->SetDBOptions(
+        {{"max_open_files", "-1"}});  // restore max_open_files to default value
+
+    if (!status.ok())
+    {
+        LOG(ERROR) << "Fail to set max_open_files to -1, error: "
+                   << status.ToString();
+        // Clean up the partially initialized database
+        db_->Close();
+        delete db_;
+        db_ = nullptr;
+        ttl_compaction_filter_ = nullptr;
+        return false;
+    }
 
     if (cloud_config_.warm_up_thread_num_ != 0)
     {
