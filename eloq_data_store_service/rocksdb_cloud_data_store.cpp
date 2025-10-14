@@ -770,6 +770,8 @@ void RocksDBCloudDataStore::CreateSnapshotForBackup(
         req->SetFinish(::EloqDS::remote::DataStoreError::CREATE_SNAPSHOT_ERROR,
                        "Fail to create snapshot, error: Fail to submit work to "
                        "query worker pool");
+        req->Clear();
+        req->Free();
     }
 }
 

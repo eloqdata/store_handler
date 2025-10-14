@@ -478,6 +478,8 @@ void RocksDBDataStoreCommon::BatchWriteRecords(
         ::EloqDS::remote::CommonResult result;
         result.set_error_code(::EloqDS::remote::DataStoreError::NO_ERROR);
         batch_write_req->SetFinish(result);
+        batch_write_req->Clear();
+        batch_write_req->Free();
         return;
     }
 
