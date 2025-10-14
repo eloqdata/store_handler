@@ -275,22 +275,18 @@ bool RocksDBDataStoreCommon::Initialize()
 
 void RocksDBDataStoreCommon::FlushData(FlushDataRequest *flush_data_req)
 {
-    query_worker_pool_->SubmitWork(
+    bool res = query_worker_pool_->SubmitWork(
         [this, flush_data_req]()
         {
             // Create a guard to ensure the poolable object is released to pool
             std::unique_ptr<PoolableGuard> poolable_guard =
                 std::make_unique<PoolableGuard>(flush_data_req);
 
-            // Increase write counter at the start of the operation
-            IncreaseWriteCounter();
-
             ::EloqDS::remote::CommonResult result;
             std::shared_lock<std::shared_mutex> db_lk(db_mux_);
             auto db = GetDBPtr();
             if (!db)
             {
-                DecreaseWriteCounter();  // Decrease counter before error return
                 result.set_error_code(
                     ::EloqDS::remote::DataStoreError::DB_NOT_OPEN);
                 result.set_error_msg("DB is not opened");
@@ -307,7 +303,6 @@ void RocksDBDataStoreCommon::FlushData(FlushDataRequest *flush_data_req)
             {
                 LOG(ERROR) << "Unable to flush db with error: "
                            << status.ToString();
-                DecreaseWriteCounter();  // Decrease counter before error return
                 result.set_error_code(
                     ::EloqDS::remote::DataStoreError::FLUSH_FAILED);
                 result.set_error_msg(status.ToString());
@@ -315,33 +310,39 @@ void RocksDBDataStoreCommon::FlushData(FlushDataRequest *flush_data_req)
                 return;
             }
 
-            // Decrease counter before successful return
-            DecreaseWriteCounter();
             result.set_error_code(::EloqDS::remote::DataStoreError::NO_ERROR);
             flush_data_req->SetFinish(result);
             DLOG(INFO) << "FlushData successfully.";
         });
+
+    if (!res)
+    {
+        LOG(ERROR) << "Failed to submit flush data work to query worker pool";
+        ::EloqDS::remote::CommonResult result;
+        result.set_error_code(::EloqDS::remote::DataStoreError::DB_NOT_OPEN);
+        result.set_error_msg("DB is not opened");
+        flush_data_req->SetFinish(result);
+
+        flush_data_req->Clear();
+        flush_data_req->Free();
+        return;
+    }
 }
 
 void RocksDBDataStoreCommon::DeleteRange(DeleteRangeRequest *delete_range_req)
 {
-    query_worker_pool_->SubmitWork(
+    bool res = query_worker_pool_->SubmitWork(
         [this, delete_range_req]()
         {
             // Create a guard to ensure the poolable object is released to pool
             std::unique_ptr<PoolableGuard> poolable_guard =
                 std::make_unique<PoolableGuard>(delete_range_req);
 
-            // Increase write counter at the start of the operation
-            IncreaseWriteCounter();
-
             ::EloqDS::remote::CommonResult result;
             std::shared_lock<std::shared_mutex> db_lk(db_mux_);
             auto db = GetDBPtr();
             if (!db)
             {
-                // Decrease counter before error return
-                DecreaseWriteCounter();
                 result.set_error_code(
                     ::EloqDS::remote::DataStoreError::DB_NOT_OPEN);
                 result.set_error_msg("DB is not opened");
@@ -380,9 +381,6 @@ void RocksDBDataStoreCommon::DeleteRange(DeleteRangeRequest *delete_range_req)
             {
                 LOG(ERROR) << "Unable to delete range with error: "
                            << status.ToString();
-
-                // Decrease counter before error return
-                DecreaseWriteCounter();
                 result.set_error_code(
                     ::EloqDS::remote::DataStoreError::WRITE_FAILED);
                 result.set_error_msg(status.ToString());
@@ -390,17 +388,27 @@ void RocksDBDataStoreCommon::DeleteRange(DeleteRangeRequest *delete_range_req)
                 return;
             }
 
-            // Decrease counter before successful return
-            DecreaseWriteCounter();
             result.set_error_code(::EloqDS::remote::DataStoreError::NO_ERROR);
             delete_range_req->SetFinish(result);
             DLOG(INFO) << "DeleteRange successfully.";
         });
+
+    if (!res)
+    {
+        LOG(ERROR) << "Failed to submit delete range work to query worker pool";
+        ::EloqDS::remote::CommonResult result;
+        result.set_error_code(::EloqDS::remote::DataStoreError::DB_NOT_OPEN);
+        result.set_error_msg("DB is not opened");
+        delete_range_req->SetFinish(result);
+        delete_range_req->Clear();
+        delete_range_req->Free();
+        return;
+    }
 }
 
 void RocksDBDataStoreCommon::Read(ReadRequest *req)
 {
-    query_worker_pool_->SubmitWork(
+    bool res = query_worker_pool_->SubmitWork(
         [this, req]()
         {
             // Create a guard to ensure the poolable object is released to pool
@@ -451,6 +459,14 @@ void RocksDBDataStoreCommon::Read(ReadRequest *req)
                            << " failed, status:" << status.ToString();
             }
         });
+    if (!res)
+    {
+        LOG(ERROR) << "Failed to submit read work to query worker pool";
+        req->SetFinish(::EloqDS::remote::DataStoreError::DB_NOT_OPEN);
+        req->Clear();
+        req->Free();
+        return;
+    }
 }
 
 void RocksDBDataStoreCommon::BatchWriteRecords(
@@ -462,10 +478,12 @@ void RocksDBDataStoreCommon::BatchWriteRecords(
         ::EloqDS::remote::CommonResult result;
         result.set_error_code(::EloqDS::remote::DataStoreError::NO_ERROR);
         batch_write_req->SetFinish(result);
+        batch_write_req->Clear();
+        batch_write_req->Free();
         return;
     }
 
-    query_worker_pool_->SubmitWork(
+    bool res = query_worker_pool_->SubmitWork(
         [this, batch_write_req]() mutable
         {
             // Create a guard to ensure the poolable object is released to pool
@@ -505,9 +523,6 @@ void RocksDBDataStoreCommon::BatchWriteRecords(
                 batch_write_req->SetFinish(result);
                 return;
             }
-
-            // Increase write counter before starting the write operation
-            IncreaseWriteCounter();
 
             const uint16_t parts_cnt_per_key =
                 batch_write_req->PartsCountPerKey();
@@ -600,10 +615,22 @@ void RocksDBDataStoreCommon::BatchWriteRecords(
                 }
             }
 
-            DecreaseWriteCounter();
             result.set_error_code(::EloqDS::remote::DataStoreError::NO_ERROR);
             batch_write_req->SetFinish(result);
         });
+
+    if (!res)
+    {
+        LOG(ERROR) << "Failed to submit batch write work to query worker pool";
+        ::EloqDS::remote::CommonResult result;
+        result.set_error_code(::EloqDS::remote::DataStoreError::DB_NOT_OPEN);
+        result.set_error_msg("DB is not opened");
+        batch_write_req->SetFinish(result);
+
+        batch_write_req->Clear();
+        batch_write_req->Free();
+        return;
+    }
 }
 
 void RocksDBDataStoreCommon::CreateTable(CreateTableRequest *create_table_req)
@@ -619,23 +646,18 @@ void RocksDBDataStoreCommon::CreateTable(CreateTableRequest *create_table_req)
 
 void RocksDBDataStoreCommon::DropTable(DropTableRequest *drop_table_req)
 {
-    query_worker_pool_->SubmitWork(
+    bool res = query_worker_pool_->SubmitWork(
         [this, drop_table_req]()
         {
             // Create a guard to ensure the poolable object is released to pool
             std::unique_ptr<PoolableGuard> poolable_guard =
                 std::make_unique<PoolableGuard>(drop_table_req);
 
-            // Increase write counter at the start of the operation
-            IncreaseWriteCounter();
-
             ::EloqDS::remote::CommonResult result;
             std::shared_lock<std::shared_mutex> db_lk(db_mux_);
             auto db = GetDBPtr();
             if (!db)
             {
-                // Decrease counter before error return
-                DecreaseWriteCounter();
                 result.set_error_code(
                     ::EloqDS::remote::DataStoreError::DB_NOT_OPEN);
                 result.set_error_msg("DB is not opened");
@@ -661,9 +683,6 @@ void RocksDBDataStoreCommon::DropTable(DropTableRequest *drop_table_req)
             {
                 LOG(ERROR) << "Unable to drop table with error: "
                            << status.ToString();
-
-                // Decrease counter before error return
-                DecreaseWriteCounter();
                 result.set_error_code(
                     ::EloqDS::remote::DataStoreError::WRITE_FAILED);
                 result.set_error_msg(status.ToString());
@@ -680,8 +699,6 @@ void RocksDBDataStoreCommon::DropTable(DropTableRequest *drop_table_req)
             {
                 LOG(ERROR) << "Unable to drop table with error: "
                            << status.ToString();
-                // Decrease counter before error return
-                DecreaseWriteCounter();
                 result.set_error_code(
                     ::EloqDS::remote::DataStoreError::FLUSH_FAILED);
                 result.set_error_msg(status.ToString());
@@ -689,17 +706,28 @@ void RocksDBDataStoreCommon::DropTable(DropTableRequest *drop_table_req)
                 return;
             }
 
-            // Decrease counter before successful return
-            DecreaseWriteCounter();
             result.set_error_code(::EloqDS::remote::DataStoreError::NO_ERROR);
             drop_table_req->SetFinish(result);
             DLOG(INFO) << "DropTable successfully.";
         });
+
+    if (!res)
+    {
+        LOG(ERROR) << "Failed to submit drop table work to query worker pool";
+        ::EloqDS::remote::CommonResult result;
+        result.set_error_code(::EloqDS::remote::DataStoreError::DB_NOT_OPEN);
+        result.set_error_msg("DB is not opened");
+        drop_table_req->SetFinish(result);
+
+        drop_table_req->Clear();
+        drop_table_req->Free();
+        return;
+    }
 }
 
 void RocksDBDataStoreCommon::ScanNext(ScanRequest *scan_req)
 {
-    query_worker_pool_->SubmitWork(
+    bool res = query_worker_pool_->SubmitWork(
         [this, scan_req]()
         {
             // DLOG(INFO) << "RocksDBDataStoreCommon::ScanNext "
@@ -983,11 +1011,20 @@ void RocksDBDataStoreCommon::ScanNext(ScanRequest *scan_req)
 
             scan_req->SetFinish(::EloqDS::remote::DataStoreError::NO_ERROR);
         });
+
+    if (!res)
+    {
+        LOG(ERROR) << "Failed to submit scan work to query worker pool";
+        scan_req->SetFinish(::EloqDS::remote::DataStoreError::DB_NOT_OPEN);
+        scan_req->Clear();
+        scan_req->Free();
+        return;
+    }
 }
 
 void RocksDBDataStoreCommon::ScanClose(ScanRequest *scan_req)
 {
-    query_worker_pool_->SubmitWork(
+    bool res = query_worker_pool_->SubmitWork(
         [this, scan_req]()
         {
             // Create a guard to ensure the poolable object is released to pool
@@ -1002,14 +1039,12 @@ void RocksDBDataStoreCommon::ScanClose(ScanRequest *scan_req)
 
             scan_req->SetFinish(::EloqDS::remote::DataStoreError::NO_ERROR);
         });
-}
-
-void RocksDBDataStoreCommon::WaitForPendingWrites()
-{
-    // Wait until all ongoing write requests are completed
-    while (ongoing_write_requests_.load(std::memory_order_acquire) > 0)
+    if (!res)
     {
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        LOG(ERROR) << "Failed to submit scan close work to query worker pool";
+        scan_req->SetFinish(::EloqDS::remote::DataStoreError::DB_NOT_OPEN);
+        scan_req->Clear();
+        scan_req->Free();
     }
 }
 
@@ -1019,27 +1054,15 @@ DSShardStatus RocksDBDataStoreCommon::FetchDSShardStatus() const
     return data_store_service_->FetchDSShardStatus(shard_id_);
 }
 
-void RocksDBDataStoreCommon::IncreaseWriteCounter()
-{
-    ongoing_write_requests_.fetch_add(1, std::memory_order_release);
-}
-
-void RocksDBDataStoreCommon::DecreaseWriteCounter()
-{
-    ongoing_write_requests_.fetch_sub(1, std::memory_order_release);
-}
-
 void RocksDBDataStoreCommon::SwitchToReadOnly()
 {
-    WaitForPendingWrites();
-
     bthread::Mutex mutex;
     bthread::ConditionVariable cond_var;
     bool done = false;
 
     // pause all background jobs to stop compaction and obselete file
     // deletion
-    query_worker_pool_->SubmitWork(
+    bool res = query_worker_pool_->SubmitWork(
         [this, &mutex, &cond_var, &done]()
         {
             // Run pause background work in a separate thread to avoid blocking
@@ -1055,6 +1078,12 @@ void RocksDBDataStoreCommon::SwitchToReadOnly()
             done = true;
             cond_var.notify_one();
         });
+    if (!res)
+    {
+        LOG(ERROR)
+            << "Failed to submit switch to read only work to query worker pool";
+        return;
+    }
 
     std::unique_lock<bthread::Mutex> lk(mutex);
 

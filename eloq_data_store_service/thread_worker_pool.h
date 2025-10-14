@@ -39,7 +39,7 @@ public:
     ThreadWorkerPool(size_t max_workers_num = 1);
     ~ThreadWorkerPool() = default;
 
-    void SubmitWork(std::function<void()> work);
+    bool SubmitWork(std::function<void()> work);
     size_t WorkQueueSize();
     void Shutdown();
     size_t WorkerPoolSize()
