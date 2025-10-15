@@ -4363,6 +4363,8 @@ void DataStoreServiceClient::PreparePartitionBatches(
     uint16_t parts_cnt_per_record,
     uint64_t now)
 {
+    assert(table_name.IsHashPartitioned());
+
     size_t write_batch_size = 0;
     PartitionBatchRequest batch_request;
     batch_request.Reset(
@@ -4383,7 +4385,7 @@ void DataStoreServiceClient::PreparePartitionBatches(
                 txservice::Sharder::MapKeyHashToBucketId(tx_key.Hash())));
             batch_request.key_parts.emplace_back(
                 std::string_view(tx_key.Data(), tx_key.Size()));
-            batch_size += tx_key.Size();
+            batch_size += tx_key.Size() + sizeof(uint16_t);
 
             const txservice::TxRecord *rec = ckpt_rec.Payload();
             batch_request.record_parts.emplace_back(std::string_view(
@@ -4405,7 +4407,7 @@ void DataStoreServiceClient::PreparePartitionBatches(
                 txservice::Sharder::MapKeyHashToBucketId(tx_key.Hash())));
             batch_request.key_parts.emplace_back(
                 std::string_view(tx_key.Data(), tx_key.Size()));
-            batch_size += tx_key.Size();
+            batch_size += tx_key.Size() + sizeof(uint16_t);
 
             batch_request.record_parts.emplace_back(std::string_view());
             batch_size += 0;
@@ -4429,9 +4431,12 @@ void DataStoreServiceClient::PreparePartitionBatches(
         txservice::TxKey tx_key = ckpt_rec.Key();
         bool is_deleted =
             !(ckpt_rec.payload_status_ == txservice::RecordStatus::Normal);
+
+        batch_request.key_parts.emplace_back(EncodeBucketId(
+            txservice::Sharder::MapKeyHashToBucketId(tx_key.Hash())));
         batch_request.key_parts.emplace_back(
             std::string_view(tx_key.Data(), tx_key.Size()));
-        batch_size += tx_key.Size();
+        batch_size += tx_key.Size() + sizeof(uint16_t);
 
         const txservice::TxRecord *rec = ckpt_rec.Payload();
         if (is_deleted)
