@@ -257,6 +257,7 @@ public:
 private:
     static void OnRead(::eloqstore::KvRequest *req);
     static void OnBatchWrite(::eloqstore::KvRequest *req);
+    static void OnDropTable(::eloqstore::KvRequest *req);
     static void OnDeleteRange(::eloqstore::KvRequest *req);
     static void OnScanNext(::eloqstore::KvRequest *req);
     static void OnScanDelete(::eloqstore::KvRequest *req);
