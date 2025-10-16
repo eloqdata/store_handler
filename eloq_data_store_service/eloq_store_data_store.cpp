@@ -402,7 +402,7 @@ void EloqStoreDataStore::OnDropTable(eloqstore::KvRequest *req)
     remote::CommonResult result;
     if (drop_table_request->Error() != ::eloqstore::KvError::NoError)
     {
-        LOG(ERROR) << "Write to EloqStore failed with error code: "
+        LOG(ERROR) << "Drop table from EloqStore failed with error code: "
                    << static_cast<uint32_t>(drop_table_request->Error())
                    << ", error message: " << drop_table_request->ErrMessage()
                    << ". Table: " << req->TableId();
