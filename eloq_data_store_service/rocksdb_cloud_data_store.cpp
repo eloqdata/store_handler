@@ -613,10 +613,8 @@ bool RocksDBCloudDataStore::OpenCloudDB(
     // 1. DB::Open() will be slow
     // 2. During DB::Open, some of the opened sst files keep in LRUCache will be
     // deleted due to LRU policy, which causes DB::Open failed
-    // set max_open_files to 0 will conflict with
-    // skip_cloud_files_in_getchildren
-    // Given a smaller value here to avoid opening too many files
-    options.max_open_files = 128;
+    // set max_open_files to 0 is safe when db_option.paranoid_checks is false
+    options.max_open_files = 0;
 
     // set ttl compaction filter
     assert(ttl_compaction_filter_ == nullptr);
