@@ -68,8 +68,8 @@ void SyncBatchReadForArchiveCallback(void *data,
     auto err_code = result.error_code();
     if (err_code == remote::DataStoreError::KEY_NOT_FOUND)
     {
-        LOG(ERROR) << "BatchReadForArchiveCallback, key not found: "
-                   << read_closure->Key().back();
+        LOG(INFO) << "BatchReadForArchiveCallback, key not found: "
+                  << read_closure->Key().back() << " , set as deleted";
         // callback_data->SetErrorCode(
         //     static_cast<int>(txservice::CcErrorCode::DATA_STORE_ERR));
         // assert(false);
