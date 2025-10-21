@@ -270,7 +270,11 @@ bool DataStoreServiceClient::PutAll(
         sync_putall->Reset();
 
         uint16_t parts_cnt_per_key = table_name.IsHashPartitioned() ? 2 : 1;
-        uint16_t parts_cnt_per_record = table_name.IsHashPartitioned() ? 1 : 5;
+        uint16_t parts_cnt_per_record = 5;
+        if (table_name.IsHashPartitioned() && table_name.IsObjectTable())
+        {
+            parts_cnt_per_record = 1;
+        }
 
         // Create partition states and prepare batches
         std::vector<PartitionCallbackData *> callback_data_list;
@@ -4223,16 +4227,16 @@ void DataStoreServiceClient::UpsertTable(UpsertTableData *table_data)
         if (alter_table_info)
         {
             auto *new_table_schema = table_data->new_table_schema_;
-            ok = ok &&
-                 std::all_of(
-                     alter_table_info->index_add_names_.begin(),
-                     alter_table_info->index_add_names_.end(),
-                     [this, new_table_schema](
-                         const std::pair<txservice::TableName, std::string> &p)
-                     {
-                         return InitTableRanges(p.first,
-                                                new_table_schema->Version());
-                     });
+            ok =
+                ok &&
+                std::all_of(
+                    alter_table_info->index_add_names_.begin(),
+                    alter_table_info->index_add_names_.end(),
+                    [this, new_table_schema](
+                        const std::pair<txservice::TableName, std::string> &p) {
+                        return InitTableRanges(p.first,
+                                               new_table_schema->Version());
+                    });
         }
 
         // 3- Delete table statistics
