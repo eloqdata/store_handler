@@ -17,9 +17,15 @@
  */
 #pragma once
 
-#include "eloq_catalog_factory.h"
-#include "eloq_key.h"
-#include "eloq_schema.h"
+#ifdef ELOQ_MODULE_ELOQKV
+#include "eloqkv_catalog_factory.h"
+#include "eloqkv_key.h"
+#endif
+#ifdef ELOQ_MODULE_ELOQSQL
+#include "eloqsql_catalog_factory.h"
+#include "eloqsql_key.h"
+#include "eloqsql_schema.h"
+#endif
 #include "google/cloud/bigtable/admin/bigtable_table_admin_client.h"
 #include "google/cloud/bigtable/table.h"
 #include "tx_service/include/store/data_store_handler.h"

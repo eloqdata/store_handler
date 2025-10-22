@@ -21,7 +21,7 @@
  */
 #include "rocksdb_scanner.h"
 
-#include "eloq_key.h"
+#include "eloqkv_key.h"
 #include "redis_object.h"
 #include "rocksdb_handler.h"
 
