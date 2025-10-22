@@ -38,7 +38,7 @@
 #include <utility>
 #include <vector>
 
-#include "eloq_key.h"
+#include "eloqkv_key.h"
 #include "redis_object.h"
 #include "rocksdb_config.h"
 #include "tx_service/include/store/data_store_handler.h"

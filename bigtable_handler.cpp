@@ -26,8 +26,8 @@
 
 #include "cc_map.h"
 #include "data_store_handler.h"
-#include "eloq_key.h"
-#include "eloq_schema.h"
+#include "eloqsql_key.h"
+#include "eloqsql_schema.h"
 #include "kv_store.h"
 #include "partition.h"
 #include "schema.h"

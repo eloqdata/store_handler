@@ -36,7 +36,12 @@
 #include <utility>
 #include <vector>
 
-#include "eloq_key.h"
+#ifdef ELOQ_MODULE_ELOQKV
+#include "eloqkv_key.h"
+#endif
+#ifdef ELOQ_MODULE_ELOQSQL
+#include "eloqsql_key.h"
+#endif
 #include "kv_store.h"
 #include "partition.h"
 #include "redis_object.h"
