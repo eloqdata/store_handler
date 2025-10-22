@@ -442,6 +442,10 @@ bool RocksDBCloudDataStore::OpenCloudDB(
     options.create_missing_column_families = true;
     // boost write performance by enabling unordered write
     options.unordered_write = true;
+    // skip Consistency check, which compares the actual file size with the size
+    // recorded in the metadata, which can fail when skip_cloud_files_in_getchildren is
+    // set to true
+    options.paranoid_checks = false;
 
     // print db statistics every 60 seconds
     if (enable_stats_)
@@ -697,6 +701,32 @@ bool RocksDBCloudDataStore::OpenCloudDB(
 
     // Enable auto compactions after blocking purger
     status = db_->SetOptions({{"disable_auto_compactions", "false"}});
+    if (!status.ok())
+    {
+        LOG(ERROR) << "Fail to enable auto compactions, error: "
+                   << status.ToString();
+        // Clean up the partially initialized database
+        db_->Close();
+        delete db_;
+        db_ = nullptr;
+        ttl_compaction_filter_ = nullptr;
+        return false;
+    }
+
+    status = db_->SetDBOptions(
+        {{"max_open_files", "-1"}});  // restore max_open_files to default value
+
+    if (!status.ok())
+    {
+        LOG(ERROR) << "Fail to set max_open_files to -1, error: "
+                   << status.ToString();
+        // Clean up the partially initialized database
+        db_->Close();
+        delete db_;
+        db_ = nullptr;
+        ttl_compaction_filter_ = nullptr;
+        return false;
+    }
 
     if (cloud_config_.warm_up_thread_num_ != 0)
     {
