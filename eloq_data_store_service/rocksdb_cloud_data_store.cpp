@@ -239,13 +239,13 @@ rocksdb::S3ClientFactory RocksDBCloudDataStore::BuildS3ClientFactory(
         if (secured_url)
         {
             config.scheme = Aws::Http::Scheme::HTTPS;
+            // Disable SSL verification for test env if necessary
+            // config.verifySSL = false;
         }
         else
         {
             config.scheme = Aws::Http::Scheme::HTTP;
         }
-        // Disable SSL verification for HTTPS
-        config.verifySSL = false;
 
         // Create and return the S3 client
         if (credentialsProvider)
@@ -484,8 +484,8 @@ bool RocksDBCloudDataStore::OpenCloudDB(
     // boost write performance by enabling unordered write
     options.unordered_write = true;
     // skip Consistency check, which compares the actual file size with the size
-    // recorded in the metadata, which can fail when skip_cloud_files_in_getchildren is
-    // set to true
+    // recorded in the metadata, which can fail when
+    // skip_cloud_files_in_getchildren is set to true
     options.paranoid_checks = false;
 
     // print db statistics every 60 seconds
