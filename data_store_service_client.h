@@ -101,13 +101,6 @@ public:
                 [this](const DataStoreServiceClusterManager &cluster_manager)
                 { this->SetupConfig(cluster_manager); });
         }
-
-        // Add sequence table to pre-built tables
-        DLOG(INFO) << "AppendPreBuiltTable: "
-                   << txservice::Sequences::table_name_sv_;
-
-        AppendPreBuiltTable(txservice::Sequences::table_name_);
-
         be_bucket_ids_.reserve(txservice::Sharder::TotalRangeBuckets());
         for (uint16_t bucket_id = 0;
              bucket_id < txservice::Sharder::TotalRangeBuckets();
@@ -494,7 +487,7 @@ private:
         return txservice::Sharder::MapKeyHashToHashPartitionId(key.Hash());
     }
 
-    // =====================================================
+// =====================================================
     // Group: KV Interface
     // Functions that decide if the request is local or remote
     // =====================================================
