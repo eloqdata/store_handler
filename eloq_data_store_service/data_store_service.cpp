@@ -228,7 +228,10 @@ DataStoreService::~DataStoreService()
     // shutdown all data_store
     if (shard_status_.load(std::memory_order_acquire) != DSShardStatus::Closed)
     {
-        data_store_->Shutdown();
+        if (data_store_ != nullptr)
+        {
+            data_store_->Shutdown();
+        }
         data_store_ = nullptr;
     }
 }

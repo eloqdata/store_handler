@@ -48,7 +48,10 @@ public:
         ds->Initialize();
         if (start_db)
         {
-            ds->StartDB();
+            if (!ds->StartDB())
+            {
+                return nullptr;
+            }
         }
         return ds;
     }
