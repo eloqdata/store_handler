@@ -231,7 +231,6 @@ DataStoreService::~DataStoreService()
         if (data_store_ != nullptr)
         {
             data_store_->Shutdown();
-            return;
         }
         data_store_ = nullptr;
     }
