@@ -271,7 +271,7 @@ bool RocksDBCloudDataStore::StartDB()
         DLOG(INFO) << "DBCloud already started";
         return true;
     }
-
+    rocksdb::Status status;
 #ifdef DATA_STORE_TYPE_ELOQDSS_ROCKSDB_CLOUD_S3
     if (cloud_config_.aws_access_key_id_.length() == 0 ||
         cloud_config_.aws_secret_key_.length() == 0)
@@ -286,7 +286,7 @@ bool RocksDBCloudDataStore::StartDB()
             cloud_config_.aws_access_key_id_, cloud_config_.aws_secret_key_);
     }
 
-    rocksdb::Status status = cfs_options_.credentials.HasValid();
+    status = cfs_options_.credentials.HasValid();
     if (!status.ok())
     {
         LOG(ERROR) << "Valid AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY "
