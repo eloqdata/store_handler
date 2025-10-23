@@ -152,12 +152,6 @@ public:
                 [this](const DataStoreServiceClusterManager &cluster_manager)
                 { this->SetupConfig(cluster_manager); });
         }
-
-        // Add sequence table to pre-built tables
-        DLOG(INFO) << "AppendPreBuiltTable: "
-                   << txservice::Sequences::table_name_sv_;
-
-        AppendPreBuiltTable(txservice::Sequences::table_name_);
     }
 
     // The maximum number of retries for RPC requests.
@@ -530,7 +524,7 @@ private:
         return txservice::Sharder::MapKeyHashToHashPartitionId(key.Hash());
     }
 
-    // =====================================================
+// =====================================================
     // Group: KV Interface
     // Functions that decide if the request is local or remote
     // =====================================================
