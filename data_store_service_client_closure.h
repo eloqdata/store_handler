@@ -1725,7 +1725,7 @@ public:
             }
         }
 
-        if (need_retry && retry_count_ < 2)
+        if (need_retry && retry_count_ < ds_service_client_->retry_limit_)
         {
             self_guard.Release();
             retry_count_++;
