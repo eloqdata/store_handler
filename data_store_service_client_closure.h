@@ -978,7 +978,7 @@ public:
             if (cntl_.Failed())
             {
                 // RPC failed.
-                LOG(ERROR) << "Failed for DeleteRange RPC request "
+                LOG(ERROR) << "Failed for FlushData RPC request "
                            << ", with Error code: " << cntl_.ErrorCode()
                            << ". Error Msg: " << cntl_.ErrorText();
                 if (cntl_.ErrorCode() != brpc::EOVERCROWDED &&
