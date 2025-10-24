@@ -403,7 +403,7 @@ bool DataStoreServiceClient::PersistKV(
                      << callback_data->Result().error_msg();
         return false;
     }
-    DLOG(INFO) << "DataStoreHandler::PersistKV success.";
+    LOG(INFO) << "DataStoreHandler::PersistKV success.";
 
     return true;
 }
@@ -3213,7 +3213,7 @@ void DataStoreServiceClient::ReadInternal(ReadClosure *read_closure)
 
         EloqDS::remote::DataStoreRpcService_Stub stub(channel);
         brpc::Controller &cntl = *read_closure->Controller();
-        cntl.set_timeout_ms(5000);
+        cntl.set_timeout_ms(60000);
         auto *req = read_closure->ReadRequest();
         auto *resp = read_closure->ReadResponse();
         stub.Read(&cntl, req, resp, read_closure);
@@ -3266,7 +3266,7 @@ void DataStoreServiceClient::DeleteRangeInternal(
 
         EloqDS::remote::DataStoreRpcService_Stub stub(channel);
         brpc::Controller &cntl = *delete_range_clouse->Controller();
-        cntl.set_timeout_ms(5000);
+        cntl.set_timeout_ms(60000);
         auto *req = delete_range_clouse->DeleteRangeRequest();
         auto *resp = delete_range_clouse->DeleteRangeResponse();
         stub.DeleteRange(&cntl, req, resp, delete_range_clouse);
@@ -3315,7 +3315,7 @@ void DataStoreServiceClient::FlushDataInternal(
 
         EloqDS::remote::DataStoreRpcService_Stub stub(channel);
         brpc::Controller &cntl = *flush_data_closure->Controller();
-        cntl.set_timeout_ms(5000);
+        cntl.set_timeout_ms(60000);
         auto *req = flush_data_closure->FlushDataRequest();
         auto *resp = flush_data_closure->FlushDataResponse();
         stub.FlushData(&cntl, req, resp, flush_data_closure);
@@ -3366,7 +3366,7 @@ void DataStoreServiceClient::DropTableInternal(
 
         EloqDS::remote::DataStoreRpcService_Stub stub(channel);
         brpc::Controller &cntl = *drop_table_closure->Controller();
-        cntl.set_timeout_ms(5000);
+        cntl.set_timeout_ms(60000);
         auto *req = drop_table_closure->DropTableRequest();
         auto *resp = drop_table_closure->DropTableResponse();
         stub.DropTable(&cntl, req, resp, drop_table_closure);
@@ -3435,7 +3435,7 @@ void DataStoreServiceClient::ScanNextInternal(
 
         EloqDS::remote::DataStoreRpcService_Stub stub(channel);
         brpc::Controller &cntl = *scan_next_closure->Controller();
-        cntl.set_timeout_ms(5000);
+        cntl.set_timeout_ms(60000);
         auto *req = scan_next_closure->ScanNextRequest();
         auto *resp = scan_next_closure->ScanNextResponse();
         stub.ScanNext(&cntl, req, resp, scan_next_closure);
@@ -3487,7 +3487,7 @@ void DataStoreServiceClient::ScanCloseInternal(
 
         EloqDS::remote::DataStoreRpcService_Stub stub(channel);
         brpc::Controller &cntl = *scan_next_closure->Controller();
-        cntl.set_timeout_ms(5000);
+        cntl.set_timeout_ms(60000);
         auto *req = scan_next_closure->ScanNextRequest();
         auto *resp = scan_next_closure->ScanNextResponse();
         stub.ScanClose(&cntl, req, resp, scan_next_closure);
@@ -3806,6 +3806,8 @@ void DataStoreServiceClient::BatchWriteRecordsInternal(
 
         // send request
         remote::DataStoreRpcService_Stub stub(channel);
+        brpc::Controller &cntl = *closure->Controller();
+        cntl.set_timeout_ms(60000);
         stub.BatchWriteRecords(closure->Controller(),
                                closure->RemoteRequest(),
                                closure->RemoteResponse(),
