@@ -48,6 +48,9 @@ static const std::string_view kv_mvcc_archive_name("mvcc_archives");
 bvar::LatencyRecorder g_load_range_slice_latency_recorder(
     "yf_load_range_slice");
 
+bvar::LatencyRecorder g_resend_load_range_recorder(
+    "yf_resend_load_range_slice");
+
 void SyncCallback(void *data,
                   ::google::protobuf::Closure *closure,
                   DataStoreServiceClient &client,
@@ -1145,6 +1148,8 @@ void LoadRangeSliceCallback(void *data,
     fill_store_slice_req->kv_session_id_ = scan_next_closure->GetSessionId();
     if (scan_next_closure->ItemsSize() == 1000)
     {
+        fill_store_slice_req->start_time_ =
+            std::chrono::high_resolution_clock::now();
         // has more data, continue to scan.
         client.ScanNext(*fill_store_slice_req->kv_table_name_,
                         fill_store_slice_req->kv_partition_id_,
@@ -1158,6 +1163,7 @@ void LoadRangeSliceCallback(void *data,
                         nullptr,
                         fill_store_slice_req,
                         &LoadRangeSliceCallback);
+        g_resend_load_range_recorder << 1;
     }
     else
     {
