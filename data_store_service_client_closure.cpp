@@ -51,6 +51,8 @@ bvar::LatencyRecorder g_load_range_slice_latency_recorder(
 bvar::LatencyRecorder g_resend_load_range_recorder(
     "yf_resend_load_range_slice");
 
+bvar::LatencyRecorder g_process_load_resp_recorder("yf_process_load_resp");
+
 void SyncCallback(void *data,
                   ::google::protobuf::Closure *closure,
                   DataStoreServiceClient &client,
@@ -1088,6 +1090,8 @@ void LoadRangeSliceCallback(void *data,
                     .count();
     g_load_range_slice_latency_recorder << time;
 
+    auto process_start_time = std::chrono::high_resolution_clock::now();
+
     // Process records from this batch
     const txservice::TableName &table_name = fill_store_slice_req->TblName();
     uint32_t items_size = scan_next_closure->ItemsSize();
@@ -1144,6 +1148,12 @@ void LoadRangeSliceCallback(void *data,
         fill_store_slice_req->AddDataItem(
             std::move(key), std::move(record), ts, is_deleted);
     }
+
+    auto process_stop_time = std::chrono::high_resolution_clock::now();
+    auto process_time = std::chrono::duration_cast<std::chrono::microseconds>(
+                            process_stop_time - process_start_time)
+                            .count();
+    g_process_load_resp_recorder << process_time;
 
     fill_store_slice_req->kv_session_id_ = scan_next_closure->GetSessionId();
     if (scan_next_closure->ItemsSize() == 1000)
