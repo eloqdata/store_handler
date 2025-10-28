@@ -99,6 +99,9 @@ DEFINE_uint32(eloq_store_pages_per_file_shift,
               "EloqStore pages per file shift.");
 DEFINE_uint32(eloq_store_overflow_pointers, 16, "EloqStore overflow pointers.");
 DEFINE_bool(eloq_store_data_append_mode, false, "EloqStore data append mode.");
+DEFINE_bool(eloq_store_enable_compression,
+            false,
+            "EloqStore enable compression.");
 
 namespace EloqDS
 {
@@ -304,6 +307,12 @@ EloqStoreConfig::EloqStoreConfig(const INIReader &config_reader,
             : config_reader.GetBoolean("store",
                                        "eloq_store_data_append_mode",
                                        FLAGS_eloq_store_data_append_mode);
+    eloqstore_configs_.enable_compression =
+        !CheckCommandLineFlagIsDefault("eloq_store_enable_compression")
+            ? FLAGS_eloq_store_enable_compression
+            : config_reader.GetBoolean("store",
+                                       "eloq_store_enable_compression",
+                                       FLAGS_eloq_store_enable_compression);
 }
 
 void EloqStoreConfig::ParseStoragePath(
