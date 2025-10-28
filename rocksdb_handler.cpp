@@ -49,6 +49,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <shared_mutex>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -1232,6 +1233,13 @@ std::unique_ptr<txservice::store::DataStoreScanner> RocksDBHandler::ScanForward(
     const txservice::KVCatalogInfo *kv_info,
     bool scan_foward)
 {
+    std::shared_lock<std::shared_mutex> db_lk(db_mux_);
+    auto db = GetDBPtr();
+    if (!db)
+    {
+        return nullptr;
+    }
+
     const std::string &kv_cf_name = kv_info->kv_table_name_;
     rocksdb::ColumnFamilyHandle *cfh = GetColumnFamilyHandler(kv_cf_name);
     if (cfh == nullptr)
@@ -1241,7 +1249,7 @@ std::unique_ptr<txservice::store::DataStoreScanner> RocksDBHandler::ScanForward(
     }
 
     std::unique_ptr<RocksDBScanner> scanner =
-        std::make_unique<RocksDBScanner>(GetDBPtr(),
+        std::make_unique<RocksDBScanner>(db,
                                          cfh,
                                          key_schema,
                                          rec_schema,
@@ -1250,8 +1258,12 @@ std::unique_ptr<txservice::store::DataStoreScanner> RocksDBHandler::ScanForward(
                                          start_key.GetKey<EloqKV::EloqKey>(),
                                          inclusive,
                                          search_cond,
-                                         scan_foward);
-    scanner->Init();
+                                         scan_foward,
+                                         std::move(db_lk));
+    if (!scanner->Init())
+    {
+        return nullptr;
+    }
     return scanner;
 }
 
