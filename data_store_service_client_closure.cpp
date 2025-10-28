@@ -22,6 +22,10 @@
 
 #include "data_store_service_client_closure.h"
 
+#include <bvar/bvar.h>
+#include <bvar/latency_recorder.h>
+
+#include <chrono>
 #include <memory>
 #include <string>
 #include <utility>
@@ -40,6 +44,9 @@ static const std::string_view kv_table_statistics_version_name(
     "table_statistics_version");
 static const std::string_view kv_database_catalogs_name("db_catalogs");
 static const std::string_view kv_mvcc_archive_name("mvcc_archives");
+
+bvar::LatencyRecorder g_load_range_slice_latency_recorder(
+    "yf_load_range_slice");
 
 void SyncCallback(void *data,
                   ::google::protobuf::Closure *closure,
@@ -1071,6 +1078,12 @@ void LoadRangeSliceCallback(void *data,
             fill_store_slice_req->NodeGroup());
         return;
     }
+
+    auto stop_time = std::chrono::high_resolution_clock::now();
+    auto time = std::chrono::duration_cast<std::chrono::microseconds>(
+                    stop_time - fill_store_slice_req->start_time_)
+                    .count();
+    g_load_range_slice_latency_recorder << time;
 
     // Process records from this batch
     const txservice::TableName &table_name = fill_store_slice_req->TblName();

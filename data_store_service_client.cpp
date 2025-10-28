@@ -21,12 +21,14 @@
  */
 #include "data_store_service_client.h"
 
+#include <bvar/bvar.h>
 #include <glog/logging.h>
 
 #include <boost/lexical_cast.hpp>
 #include <boost/uuid/uuid.hpp>
 #include <boost/uuid/uuid_generators.hpp>
 #include <boost/uuid/uuid_io.hpp>
+#include <chrono>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -1100,6 +1102,8 @@ DataStoreServiceClient::LoadRangeSlice(
     load_slice_req->kv_partition_id_ =
         KvPartitionIdOf(range_partition_id, true);
     load_slice_req->kv_session_id_.clear();
+
+    load_slice_req->start_time_ = std::chrono::high_resolution_clock::now();
 
     ScanNext(*load_slice_req->kv_table_name_,
              load_slice_req->kv_partition_id_,
@@ -4118,16 +4122,16 @@ void DataStoreServiceClient::UpsertTable(UpsertTableData *table_data)
         if (alter_table_info)
         {
             auto *new_table_schema = table_data->new_table_schema_;
-            ok = ok &&
-                 std::all_of(
-                     alter_table_info->index_add_names_.begin(),
-                     alter_table_info->index_add_names_.end(),
-                     [this, new_table_schema](
-                         const std::pair<txservice::TableName, std::string> &p)
-                     {
-                         return InitTableRanges(p.first,
-                                                new_table_schema->Version());
-                     });
+            ok =
+                ok &&
+                std::all_of(
+                    alter_table_info->index_add_names_.begin(),
+                    alter_table_info->index_add_names_.end(),
+                    [this, new_table_schema](
+                        const std::pair<txservice::TableName, std::string> &p) {
+                        return InitTableRanges(p.first,
+                                               new_table_schema->Version());
+                    });
         }
 
         // 3- Delete table statistics
