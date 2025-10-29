@@ -436,6 +436,10 @@ bool DataStoreServiceClusterManager::Load(const std::string &filename)
 bool DataStoreServiceClusterManager::Save(const std::string &filename) const
 {
     std::shared_lock<std::shared_mutex> lk(mutex_);
+    if (filename.empty())
+    {
+        return true;
+    }
     return SaveInternal(filename);
 }
 
