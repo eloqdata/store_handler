@@ -73,10 +73,10 @@ void RocksDBDataStore::Shutdown()
 
     // shutdown query worker pool
     query_worker_pool_->Shutdown();
-    query_worker_pool_ = nullptr;
+    // query_worker_pool_ = nullptr;
 
     data_store_service_->ForceEraseScanIters(shard_id_);
-    data_store_service_ = nullptr;
+    // data_store_service_ = nullptr;
 
     if (db_ != nullptr)
     {

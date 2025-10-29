@@ -238,10 +238,6 @@ protected:
                          uint32_t partition_id,
                          const std::string_view key);
 
-    std::string BuildKey(const std::string_view table_name,
-                         uint32_t partition_id,
-                         const ReadRequest *read_request);
-
     const std::string BuildKeyForDebug(
         const std::unique_ptr<rocksdb::Slice[]> &key_slices, size_t slice_size);
 
