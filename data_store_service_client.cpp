@@ -133,6 +133,60 @@ void DataStoreServiceClient::SetupConfig(
     }
 }
 
+void DataStoreServiceClient::TxConfigsToDssClusterConfig(
+    uint32_t node_id,  // = 0,
+    uint32_t ng_id,    // = 0,
+    const std::unordered_map<uint32_t, std::vector<txservice::NodeConfig>>
+        &ng_configs,
+    uint32_t leader_node_id,  // if no leader,set uint32t_max
+    DataStoreServiceClusterManager &cluster_manager)
+{
+    assert(ng_configs.size() == 1);
+    auto it = ng_configs.find(ng_id);
+    assert(it != ng_configs.end());
+    auto &ng_member_configs = it->second;
+
+    const txservice::NodeConfig *this_node = nullptr;
+    const txservice::NodeConfig *leader_node = nullptr;
+    for (auto &node_config : ng_member_configs)
+    {
+        if (node_config.node_id_ == node_id)
+        {
+            this_node = &node_config;
+        }
+        if (node_config.node_id_ == leader_node_id)
+        {
+            leader_node = &node_config;
+        }
+    }
+    assert(this_node != nullptr);
+    assert(leader_node_id == UINT32_MAX || leader_node != nullptr);
+    cluster_manager.Initialize(this_node->host_name_,
+                               TxPort2DssPort(this_node->port_));
+
+    std::vector<DSSNode> shard_nodes;
+    for (auto &node_config : ng_member_configs)
+    {
+        if (node_config.node_id_ != node_id)
+        {
+            DSSNode dss_node(node_config.host_name_,
+                             TxPort2DssPort(node_config.port_));
+            cluster_manager.AddShardMember(ng_id, dss_node);
+        }
+    }
+
+    if (leader_node_id != node_id)
+    {
+        cluster_manager.SwitchShardToClosed(ng_id, DSShardStatus::ReadWrite);
+        if (leader_node_id != UINT32_MAX)
+        {
+            DSSNode dss_node(leader_node->host_name_,
+                             TxPort2DssPort(leader_node->port_));
+            cluster_manager.UpdatePrimaryNode(ng_id, dss_node);
+        }
+    }
+}
+
 /**
  * @brief Establishes connection to the data store service.
  *
@@ -2875,6 +2929,12 @@ void DataStoreServiceClient::RestoreTxCache(txservice::NodeGroupId cc_ng_id,
  */
 bool DataStoreServiceClient::OnLeaderStart(uint32_t *next_leader_node)
 {
+    if (data_store_service_ != nullptr)
+    {
+        // Now, only support one shard.
+        data_store_service_->OpenDataStore(0);
+    }
+
     return true;
 }
 
@@ -2887,6 +2947,11 @@ bool DataStoreServiceClient::OnLeaderStart(uint32_t *next_leader_node)
  */
 void DataStoreServiceClient::OnStartFollowing()
 {
+    if (data_store_service_ != nullptr)
+    {
+        // Now, only support one shard.
+        data_store_service_->CloseDataStore(0);
+    }
 }
 
 /**
