@@ -24,8 +24,10 @@
 
 #include <bvar/bvar.h>
 #include <bvar/latency_recorder.h>
+#include <bvar/recorder.h>
 
 #include <chrono>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <utility>
@@ -50,6 +52,8 @@ bvar::LatencyRecorder g_load_range_slice_latency_recorder(
 
 bvar::LatencyRecorder g_resend_load_range_recorder(
     "yf_resend_load_range_slice");
+
+bvar::IntRecorder g_size_recorder("yf_range_slices_size");
 
 bvar::LatencyRecorder g_process_load_resp_recorder("yf_process_load_resp");
 
@@ -1101,9 +1105,12 @@ void LoadRangeSliceCallback(void *data,
 
     std::string key_str, value_str;
     uint64_t ts, ttl;
+    size_t total_size = 0;
     for (uint32_t i = 0; i < items_size; i++)
     {
         scan_next_closure->GetItem(i, key_str, value_str, ts, ttl);
+        total_size += key_str.size();
+        total_size += value_str.size() + sizeof(uint64_t) + sizeof(uint64_t);
         txservice::TxKey key =
             catalog_factory->CreateTxKey(key_str.data(), key_str.size());
         std::unique_ptr<txservice::TxRecord> record =
@@ -1154,6 +1161,8 @@ void LoadRangeSliceCallback(void *data,
                             process_stop_time - process_start_time)
                             .count();
     g_process_load_resp_recorder << process_time;
+
+    g_size_recorder << total_size;
 
     fill_store_slice_req->kv_session_id_ = scan_next_closure->GetSessionId();
     if (scan_next_closure->ItemsSize() == 1000)
