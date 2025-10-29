@@ -421,7 +421,7 @@ int main(int argc, char **argv)
             rocksdb::FileSystem::Default(), cfs_options, nullptr, &cfs);
 #elif defined(DATA_STORE_TYPE_ELOQDSS_ROCKSDB_CLOUD_GCP)
         status = rocksdb::CloudFileSystemEnv::NewGcpFileSystem(
-            rocksdb::FileSystem::Default(), cfs_options, nullptr, cfs);
+            rocksdb::FileSystem::Default(), cfs_options, nullptr, &cfs);
 #endif
 
         if (!status.ok())
