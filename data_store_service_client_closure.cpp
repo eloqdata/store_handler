@@ -1094,7 +1094,7 @@ void LoadRangeSliceCallback(void *data,
                     .count();
     g_load_range_slice_latency_recorder << time;
 
-    auto process_start_time = std::chrono::high_resolution_clock::now();
+    // auto process_start_time = std::chrono::high_resolution_clock::now();
 
     // Process records from this batch
     const txservice::TableName &table_name = fill_store_slice_req->TblName();
@@ -1156,11 +1156,13 @@ void LoadRangeSliceCallback(void *data,
             std::move(key), std::move(record), ts, is_deleted);
     }
 
+    /*
     auto process_stop_time = std::chrono::high_resolution_clock::now();
     auto process_time = std::chrono::duration_cast<std::chrono::microseconds>(
                             process_stop_time - process_start_time)
                             .count();
     g_process_load_resp_recorder << process_time;
+    */
 
     g_size_recorder << total_size;
 
