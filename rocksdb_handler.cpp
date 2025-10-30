@@ -1880,17 +1880,30 @@ void RocksDBHandler::ParallelIterateTable(
         // 2) table has no data at all
         txservice::WaitableCc ccm_has_full_entries_cc;
         ccm_has_full_entries_cc.Reset(
-            [&table_name, cc_ng_id, cc_ng_term](txservice::CcShard &ccs)
+            [&table_name,
+             cc_ng_id,
+             cc_ng_term,
+             requester = &ccm_has_full_entries_cc](txservice::CcShard &ccs)
             {
                 txservice::CcMap *ccm = ccs.GetCcm(table_name, cc_ng_id);
                 if (ccm == nullptr)
                 {
-                    const txservice::CatalogEntry *catalog_entry =
-                        ccs.InitCcm(table_name, cc_ng_id, cc_ng_term, nullptr);
-                    if (catalog_entry == nullptr)
+                    auto init_res = ccs.InitCcm(
+                        table_name, cc_ng_id, cc_ng_term, requester);
+                    if (!init_res.has_value())
                     {
+                        // InitCcm failure.
+                        // the catalog may need to be fetched from the
+                        // KV store, may not exist (payload status = Deleted),
+                        // or is currently being modified (write lock acquired).
+                        //
+                        // In the first case, the requester will be re-enqueued
+                        // after FetchCatalog() completes fetching the catalog
+                        // from the data store. In the latter cases, the request
+                        // is marked as errored.
                         return false;
                     }
+                    assert(init_res.value() != nullptr);
                     ccm = ccs.GetCcm(table_name, cc_ng_id);
                 }
                 ccm->ccm_has_full_entries_ = true;
