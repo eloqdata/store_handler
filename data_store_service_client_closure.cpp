@@ -426,8 +426,12 @@ void PartitionBatchCallback(void *data,
     if (partition_state->GetNextBatch(next_batch))
     {
         // Send the next batch
+        BatchWriteRecordsClosure *batch_closure =
+            static_cast<BatchWriteRecordsClosure *>(closure);
+        uint32_t data_shard_id = batch_closure->ShardId();
         client.BatchWriteRecords(callback_data->table_name,
                                  partition_state->partition_id,
+                                 data_shard_id,
                                  std::move(next_batch.key_parts),
                                  std::move(next_batch.record_parts),
                                  std::move(next_batch.records_ts),
@@ -525,6 +529,7 @@ void FetchAllDatabaseCallback(void *data,
             fetch_data->session_id_ = scan_next_closure->SessionId();
             client.ScanNext(kv_database_catalogs_name,
                             0,
+                            scan_next_closure->ShardId(),
                             fetch_data->dbnames_->back(),
                             fetch_data->end_key_,
                             fetch_data->session_id_,
@@ -592,6 +597,7 @@ void DiscoverAllTableNamesCallback(void *data,
             fetch_data->session_id_ = scan_next_closure->SessionId();
             client.ScanNext(kv_table_catalogs_name,
                             0,
+                            scan_next_closure->ShardId(),
                             fetch_data->table_names_->back(),
                             "",
                             fetch_data->session_id_,
@@ -723,6 +729,7 @@ void FetchTableRangesCallback(void *data,
 
             client.ScanNext(kv_range_table_name,
                             fetch_range_cc->kv_partition_id_,
+                            scan_next_closure->ShardId(),
                             fetch_range_cc->kv_start_key_,
                             fetch_range_cc->kv_end_key_,
                             fetch_range_cc->kv_session_id_,
@@ -818,6 +825,7 @@ void FetchRangeSlicesCallback(void *data,
                                                fetch_req->CurrentSegmentId());
                 client.Read(kv_range_slices_table_name,
                             fetch_req->kv_partition_id_,
+                            read_closure->ShardId(),
                             fetch_req->kv_start_key_,
                             fetch_req,
                             &FetchRangeSlicesCallback);
@@ -914,6 +922,7 @@ void FetchRangeSlicesCallback(void *data,
                                               fetch_req->CurrentSegmentId());
             client.Read(kv_range_slices_table_name,
                         fetch_req->kv_partition_id_,
+                        read_closure->ShardId(),
                         fetch_req->kv_start_key_,
                         fetch_req,
                         &FetchRangeSlicesCallback);
@@ -1030,6 +1039,7 @@ void FetchTableStatsCallback(void *data,
             fetch_cc->kv_start_key_ = std::move(key);
             client.ScanNext(kv_table_statistics_name,
                             fetch_cc->kv_partition_id_,
+                            scan_next_closure->ShardId(),
                             fetch_cc->kv_start_key_,
                             fetch_cc->kv_end_key_,
                             fetch_cc->kv_session_id_,
@@ -1135,6 +1145,7 @@ void LoadRangeSliceCallback(void *data,
         // has more data, continue to scan.
         client.ScanNext(*fill_store_slice_req->kv_table_name_,
                         fill_store_slice_req->kv_partition_id_,
+                        scan_next_closure->ShardId(),
                         fill_store_slice_req->kv_start_key_,
                         fill_store_slice_req->kv_end_key_,
                         fill_store_slice_req->kv_session_id_,
@@ -1202,6 +1213,7 @@ void FetchArchivesCallback(void *data,
     {
         client.ScanNext(fetch_data->kv_table_name_,
                         fetch_data->partition_id_,
+                        scan_next_closure->ShardId(),
                         fetch_data->start_key_,
                         fetch_data->end_key_,
                         scan_next_closure->SessionId(),
@@ -1308,6 +1320,7 @@ void FetchRecordArchivesCallback(void *data,
 
         client.ScanNext(kv_mvcc_archive_name,
                         fetch_cc->partition_id_,
+                        scan_next_closure->ShardId(),
                         fetch_cc->kv_start_key_,
                         fetch_cc->kv_end_key_,
                         fetch_cc->kv_session_id_,
@@ -1332,6 +1345,7 @@ void FetchRecordArchivesCallback(void *data,
 
         client.ScanNext(kv_mvcc_archive_name,
                         fetch_cc->partition_id_,
+                        scan_next_closure->ShardId(),
                         fetch_cc->kv_start_key_,
                         fetch_cc->kv_end_key_,
                         fetch_cc->kv_session_id_,

@@ -180,18 +180,27 @@ private:
 class DataStoreService : EloqDS::remote::DataStoreRpcService
 {
 public:
-    DataStoreService(const DataStoreServiceClusterManager &config,
+    DataStoreService(uint32_t node_id,
+                     std::string host_name,
+                     int32_t service_port,
+                     const DataStoreServiceClusterManager &config,
                      const std::string &config_file_path,
                      const std::string &migration_log_path,
                      std::unique_ptr<DataStoreFactory> &&data_store_factory);
 
     ~DataStoreService();
 
-    bool StartService(bool create_db_if_missing);
+    bool StartService(bool create_db_if_missing,
+                      std::vector<uint32_t> &bootstrap_shards);
 
     brpc::Server *GetBrpcServer()
     {
         return server_.get();
+    }
+
+    uint32_t GetNodeId() const
+    {
+        return node_id_;
     }
 
     /**
@@ -210,6 +219,7 @@ public:
      * @brief Point read operation
      * @param table_name Table name
      * @param partition_id Partition id
+     * @param shard_id Shard id
      * @param key Key
      * @param record Record (output)
      * @param ts Timestamp (output)
@@ -217,7 +227,8 @@ public:
      * @param done Callback function
      */
     void Read(const std::string_view table_name,
-              const uint32_t partition_id,
+              int32_t partition_id,
+              uint32_t shard_id,
               const std::string_view key,
               std::string *record,
               uint64_t *ts,
@@ -242,6 +253,7 @@ public:
      * @brief Batch write operation
      * @param table_name Table name
      * @param partition_id Partition id
+     * @param shard_id Shard id
      * @param keys Keys
      * @param records Records
      * @param ts Timestamps
@@ -252,6 +264,7 @@ public:
      */
     void BatchWriteRecords(std::string_view table_name,
                            int32_t partition_id,
+                           uint32_t shard_id,
                            const std::vector<std::string_view> &key_parts,
                            const std::vector<std::string_view> &record_parts,
                            const std::vector<uint64_t> &ts,
@@ -305,6 +318,7 @@ public:
      * @brief Delete range of data operation
      * @param table_name Table name
      * @param partition_id Partition id
+     * @param shard_id Shard id
      * @param start_key Start key,
      *        if empty, delete from the beginning of the table
      * @param end_key End key
@@ -313,7 +327,8 @@ public:
      * @param done Callback function
      */
     void DeleteRange(const std::string_view table_name,
-                     const uint32_t partition_id,
+                     const int32_t partition_id,
+                     uint32_t shard_id,
                      const std::string_view start_key,
                      const std::string_view end_key,
                      const bool skip_wal,
@@ -382,6 +397,7 @@ public:
      * @brief Scan next operation
      * @param table_name Table name
      * @param partition_id Partition id
+     * @param shard_id Shard id
      * @param start_key Start key
      * @param end_key End key
      * @param inclusive_start Inclusive start
@@ -394,7 +410,8 @@ public:
      * @param done Callback function
      */
     void ScanNext(const std::string_view table_name,
-                  uint32_t partition_id,
+                  int32_t partition_id,
+                  uint32_t shard_id,
                   const std::string_view start_key,
                   const std::string_view end_key,
                   bool inclusive_start,
@@ -423,12 +440,14 @@ public:
      * @brief Scan close operation
      * @param table_name Table name
      * @param partition_id Partition id
+     * @param shard_id Shard id
      * @param session_id Session ID
      * @param result Result (output)
      * @param done Callback function
      */
     void ScanClose(const std::string_view table_name,
-                   uint32_t partition_id,
+                   int32_t partition_id,
+                   uint32_t shard_id,
                    std::string *session_id,
                    ::EloqDS::remote::CommonResult *result,
                    ::google::protobuf::Closure *done);
@@ -511,12 +530,13 @@ public:
      * @brief Preapre sharding error
      *        Fill the error code and the topology change in the result
      */
-    void PrepareShardingError(uint32_t partition_id,
+    void PrepareShardingError(uint32_t shard_id,
                               ::EloqDS::remote::CommonResult *result)
     {
-        uint32_t shard_id =
-            cluster_manager_.GetShardIdByPartitionId(partition_id);
-        cluster_manager_.PrepareShardingError(shard_id, result);
+        result->set_error_code(
+            ::EloqDS::remote::DataStoreError::REQUESTED_NODE_NOT_OWNER);
+        DLOG(INFO) << "=====PrepareShardingError";
+        result->set_error_msg("Requested data not on local node.");
     }
 
     void FetchDSSClusterConfig(
@@ -572,9 +592,10 @@ public:
     // =======================================================================
     DSShardStatus FetchDSShardStatus(uint32_t shard_id)
     {
-        if (shard_id_ == shard_id)
+        if (data_shards_.at(shard_id).shard_id_ == shard_id)
         {
-            return shard_status_;
+            return data_shards_.at(shard_id).shard_status_.load(
+                std::memory_order_acquire);
         }
         return DSShardStatus::Closed;
     }
@@ -590,40 +611,34 @@ public:
         return data_store_factory_.get();
     }
 
-    void IncreaseWriteReqCount()
+    void IncreaseWriteReqCount(uint32_t shard_id)
     {
-        ongoing_write_requests_.fetch_add(1, std::memory_order_release);
+        data_shards_.at(shard_id).ongoing_write_requests_.fetch_add(
+            1, std::memory_order_release);
     }
 
-    void DecreaseWriteReqCount()
+    void DecreaseWriteReqCount(uint32_t shard_id)
     {
-        ongoing_write_requests_.fetch_sub(1, std::memory_order_release);
+        data_shards_.at(shard_id).ongoing_write_requests_.fetch_sub(
+            1, std::memory_order_release);
     }
 
     bool IsOwnerOfShard(uint32_t shard_id) const
     {
-        return shard_status_.load(std::memory_order_acquire) !=
-                   DSShardStatus::Closed &&
-               shard_id_ == shard_id;
+        return data_shards_[shard_id].shard_status_.load(
+                   std::memory_order_acquire) == DSShardStatus::ReadWrite &&
+               data_shards_[shard_id].shard_id_ == shard_id;
     }
 
     void CloseDataStore(uint32_t shard_id);
     void OpenDataStore(uint32_t shard_id);
 
 private:
-    uint32_t GetShardIdByPartitionId(int32_t partition_id)
-    {
-        // Now only support single data shard
-        return 0;
-        // return cluster_manager_.GetShardIdByPartitionId(partition_id);
-    }
-
-
     DataStore *GetDataStore(uint32_t shard_id)
     {
-        if (shard_id_ == shard_id)
+        if (data_shards_.at(shard_id).shard_id_ == shard_id)
         {
-            return data_store_.get();
+            return data_shards_.at(shard_id).data_store_.get();
         }
         else
         {
@@ -654,6 +669,8 @@ private:
                           uint64_t &shard_next_version);
 
     // std::shared_mutex serv_mux_;
+    uint32_t node_id_;
+    std::string host_name_;
     int32_t service_port_;
     std::unique_ptr<brpc::Server> server_;
 
@@ -669,13 +686,38 @@ private:
     // - In write functions, we increase the ongoing_write_requests_ firstly and
     // then check the shard_status_. After the request is executed or if
     // shard_status_ is not required, decrease them.
-    uint32_t shard_id_{UINT32_MAX};
-    std::unique_ptr<DataStore> data_store_{nullptr};
-    std::atomic<DSShardStatus> shard_status_{DSShardStatus::Closed};
-    std::atomic<uint64_t> ongoing_write_requests_{0};
+    // uint32_t shard_id_{UINT32_MAX};
+    // std::unique_ptr<DataStore> data_store_{nullptr};
+    // std::atomic<DSShardStatus> shard_status_{DSShardStatus::Closed};
+    // std::atomic<uint64_t> ongoing_write_requests_{0};
 
-    // scan iterator cache
-    TTLWrapperCache scan_iter_cache_;
+    // // scan iterator cache
+    // TTLWrapperCache scan_iter_cache_;
+
+    struct DataShard
+    {
+        void ShutDown()
+        {
+            if (shard_status_.load(std::memory_order_acquire) !=
+                    DSShardStatus::Closed &&
+                data_store_ != nullptr)
+            {
+                // shard_status_.store(DSShardStatus::Closed,
+                //                     std::memory_order_release);
+                data_store_->Shutdown();
+            }
+            data_store_ = nullptr;
+            scan_iter_cache_.Clear();
+        }
+
+        uint32_t shard_id_{UINT32_MAX};
+        std::unique_ptr<DataStore> data_store_{nullptr};
+        std::atomic<DSShardStatus> shard_status_{DSShardStatus::Closed};
+        std::atomic<uint64_t> ongoing_write_requests_{0};
+        TTLWrapperCache scan_iter_cache_;
+    };
+
+    std::array<DataShard, 1000> data_shards_;
 
     std::unique_ptr<DataStoreFactory> data_store_factory_;
 

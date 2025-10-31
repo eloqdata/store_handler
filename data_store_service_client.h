@@ -67,9 +67,51 @@ class DataStoreServiceClient : public txservice::store::DataStoreHandler
 public:
     ~DataStoreServiceClient();
 
+    // DataStoreServiceClient(
+    //     txservice::CatalogFactory *catalog_factory[3],
+    //     const DataStoreServiceClusterManager &cluster_manager,
+    //     DataStoreService *data_store_service = nullptr)
+    //     : catalog_factory_array_{catalog_factory[0],
+    //                              catalog_factory[1],
+    //                              catalog_factory[2],
+    //                              &range_catalog_factory_,
+    //                              &hash_catalog_factory_},
+    //       data_store_service_(data_store_service)
+    // {
+    //     // Init dss cluster config.
+    //     dss_topology_version_ = cluster_manager.GetTopologyVersion();
+    //     auto all_shards = cluster_manager.GetAllShards();
+    //     assert(all_shards.size() == 1);
+    //     for (auto &[shard_id, shard] : all_shards)
+    //     {
+    //         uint32_t node_idx = FindFreeNodeIndex();
+    //         auto &node_ref = dss_nodes_[node_idx];
+    //         node_ref.Reset(shard.nodes_[0].host_name_,
+    //                        shard.nodes_[0].port_,
+    //                        shard.version_);
+    //         dss_shards_[shard_id].store(shard_id);
+    //     }
+
+    //     if (data_store_service_ != nullptr)
+    //     {
+    //         data_store_service_->AddListenerForUpdateConfig(
+    //             [this](const DataStoreServiceClusterManager &cluster_manager)
+    //             { this->SetupConfig(cluster_manager); });
+    //     }
+
+    //     // Add sequence table to pre-built tables
+    //     DLOG(INFO) << "AppendPreBuiltTable: "
+    //                << txservice::Sequences::table_name_sv_;
+
+    //     AppendPreBuiltTable(txservice::Sequences::table_name_);
+    // }
+
     DataStoreServiceClient(
         txservice::CatalogFactory *catalog_factory[3],
-        const DataStoreServiceClusterManager &cluster_manager,
+        const std::unordered_map<uint32_t, std::vector<txservice::NodeConfig>>
+            &ng_configs,
+        const std::unordered_map<uint32_t, uint32_t>
+            &ng_leaders,  // if not set, default to ng_id
         DataStoreService *data_store_service = nullptr)
         : catalog_factory_array_{catalog_factory[0],
                                  catalog_factory[1],
@@ -78,26 +120,48 @@ public:
                                  &hash_catalog_factory_},
           data_store_service_(data_store_service)
     {
-        // Init dss cluster config.
-        dss_topology_version_ = cluster_manager.GetTopologyVersion();
-        auto all_shards = cluster_manager.GetAllShards();
-        assert(all_shards.size() == 1);
-        for (auto &[shard_id, shard] : all_shards)
+        // init ng and nodes map
+        for (uint32_t nid = 0; nid < 1000; nid++)
         {
-            uint32_t node_idx = FindFreeNodeIndex();
-            auto &node_ref = dss_nodes_[node_idx];
-            node_ref.Reset(shard.nodes_[0].host_name_,
-                           shard.nodes_[0].port_,
-                           shard.version_);
-            dss_shards_[shard_id].store(shard_id);
+            dss_shards_owners_[nid].store(nid);
+            nodes_infos_[nid].store(UINT32_MAX);
         }
 
-        if (data_store_service_ != nullptr)
+        for (auto &[ng_id, leader_id] : ng_leaders)
         {
-            data_store_service_->AddListenerForUpdateConfig(
-                [this](const DataStoreServiceClusterManager &cluster_manager)
-                { this->SetupConfig(cluster_manager); });
+            dss_shards_owners_[ng_id].store(leader_id);
         }
+
+        need_bootstrap_ = !ng_leaders.empty();
+
+        for (auto &ref : ng_configs)
+        {
+            dss_shard_ids_.insert(ref.first);
+            for (auto &node_config : ref.second)
+            {
+                uint32_t node_idx = nodes_infos_[node_config.node_id_].load();
+                if (node_idx == UINT32_MAX)
+                {
+                    int32_t node_idx = FindFreeNodeIndex();
+                    auto &node_ref = dss_nodes_[node_idx];
+                    node_ref.Reset(node_config.host_name_,
+                                   TxPort2DssPort(node_config.port_),
+                                   0);
+                    nodes_infos_[node_config.node_id_].store(node_idx);
+                }
+            }
+        }
+
+        // init bucket infos
+        InitBucketsInfo(dss_shard_ids_, 0, bucket_infos_);
+
+        // if (data_store_service_ != nullptr)
+        // {
+        //     // data_store_service_->AddListenerForUpdateConfig(
+        //     //     [this](const DataStoreServiceClusterManager
+        //     &cluster_manager)
+        //     //     { this->SetupConfig(cluster_manager); });
+        // }
 
         // Add sequence table to pre-built tables
         DLOG(INFO) << "AppendPreBuiltTable: "
@@ -378,9 +442,10 @@ public:
     void RestoreTxCache(txservice::NodeGroupId cc_ng_id,
                         int64_t cc_ng_term) override;
 
-    bool OnLeaderStart(uint32_t *next_leader_node) override;
+    bool OnLeaderStart(uint32_t ng_id, uint32_t *next_leader_node) override;
+    bool OnLeaderStop(uint32_t ng_id, int64_t term) override;
 
-    void OnStartFollowing() override;
+    void OnStartFollowing(uint32_t ng_id, uint32_t leader_node_id) override;
 
     void OnShutdown() override;
 
@@ -464,19 +529,18 @@ public:
     bool DeleteCatalog(const txservice::TableName &base_table_name,
                        uint64_t write_time);
 
-private:
-    int32_t MapKeyHashToPartitionId(const txservice::TxKey &key) const
-    {
-        return key.Hash() & 0x3FF;
-    }
+    uint32_t GetShardIdByPartitionId(int32_t partition_id,
+                                     bool is_range_partition) const;
 
+private:
     // =====================================================
     // Group: KV Interface
     // Functions that decide if the request is local or remote
     // =====================================================
 
     void Read(const std::string_view kv_table_name,
-              const uint32_t partition_id,
+              const int32_t partition_id,
+              const uint32_t shard_id,
               const std::string_view key,
               void *callback_data,
               DataStoreCallback callback);
@@ -486,6 +550,7 @@ private:
     void BatchWriteRecords(
         std::string_view kv_table_name,
         int32_t partition_id,
+        uint32_t shard_id,
         std::vector<std::string_view> &&key_parts,
         std::vector<std::string_view> &&record_parts,
         std::vector<uint64_t> &&records_ts,
@@ -528,6 +593,7 @@ private:
      */
     void DeleteRange(const std::string_view table_name,
                      const int32_t partition_id,
+                     uint32_t shard_id,
                      const std::string &start_key,
                      const std::string &end_key,
                      const bool skip_wal,
@@ -546,7 +612,8 @@ private:
     void FlushDataInternal(FlushDataClosure *flush_data_closure);
 
     void ScanNext(const std::string_view table_name,
-                  uint32_t partition_id,
+                  int32_t partition_id,
+                  uint32_t shard_id,
                   const std::string_view start_key,
                   const std::string_view end_key,
                   const std::string_view session_id,
@@ -561,7 +628,8 @@ private:
     void ScanNextInternal(ScanNextClosure *scan_next_closure);
 
     void ScanClose(const std::string_view table_name,
-                   uint32_t partition_id,
+                   int32_t partition_id,
+                   uint32_t shard_id,
                    std::string &session_id,
                    void *callback_data,
                    DataStoreCallback callback);
@@ -602,7 +670,8 @@ private:
         return 0;
 #else
         std::string_view sv = table.StringView();
-        return (std::hash<std::string_view>()(sv)) & 0x3FF;
+        auto hash_code = std::hash<std::string_view>()(sv);
+        return Sharder::MapKeyHashToHashPartitionId(hash_code);
 #endif
     }
 
@@ -630,25 +699,29 @@ private:
     }
 
     /**
-     * @brief Check if the shard_id is local to the current node.
-     * @param shard_id
-     * @return true if the shard_id is local to the current node.
+     * @brief Check if the owner of shard is the local DataStoreService node.
+     * @param partition_id
+     * @return true if the owner of shard is the local DataStoreService node
      */
     bool IsLocalShard(uint32_t shard_id);
-
     /**
-     * @brief Check if the partition_id is local to the current node.
-     * @param partition_id
-     * @return true if the partition_id is local to the current node.
+     * @brief Get the index of the shard's owner node in dss_nodes_.
+     * @param shard_id
+     * @return uint32_t
      */
-    bool IsLocalPartition(int32_t partition_id);
-
-    uint32_t GetShardIdByPartitionId(int32_t partition_id) const;
-    uint32_t AllDataShardCount() const;
     uint32_t GetOwnerNodeIndexOfShard(uint32_t shard_id) const;
+    std::vector<uint32_t> GetAllDataShards();
     bool UpdateOwnerNodeIndexOfShard(uint32_t shard_id,
                                      uint32_t old_node_index,
                                      uint32_t &new_node_index);
+    void InitBucketsInfo(
+        const std::set<uint32_t> &node_groups,
+        uint64_t version,
+        std::unordered_map<uint16_t, std::unique_ptr<txservice::BucketInfo>>
+            &ng_bucket_infos);
+
+    void UpdateShardOwner(uint32_t shard_id, uint32_t node_id);
+
     uint32_t FindFreeNodeIndex();
     void HandleShardingError(const ::EloqDS::remote::CommonResult &result);
     bool UpgradeShardVersion(uint32_t shard_id,
@@ -667,6 +740,8 @@ private:
     // std::atomic<bool> ds_serv_shutdown_indicator_;
     // point to the data store service if it is colocated
     DataStoreService *data_store_service_;
+
+    bool need_bootstrap_{false};
 
     struct DssNode
     {
@@ -726,8 +801,19 @@ private:
     const uint64_t NodeExpiredTime = 10 * 1000 * 1000;  // 10s
     // Now only support one shard. dss_shards_ caches the index in dss_nodes_ of
     // shard owner.
-    std::array<std::atomic<uint32_t>, 1> dss_shards_;
-    std::atomic<uint64_t> dss_topology_version_{0};
+    // std::array<std::atomic<uint32_t>, 1> dss_shards_;
+    // std::atomic<uint64_t> dss_topology_version_{0};
+
+    // Index is shard id. The value is the owner node id of shard.
+    std::array<std::atomic<uint32_t>, 1000> dss_shards_owners_;
+    // Index is node id. The value is the index in dss_nodes_ of node.
+    std::array<std::atomic<uint32_t>, 1000> nodes_infos_;
+
+    std::set<uint32_t> dss_shard_ids_;
+    // key is bucket id, value is bucket info.
+    std::unordered_map<uint16_t, std::unique_ptr<txservice::BucketInfo>>
+        bucket_infos_;
+    static const uint16_t total_range_buckets = 1024;
 
     // std::atomic<uint64_t> flying_remote_fetch_count_{0};
     // // Work queue for fetch records from primary node

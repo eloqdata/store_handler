@@ -152,6 +152,9 @@ RocksDBCloudDataStore::RocksDBCloudDataStore(
       cloud_env_(nullptr),
       db_(nullptr)
 {
+    auto *cloud_config_ptr =
+        const_cast<EloqDS::RocksDBCloudConfig *>(&cloud_config_);
+    cloud_config_ptr->object_path_.append("_ds_" + std::to_string(shard_id));
 }
 
 RocksDBCloudDataStore::~RocksDBCloudDataStore()
