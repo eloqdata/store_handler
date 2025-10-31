@@ -202,6 +202,7 @@ static std::string toLower(const std::string &str)
     return lowerStr;
 }
 
+#if defined(DATA_STORE_TYPE_ELOQDSS_ROCKSDB_CLOUD_S3)
 rocksdb::S3ClientFactory RocksDBCloudDataStore::BuildS3ClientFactory(
     const std::string &endpoint)
 {
@@ -262,6 +263,7 @@ rocksdb::S3ClientFactory RocksDBCloudDataStore::BuildS3ClientFactory(
         }
     };
 }
+#endif
 
 bool RocksDBCloudDataStore::StartDB()
 {
@@ -271,7 +273,7 @@ bool RocksDBCloudDataStore::StartDB()
         DLOG(INFO) << "DBCloud already started";
         return true;
     }
-
+    rocksdb::Status status;
 #ifdef DATA_STORE_TYPE_ELOQDSS_ROCKSDB_CLOUD_S3
     if (cloud_config_.aws_access_key_id_.length() == 0 ||
         cloud_config_.aws_secret_key_.length() == 0)
@@ -286,7 +288,7 @@ bool RocksDBCloudDataStore::StartDB()
             cloud_config_.aws_access_key_id_, cloud_config_.aws_secret_key_);
     }
 
-    rocksdb::Status status = cfs_options_.credentials.HasValid();
+    status = cfs_options_.credentials.HasValid();
     if (!status.ok())
     {
         LOG(ERROR) << "Valid AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY "
@@ -338,6 +340,7 @@ bool RocksDBCloudDataStore::StartDB()
                << cfs_options_.purger_periodicity_millis << " ms"
                << ", run_purger: " << cfs_options_.run_purger;
 
+#ifdef DATA_STORE_TYPE_ELOQDSS_ROCKSDB_CLOUD_S3
     if (!cloud_config_.s3_endpoint_url_.empty())
     {
         cfs_options_.s3_client_factory =
@@ -353,6 +356,7 @@ bool RocksDBCloudDataStore::StartDB()
         // the transfer manager can leverage multipart upload and download
         cfs_options_.use_aws_transfer_manager = true;
     }
+#endif
 
     DLOG(INFO) << "DBCloud Open";
     rocksdb::CloudFileSystem *cfs;

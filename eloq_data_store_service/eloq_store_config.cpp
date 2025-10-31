@@ -166,14 +166,6 @@ EloqStoreConfig::EloqStoreConfig(const INIReader &config_reader,
             : config_reader.GetString("store",
                                       "eloq_store_cloud_store_path",
                                       FLAGS_eloq_store_cloud_store_path);
-    eloqstore_configs_.num_gc_threads =
-        !eloqstore_configs_.cloud_store_path.empty()
-            ? 0
-            : (!CheckCommandLineFlagIsDefault("eloq_store_gc_threads")
-                   ? FLAGS_eloq_store_gc_threads
-                   : config_reader.GetInteger("store",
-                                              "eloq_store_gc_threads",
-                                              FLAGS_eloq_store_gc_threads));
     LOG_IF(INFO, !eloqstore_configs_.cloud_store_path.empty())
         << "EloqStore cloud store enabled";
     eloqstore_configs_.data_page_restart_interval =
