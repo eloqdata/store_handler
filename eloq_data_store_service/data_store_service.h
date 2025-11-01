@@ -607,6 +607,9 @@ public:
                shard_id_ == shard_id;
     }
 
+    void CloseDataStore(uint32_t shard_id);
+    void OpenDataStore(uint32_t shard_id);
+
 private:
     uint32_t GetShardIdByPartitionId(int32_t partition_id)
     {
