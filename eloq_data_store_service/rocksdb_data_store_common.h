@@ -150,11 +150,10 @@ public:
           received_snapshot_path_(storage_path_ + "/received_snapshot/"),
           create_db_if_missing_(create_if_missing),
           tx_enable_cache_replacement_(tx_enable_cache_replacement),
-          ttl_compaction_filter_(nullptr)
+          ttl_compaction_filter_(nullptr),
+          query_worker_number_(config.query_worker_num_)
     {
         info_log_level_ = StringToInfoLogLevel(config.info_log_level_);
-        query_worker_pool_ =
-            std::make_unique<ThreadWorkerPool>(config.query_worker_num_);
     }
 
     /**
@@ -321,6 +320,7 @@ protected:
     bool tx_enable_cache_replacement_{true};
     std::unique_ptr<EloqDS::TTLCompactionFilter> ttl_compaction_filter_{
         nullptr};
+    size_t query_worker_number_{4};
 
     std::unique_ptr<ThreadWorkerPool> query_worker_pool_;
     std::shared_mutex db_mux_;

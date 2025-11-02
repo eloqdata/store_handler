@@ -237,7 +237,9 @@ DataStoreService::~DataStoreService()
     }
 }
 
-bool DataStoreService::StartService(bool create_db_if_missing)
+bool DataStoreService::StartService(bool create_db_if_missing,
+                                    uint32_t dss_leader_node_id,
+                                    uint32_t dss_node_id)
 {
     if (server_ != nullptr)
     {
@@ -252,6 +254,11 @@ bool DataStoreService::StartService(bool create_db_if_missing)
     {
         shard_id_ = dss_shards.at(0);
         auto open_mode = cluster_manager_.FetchDSShardStatus(shard_id_);
+        DLOG(INFO) << "StartService data store shard id:" << shard_id_
+                   << ", open_mode:" << static_cast<int>(open_mode)
+                   << ", create_db_if_missing:" << create_db_if_missing
+                   << ", dss_leader_node_id:" << dss_leader_node_id
+                   << ", dss_node_id:" << dss_node_id;
         if (open_mode == DSShardStatus::ReadOnly ||
             open_mode == DSShardStatus::ReadWrite)
         {
@@ -259,8 +266,13 @@ bool DataStoreService::StartService(bool create_db_if_missing)
             if (shard_status_.compare_exchange_strong(expect_status,
                                                       DSShardStatus::Starting))
             {
+                // start underling db if this dss node is the
+                // leader dss node
                 data_store_ = data_store_factory_->CreateDataStore(
-                    create_db_if_missing, shard_id_, this, true);
+                    create_db_if_missing,
+                    shard_id_,
+                    this,
+                    dss_leader_node_id == dss_node_id);
                 if (data_store_ == nullptr)
                 {
                     LOG(ERROR) << "Failed to create data store on starting "
@@ -277,7 +289,7 @@ bool DataStoreService::StartService(bool create_db_if_missing)
         }
 
         DLOG(INFO) << "Created data store shard id:" << shard_id_
-                   << ", shard_status:" << shard_status_;
+                   << ", shard_status:" << static_cast<int>(shard_status_);
     }
 
     server_ = std::make_unique<brpc::Server>();
@@ -329,6 +341,11 @@ bool DataStoreService::ConnectAndStartDataStore(uint32_t data_shard_id,
         return expect_status == open_mode;
     }
 
+    DLOG(INFO) << "Connecting and starting data store for shard id:"
+              << data_shard_id
+              << ", open_mode:" << static_cast<int>(open_mode)
+              << ", create_db_if_missing:" << create_db_if_missing
+              << ", data_store_ is null:" << (data_store_ == nullptr);
     assert(data_store_factory_ != nullptr);
     if (data_store_ == nullptr)
     {
@@ -1804,8 +1821,7 @@ void DataStoreService::CloseDataStore(uint32_t shard_id)
     if (shard_status_.load() == DSShardStatus::ReadWrite)
     {
         SwitchReadWriteToReadOnly(shard_id);
-    }
-    if (shard_status_.load() == DSShardStatus::ReadOnly)
+    }else if (shard_status_.load() == DSShardStatus::ReadOnly)
     {
         SwitchReadOnlyToClosed(shard_id);
     }
@@ -1814,6 +1830,8 @@ void DataStoreService::CloseDataStore(uint32_t shard_id)
 void DataStoreService::OpenDataStore(uint32_t shard_id)
 {
     assert(shard_id == shard_id_);
+    DLOG(INFO) << "OpenDataStore for shard " << shard_id
+               << ", current status: " << static_cast<int>(shard_status_.load());
     if (shard_status_.load() != DSShardStatus::Closed)
     {
         return;

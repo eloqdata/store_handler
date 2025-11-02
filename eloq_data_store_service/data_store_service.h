@@ -187,7 +187,9 @@ public:
 
     ~DataStoreService();
 
-    bool StartService(bool create_db_if_missing);
+    bool StartService(bool create_db_if_missing,
+                      uint32_t dss_leader_node_id,
+                      uint32_t dss_node_id);
 
     brpc::Server *GetBrpcServer()
     {
@@ -441,10 +443,11 @@ public:
      * @param response Create snapshot for backup response
      * @param done Callback function
      */
-    void CreateSnapshotForBackup(::google::protobuf::RpcController *controller,
-                        const ::EloqDS::remote::CreateSnapshotForBackupRequest *request,
-                        ::EloqDS::remote::CreateSnapshotForBackupResponse *response,
-                        ::google::protobuf::Closure *done) override;
+    void CreateSnapshotForBackup(
+        ::google::protobuf::RpcController *controller,
+        const ::EloqDS::remote::CreateSnapshotForBackupRequest *request,
+        ::EloqDS::remote::CreateSnapshotForBackupResponse *response,
+        ::google::protobuf::Closure *done) override;
 
     /**
      * @brief Create snapshot for backup operation
@@ -453,13 +456,12 @@ public:
      * @param backup_ts Backup timestamp
      * @param done Callback function
      */
-    void CreateSnapshotForBackup(
-                        uint32_t shard_id,
-                        std::string_view backup_name,
-                        uint64_t backup_ts,
-                        std::vector<std::string> *backup_files,
-                        remote::CommonResult *result,
-                        ::google::protobuf::Closure *done);
+    void CreateSnapshotForBackup(uint32_t shard_id,
+                                 std::string_view backup_name,
+                                 uint64_t backup_ts,
+                                 std::vector<std::string> *backup_files,
+                                 remote::CommonResult *result,
+                                 ::google::protobuf::Closure *done);
 
     /**
      * @brief Append the key string of this node to the specified string stream.
@@ -603,6 +605,9 @@ public:
 
     bool IsOwnerOfShard(uint32_t shard_id) const
     {
+        DLOG(INFO) << "IsOwnerOfShard check: shard_status="
+                   << static_cast<int>(shard_status_.load()) << ", shard_id_="
+                   << shard_id_ << ", check_shard_id=" << shard_id;
         return shard_status_.load(std::memory_order_acquire) !=
                    DSShardStatus::Closed &&
                shard_id_ == shard_id;
@@ -611,6 +616,11 @@ public:
     void CloseDataStore(uint32_t shard_id);
     void OpenDataStore(uint32_t shard_id);
 
+    DataStoreServiceClusterManager &GetClusterManager()
+    {
+      return cluster_manager_;
+    }
+
 private:
     uint32_t GetShardIdByPartitionId(int32_t partition_id)
     {
@@ -618,7 +628,6 @@ private:
         return 0;
         // return cluster_manager_.GetShardIdByPartitionId(partition_id);
     }
-
 
     DataStore *GetDataStore(uint32_t shard_id)
     {

@@ -19,8 +19,6 @@
  *    <http://www.gnu.org/licenses/>.
  *
  */
-#include "data_store_service_client.h"
-
 #include <glog/logging.h>
 
 #include <boost/lexical_cast.hpp>
@@ -36,7 +34,9 @@
 #include <vector>
 
 #include "cc_req_misc.h"
+#include "data_store_service_client.h"
 #include "data_store_service_client_closure.h"
+#include "data_store_service_config.h"
 #include "data_store_service_scanner.h"
 #include "eloq_data_store_service/object_pool.h"  // ObjectPool
 #include "eloq_data_store_service/thread_worker_pool.h"
@@ -132,18 +132,27 @@ void DataStoreServiceClient::SetupConfig(
                 LOG(INFO) << "UpgradeShardVersion failed, retry";
                 bthread_usleep(1000000);
             }
-            LOG(INFO) << "UpgradeShardVersion success, shard_id:"
-                      << group.shard_id_ << ", version:" << group.version_;
+            LOG(INFO) << "DataStoreServiceCliet UpgradeShardVersion success, "
+                         "shard_id:"
+                      << group.shard_id_ << ", version:" << group.version_
+                      << ", owner_node:" << group.nodes_[0].host_name_ << ":"
+                      << group.nodes_[0].port_;
         }
+    }
+    else
+    {
+        LOG(INFO)
+            << "DataStoreServiceCliet SetupConfig skipped, current_version:"
+            << current_version << ", new_version:" << new_version;
     }
 }
 
 void DataStoreServiceClient::TxConfigsToDssClusterConfig(
-    uint32_t node_id,  // = 0,
-    uint32_t ng_id,    // = 0,
+    uint32_t dss_node_id,  // = 0,
+    uint32_t ng_id,        // = 0,
     const std::unordered_map<uint32_t, std::vector<txservice::NodeConfig>>
         &ng_configs,
-    uint32_t leader_node_id,  // if no leader,set uint32t_max
+    uint32_t dss_leader_node_id,  // if no leader,set uint32t_max
     DataStoreServiceClusterManager &cluster_manager)
 {
     assert(ng_configs.size() == 1);
@@ -155,24 +164,25 @@ void DataStoreServiceClient::TxConfigsToDssClusterConfig(
     const txservice::NodeConfig *leader_node = nullptr;
     for (auto &node_config : ng_member_configs)
     {
-        if (node_config.node_id_ == node_id)
+        if (node_config.node_id_ == dss_node_id)
         {
             this_node = &node_config;
         }
-        if (node_config.node_id_ == leader_node_id)
+        if (node_config.node_id_ == dss_leader_node_id)
         {
             leader_node = &node_config;
         }
     }
     assert(this_node != nullptr);
-    assert(leader_node_id == UINT32_MAX || leader_node != nullptr);
+    assert(dss_leader_node_id == UNKNOWN_DSS_LEADER_NODE_ID ||
+           leader_node != nullptr);
     cluster_manager.Initialize(this_node->host_name_,
                                TxPort2DssPort(this_node->port_));
 
     std::vector<DSSNode> shard_nodes;
     for (auto &node_config : ng_member_configs)
     {
-        if (node_config.node_id_ != node_id)
+        if (node_config.node_id_ != dss_node_id)
         {
             DSSNode dss_node(node_config.host_name_,
                              TxPort2DssPort(node_config.port_));
@@ -180,10 +190,16 @@ void DataStoreServiceClient::TxConfigsToDssClusterConfig(
         }
     }
 
-    if (leader_node_id != node_id)
+    if (dss_leader_node_id != dss_node_id)
     {
+        LOG(INFO) << "cluster_manager change shard status " << ng_id << " from "
+                  << static_cast<int>(
+                         cluster_manager.FetchDSShardStatus(ng_id));
         cluster_manager.SwitchShardToClosed(ng_id, DSShardStatus::ReadWrite);
-        if (leader_node_id != UINT32_MAX)
+        LOG(INFO) << "cluster_manager change shard status " << ng_id << " to "
+                  << static_cast<int>(
+                         cluster_manager.FetchDSShardStatus(ng_id));
+        if (dss_leader_node_id != UNKNOWN_DSS_LEADER_NODE_ID)
         {
             DSSNode dss_node(leader_node->host_name_,
                              TxPort2DssPort(leader_node->port_));
@@ -267,6 +283,8 @@ bool DataStoreServiceClient::PutAll(
                        std::vector<std::unique_ptr<txservice::FlushTaskEntry>>>
         &flush_task)
 {
+    DLOG(INFO) << "DataStoreServiceClient::PutAll called with "
+               << flush_task.size() << " tables to flush.";
     uint64_t now = txservice::LocalCcShards::ClockTsInMillseconds();
 
     // Process each table
@@ -2922,12 +2940,31 @@ void DataStoreServiceClient::RestoreTxCache(txservice::NodeGroupId cc_ng_id,
  */
 bool DataStoreServiceClient::OnLeaderStart(uint32_t *next_leader_node)
 {
+    DLOG(INFO)
+        << "DataStoreServiceClient OnLeaderStart called data_store_service_:"
+        << data_store_service_;
     if (data_store_service_ != nullptr)
     {
         // Now, only support one shard.
         data_store_service_->OpenDataStore(0);
     }
 
+    Connect();
+
+    return true;
+}
+
+bool DataStoreServiceClient::OnLeaderStop(int64_t term)
+{
+    DLOG(INFO)
+        << "DataStoreServiceClient OnLeaderStop called data_store_service_:"
+        << data_store_service_;
+    // swith to read only in case of data store status is read write
+    if (data_store_service_ != nullptr)
+    {
+        // Now, only support one shard.
+        data_store_service_->CloseDataStore(0);
+    }
     return true;
 }
 
@@ -2938,13 +2975,50 @@ bool DataStoreServiceClient::OnLeaderStart(uint32_t *next_leader_node)
  * following another leader and can be used to perform follower-specific
  * initialization.
  */
-void DataStoreServiceClient::OnStartFollowing()
+void DataStoreServiceClient::OnStartFollowing(uint32_t leader_node_id,
+                                              int64_t term,
+                                              bool resubscribe)
 {
+    DLOG(INFO)
+        << "DataStoreServiceClient OnStartFollowing called data_store_service_:"
+        << data_store_service_;
     if (data_store_service_ != nullptr)
     {
         // Now, only support one shard.
         data_store_service_->CloseDataStore(0);
     }
+
+    // Treat leader_node_id as dss_leader_node_id
+    uint32_t dss_leader_node_id = leader_node_id;
+    uint32_t dss_shard_id = txservice::Sharder::Instance().NativeNodeGroup();
+
+    // Update leader node in cluster_manager if necessary
+    auto ng_configs = txservice::Sharder::Instance().GetNodeGroupConfigs();
+    auto ng_config_it = ng_configs.find(dss_shard_id);
+    assert(ng_config_it != ng_configs.end());
+    auto ng_member_configs = ng_config_it->second;
+    const txservice::NodeConfig *dss_leader_node_config = nullptr;
+    for (const auto &node_config : ng_member_configs)
+    {
+        if (node_config.node_id_ == dss_leader_node_id)
+        {
+            dss_leader_node_config = &node_config;
+            break;
+        }
+    }
+    assert(dss_leader_node_config != nullptr);
+    DSSNode dss_leader_node(dss_leader_node_config->host_name_,
+                            TxPort2DssPort(dss_leader_node_config->port_));
+    auto &cluster_manager = data_store_service_->GetClusterManager();
+    cluster_manager.UpdatePrimaryNode(dss_shard_id, dss_leader_node);
+    DLOG(INFO) << "UpdatePrimaryNode, dss_shard_id: " << dss_shard_id
+               << ", DSSNode: " << dss_leader_node.host_name_ << ":"
+               << dss_leader_node.port_;
+    cluster_manager.UpdateDSShardVersion(
+        dss_shard_id, cluster_manager.FetchDSShardVersion(dss_shard_id) + 1);
+    SetupConfig(cluster_manager);
+
+    Connect();
 }
 
 /**
