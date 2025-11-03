@@ -4752,4 +4752,4 @@ void DataStoreServiceClient::PrepareRangePartitionBatches(
     }
 }
 
-}  // namespace EloqDS
+}  // namespace EloqD
