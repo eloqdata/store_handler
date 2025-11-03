@@ -104,7 +104,12 @@ void EloqStoreDataStore::Read(ReadRequest *read_req)
     eloq_store_table_id.tbl_name_ = read_req->GetTableName();
     eloq_store_table_id.partition_id_ = read_req->GetPartitionId();
 
-    std::string_view key = read_req->GetKey();
+    std::string key;
+    for (size_t i = 0; i < read_req->PartsCountPerKey(); ++i)
+    {
+        const std::string_view part = read_req->GetKey(i);
+        key.append(part.data(), part.size());
+    }
 
     // Read from eloqstore async
     EloqStoreOperationData<::eloqstore::ReadRequest> *read_op =
