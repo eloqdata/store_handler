@@ -1831,7 +1831,17 @@ void DataStoreService::CloseDataStore(uint32_t shard_id)
 
 void DataStoreService::OpenDataStore(uint32_t shard_id)
 {
+    // no-op if this DSS does not own any shard
+    if (shard_id_ == UINT32_MAX)
+    {
+        DLOG(INFO) << "OpenDataStore no-op for non-owner DSS"
+                   << ", shard " << shard_id
+                   << ", shard_id_: " << shard_id_;
+        return;
+    }
+
     assert(shard_id == shard_id_);
+
     DLOG(INFO) << "OpenDataStore for shard " << shard_id
                << ", current status: " << static_cast<int>(shard_status_.load());
     if (shard_status_.load() != DSShardStatus::Closed)
