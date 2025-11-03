@@ -2977,6 +2977,7 @@ bool DataStoreServiceClient::OnLeaderStop(int64_t term)
  */
 void DataStoreServiceClient::OnStartFollowing(uint32_t leader_node_id,
                                               int64_t term,
+                                              int64_t standby_term,
                                               bool resubscribe)
 {
     DLOG(INFO)
