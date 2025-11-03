@@ -1821,7 +1821,9 @@ void DataStoreService::CloseDataStore(uint32_t shard_id)
     if (shard_status_.load() == DSShardStatus::ReadWrite)
     {
         SwitchReadWriteToReadOnly(shard_id);
-    }else if (shard_status_.load() == DSShardStatus::ReadOnly)
+    }
+
+    if (shard_status_.load() == DSShardStatus::ReadOnly)
     {
         SwitchReadOnlyToClosed(shard_id);
     }
