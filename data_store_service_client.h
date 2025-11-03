@@ -126,10 +126,11 @@ public:
      */
     void SetupConfig(const DataStoreServiceClusterManager &config);
 
-    static int16_t TxPort2DssPort(int16_t tx_port)
+    static uint16_t TxPort2DssPort(uint16_t tx_port)
     {
         return tx_port + 7;
     }
+
     static void TxConfigsToDssClusterConfig(
         uint32_t dss_node_id,  // = 0,
         uint32_t ng_id,        // = 0,
