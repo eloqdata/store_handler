@@ -3014,8 +3014,10 @@ void DataStoreServiceClient::OnStartFollowing(uint32_t leader_node_id,
     DLOG(INFO) << "UpdatePrimaryNode, dss_shard_id: " << dss_shard_id
                << ", DSSNode: " << dss_leader_node.host_name_ << ":"
                << dss_leader_node.port_;
+    // Pump the dss shard version
     cluster_manager.UpdateDSShardVersion(
         dss_shard_id, cluster_manager.FetchDSShardVersion(dss_shard_id) + 1);
+    // Update the client config
     SetupConfig(cluster_manager);
 
     Connect();
