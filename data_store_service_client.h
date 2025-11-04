@@ -671,7 +671,7 @@ private:
 #else
         std::string_view sv = table.StringView();
         auto hash_code = std::hash<std::string_view>()(sv);
-        return Sharder::MapKeyHashToHashPartitionId(hash_code);
+        return txservice::Sharder::MapKeyHashToHashPartitionId(hash_code);
 #endif
     }
 

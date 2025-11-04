@@ -313,15 +313,20 @@ int main(int argc, char *argv[])
     std::unique_ptr<DataStoreFactory> ds_factory = nullptr;
 #endif
 
+    std::vector<uint32_t> bootstrap_shards{0};
+    uint32_t node_id = 0;
     data_store_service_ =
-        std::make_unique<EloqDS::DataStoreService>(ds_config,
+        std::make_unique<EloqDS::DataStoreService>(node_id,
+                                                   local_ip,
+                                                   local_port,
+                                                   ds_config,
                                                    ds_config_file_path,
                                                    data_path + "/DSMigrateLog",
                                                    std::move(ds_factory));
 
     // setup local data store service
-    bool ret =
-        data_store_service_->StartService(FLAGS_bootstrap || is_single_node);
+    bool ret = data_store_service_->StartService(
+        FLAGS_bootstrap || is_single_node, bootstrap_shards);
     if (!ret)
     {
         LOG(ERROR) << "Failed to start data store service";
