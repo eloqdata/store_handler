@@ -19,6 +19,8 @@
  *    <http://www.gnu.org/licenses/>.
  *
  */
+#include "data_store_service_client.h"
+
 #include <glog/logging.h>
 
 #include <boost/lexical_cast.hpp>
@@ -34,7 +36,6 @@
 #include <vector>
 
 #include "cc_req_misc.h"
-#include "data_store_service_client.h"
 #include "data_store_service_client_closure.h"
 #include "data_store_service_config.h"
 #include "data_store_service_scanner.h"
@@ -444,6 +445,11 @@ bool DataStoreServiceClient::PutAll(
                 LOG(ERROR) << "PutAll failed for partition "
                            << partition_state->partition_id << " with error: "
                            << partition_state->result.error_msg();
+                for (auto &callback_data : callback_data_list)
+                {
+                    callback_data->Clear();
+                    callback_data->Free();
+                }
                 return false;
             }
         }
@@ -4369,16 +4375,16 @@ void DataStoreServiceClient::UpsertTable(UpsertTableData *table_data)
         if (alter_table_info)
         {
             auto *new_table_schema = table_data->new_table_schema_;
-            ok =
-                ok &&
-                std::all_of(
-                    alter_table_info->index_add_names_.begin(),
-                    alter_table_info->index_add_names_.end(),
-                    [this, new_table_schema](
-                        const std::pair<txservice::TableName, std::string> &p) {
-                        return InitTableRanges(p.first,
-                                               new_table_schema->Version());
-                    });
+            ok = ok &&
+                 std::all_of(
+                     alter_table_info->index_add_names_.begin(),
+                     alter_table_info->index_add_names_.end(),
+                     [this, new_table_schema](
+                         const std::pair<txservice::TableName, std::string> &p)
+                     {
+                         return InitTableRanges(p.first,
+                                                new_table_schema->Version());
+                     });
         }
 
         // 3- Delete table statistics
@@ -4752,4 +4758,4 @@ void DataStoreServiceClient::PrepareRangePartitionBatches(
     }
 }
 
-}  // namespace EloqD
+}  // namespace EloqDS
