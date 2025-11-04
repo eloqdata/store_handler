@@ -126,6 +126,19 @@ public:
      */
     void SetupConfig(const DataStoreServiceClusterManager &config);
 
+    static uint16_t TxPort2DssPort(uint16_t tx_port)
+    {
+        return tx_port + 7;
+    }
+
+    static void TxConfigsToDssClusterConfig(
+        uint32_t dss_node_id,  // = 0,
+        uint32_t ng_id,        // = 0,
+        const std::unordered_map<uint32_t, std::vector<txservice::NodeConfig>>
+            &ng_configs,
+        uint32_t dss_leader_node_id,  // if no leader,set uint32t_max
+        DataStoreServiceClusterManager &cluster_manager);
+
     void ConnectToLocalDataStoreService(
         std::unique_ptr<DataStoreService> ds_serv);
 
@@ -377,7 +390,12 @@ public:
 
     bool OnLeaderStart(uint32_t *next_leader_node) override;
 
-    void OnStartFollowing() override;
+    bool OnLeaderStop(int64_t term) override;
+
+    void OnStartFollowing(uint32_t leader_node_id,
+                          int64_t term,
+                          int64_t standby_term,
+                          bool resubscribe) override;
 
     void OnShutdown() override;
 

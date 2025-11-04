@@ -530,7 +530,10 @@ public:
 
     bool OnLeaderStart(uint32_t *next_leader_node) override;
 
-    void OnStartFollowing() override;
+    void OnStartFollowing(uint32_t leader_node_id,
+                          int64_t term,
+                          int64_t standby_term,
+                          bool resubscribe) override;
 
     void OnShutdown() override;
 

@@ -20,8 +20,6 @@
  *
  */
 
-#include "rocksdb_handler.h"
-
 #include <brpc/controller.h>
 #include <brpc/server.h>
 #include <brpc/stream.h>
@@ -72,6 +70,7 @@
 #include "redis_zset_object.h"
 #include "rocksdb/iostats_context.h"
 #include "rocksdb/rate_limiter.h"
+#include "rocksdb_handler.h"
 #include "store_util.h"
 #include "tx_key.h"
 #include "tx_record.h"
@@ -2153,7 +2152,10 @@ uint16_t RocksDBHandler::DecodeBucketIdFromKvKey(const char *data, size_t size)
     return EloqShare::big_endian_to_host(be_bucket_id);
 }
 
-void RocksDBHandler::OnStartFollowing()
+void RocksDBHandler::OnStartFollowing(uint32_t leader_node_id,
+                                      int64_t term,
+                                      int64_t standby_term,
+                                      bool resubscribe)
 {
     // shutdown previous opened db
     bthread::Mutex mux;
