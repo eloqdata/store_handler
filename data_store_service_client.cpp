@@ -208,6 +208,12 @@ bool DataStoreServiceClient::PutAll(
                        std::vector<std::unique_ptr<txservice::FlushTaskEntry>>>
         &flush_task)
 {
+    int64_t allocated, committed;
+    mi_thread_stats(&allocated, &committed);
+    LOG(INFO) << "FlushDataWorker allocated " << allocated << ", committed "
+              << committed;
+    DLOG(INFO) << "DataStoreServiceClient::PutAll called with "
+               << flush_task.size() << " tables to flush.";
     uint64_t now = txservice::LocalCcShards::ClockTsInMillseconds();
 
     // Process each table

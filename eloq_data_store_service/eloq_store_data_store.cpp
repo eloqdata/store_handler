@@ -257,6 +257,7 @@ void EloqStoreDataStore::OnBatchWrite(::eloqstore::KvRequest *req)
     }
 
     result.set_error_code(::EloqDS::remote::DataStoreError::NO_ERROR);
+    write_req->Clear();
     ds_write_req->SetFinish(result);
 }
 
