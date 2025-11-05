@@ -256,11 +256,13 @@ void EloqStoreDataStore::OnBatchWrite(::eloqstore::KvRequest *req)
 
         result.set_error_code(::EloqDS::remote::DataStoreError::WRITE_FAILED);
         result.set_error_msg(write_req->ErrMessage());
+        write_req->Clear();
         ds_write_req->SetFinish(result);
         return;
     }
 
     result.set_error_code(::EloqDS::remote::DataStoreError::NO_ERROR);
+    write_req->Clear();
     ds_write_req->SetFinish(result);
 }
 
