@@ -1813,6 +1813,13 @@ bool DataStoreService::FetchConfigFromPeer(
 
 void DataStoreService::CloseDataStore(uint32_t shard_id)
 {
+    if (shard_id_ == UINT32_MAX)
+    {
+        DLOG(INFO) << "CloseDataStore no-op for DSS has no shard assigned"
+                   << ", shard " << shard_id
+                   << ", shard_id_: " << shard_id_;
+        return;
+    }
     assert(shard_id == shard_id_);
     if (!IsOwnerOfShard(shard_id))
     {
