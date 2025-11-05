@@ -54,7 +54,7 @@ DEFINE_uint32(eloq_store_init_page_count,
 DEFINE_bool(eloq_store_skip_verify_checksum,
             false,
             "EloqStore skip verify checksum.");
-DEFINE_uint32(eloq_store_index_buffer_pool_size,
+DEFINE_uint64(eloq_store_index_buffer_pool_size,
               128 << 20,
               "EloqStore index buffer pool size.");
 DEFINE_uint32(eloq_store_manifest_limit, 8 << 20, "EloqStore manifest limit.");
