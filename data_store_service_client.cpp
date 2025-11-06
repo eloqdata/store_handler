@@ -2406,11 +2406,11 @@ bool DataStoreServiceClient::CopyBaseToArchive(
                 {
                     LOG(ERROR)
                         << "CopyBaseToArchive failed for read base table.";
-                    return false;
+                    break;
                 }
             }
-
-            // Wait the result all return.
+            // Wait the result all return before returning to avoid referencing
+            // invalid memory in callback.
             {
                 std::unique_lock<bthread::Mutex> lk(mtx);
                 while (flying_cnt > 0)
@@ -2418,6 +2418,13 @@ bool DataStoreServiceClient::CopyBaseToArchive(
                     cv.wait(lk);
                 }
             }
+
+            if (error_code != 0)
+            {
+                LOG(ERROR) << "CopyBaseToArchive failed for read base table.";
+                return false;
+            }
+
             // Process the results
             for (size_t i = 0; i < base_vec.size(); i++)
             {
@@ -4375,16 +4382,16 @@ void DataStoreServiceClient::UpsertTable(UpsertTableData *table_data)
         if (alter_table_info)
         {
             auto *new_table_schema = table_data->new_table_schema_;
-            ok = ok &&
-                 std::all_of(
-                     alter_table_info->index_add_names_.begin(),
-                     alter_table_info->index_add_names_.end(),
-                     [this, new_table_schema](
-                         const std::pair<txservice::TableName, std::string> &p)
-                     {
-                         return InitTableRanges(p.first,
-                                                new_table_schema->Version());
-                     });
+            ok =
+                ok &&
+                std::all_of(
+                    alter_table_info->index_add_names_.begin(),
+                    alter_table_info->index_add_names_.end(),
+                    [this, new_table_schema](
+                        const std::pair<txservice::TableName, std::string> &p) {
+                        return InitTableRanges(p.first,
+                                               new_table_schema->Version());
+                    });
         }
 
         // 3- Delete table statistics

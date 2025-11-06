@@ -2292,6 +2292,7 @@ bool DataStoreService::SwitchReadOnlyToClosed(uint32_t shard_id)
     {
         cluster_manager_.SwitchShardToClosed(shard_id, expected);
         data_store_->Shutdown();
+        data_store_ = nullptr;
     }
     return true;
 }
