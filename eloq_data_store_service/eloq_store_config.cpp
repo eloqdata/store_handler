@@ -119,7 +119,7 @@ inline bool CheckCommandLineFlagIsDefault(const char *name)
 inline bool is_number(const std::string &str)
 {
     // regular expression for matching number format
-    std::regex pattern("^[-+]?[0-9]*\\.?[0-9]+([eE][-+]?[0-9]+)?$");
+    std::regex pattern("^[0-9]+$");
     return std::regex_match(str, pattern);
 }
 
@@ -162,6 +162,10 @@ inline uint64_t unit_num(const std::string_view &unit_str)
 inline bool ends_with(const std::string_view &str,
                       const std::string_view &suffix)
 {
+    if (str.size() < suffix.size())
+    {
+        return false;
+    }
     if (str.compare(str.size() - suffix.size(), suffix.size(), suffix) != 0)
     {
         return false;
@@ -196,11 +200,15 @@ inline bool is_valid_size(const std::string_view &size_str_v)
 inline uint64_t parse_size(const std::string &size_str)
 {
     std::string_view size_str_v(size_str);
-    assert(is_valid_size(size_str_v));
+    if (!is_valid_size(size_str_v))
+    {
+        LOG(FATAL) << "Invalid size format: " << size_str;
+        return 0;
+    }
     std::string_view unit_str = get_last_two(size_str_v);
     uint64_t unit = unit_num(unit_str);
     std::string_view num_str = remove_last_two(size_str_v);
-    uint64_t num = std::stol(std::string(num_str));
+    uint64_t num = std::stoull(std::string(num_str));
     return num * unit;
 }
 
@@ -286,8 +294,7 @@ EloqStoreConfig::EloqStoreConfig(const INIReader &config_reader,
                                       "eloq_store_index_buffer_pool_size",
                                       FLAGS_eloq_store_index_buffer_pool_size);
     eloqstore_configs_.index_buffer_pool_size =
-        parse_size(index_buffer_pool_size) /
-        eloqstore_configs_.num_threads;
+        parse_size(index_buffer_pool_size) / eloqstore_configs_.num_threads;
     eloqstore_configs_.manifest_limit =
         !CheckCommandLineFlagIsDefault("eloq_store_manifest_limit")
             ? FLAGS_eloq_store_manifest_limit
@@ -356,8 +363,7 @@ EloqStoreConfig::EloqStoreConfig(const INIReader &config_reader,
             : config_reader.GetString("store",
                                       "eloq_store_local_space_limit",
                                       FLAGS_eloq_store_local_space_limit);
-    eloqstore_configs_.local_space_limit =
-        parse_size(local_space_limit);
+    eloqstore_configs_.local_space_limit = parse_size(local_space_limit);
     eloqstore_configs_.reserve_space_ratio =
         !CheckCommandLineFlagIsDefault("eloq_store_reserve_space_ratio")
             ? FLAGS_eloq_store_reserve_space_ratio
