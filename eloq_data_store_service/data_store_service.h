@@ -615,7 +615,7 @@ public:
 
     DataStoreServiceClusterManager &GetClusterManager()
     {
-      return cluster_manager_;
+        return cluster_manager_;
     }
 
 private:
