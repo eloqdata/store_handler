@@ -280,6 +280,23 @@ bool RocksDBDataStoreCommon::Initialize()
     return true;
 }
 
+void RocksDBDataStoreCommon::Shutdown()
+{
+    // shutdown query worker pool
+    if (query_worker_pool_ != nullptr)
+    {
+        query_worker_pool_->Shutdown();
+        // If the data store be reused, query_worker_pool_ will be re-created in
+        // Initialize().
+        query_worker_pool_ = nullptr;
+    }
+
+    if (data_store_service_ != nullptr)
+    {
+        data_store_service_->ForceEraseScanIters(shard_id_);
+    }
+}
+
 void RocksDBDataStoreCommon::FlushData(FlushDataRequest *flush_data_req)
 {
     bool res = query_worker_pool_->SubmitWork(

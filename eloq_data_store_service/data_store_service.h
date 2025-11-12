@@ -615,6 +615,11 @@ public:
     bool IsOwnerOfShard(uint32_t shard_id) const
     {
         const auto &ds_ref = data_shards_.at(shard_id);
+
+        DLOG(INFO) << "====IsOwnerOfShard shard_id:" << shard_id << " res:"
+                   << (int) (ds_ref.shard_status_.load(
+                                 std::memory_order_acquire) !=
+                             DSShardStatus::Closed);
         return ds_ref.shard_status_.load(std::memory_order_acquire) !=
                DSShardStatus::Closed;
     }
@@ -681,10 +686,14 @@ private:
         {
             if (data_store_ != nullptr)
             {
-                shard_status_.store(DSShardStatus::Closed,
-                                    std::memory_order_release);
                 data_store_->Shutdown();
-                scan_iter_cache_.Clear();
+                data_store_ = nullptr;
+            }
+
+            if (scan_iter_cache_ != nullptr)
+            {
+                scan_iter_cache_->Clear();
+                scan_iter_cache_ = nullptr;
             }
         }
 
@@ -692,7 +701,7 @@ private:
         std::unique_ptr<DataStore> data_store_{nullptr};
         std::atomic<DSShardStatus> shard_status_{DSShardStatus::Closed};
         std::atomic<uint64_t> ongoing_write_requests_{0};
-        TTLWrapperCache scan_iter_cache_;
+        std::unique_ptr<TTLWrapperCache> scan_iter_cache_{nullptr};
     };
 
     std::array<DataShard, 1000> data_shards_;

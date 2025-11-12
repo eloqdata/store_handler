@@ -164,8 +164,7 @@ RocksDBCloudDataStore::RocksDBCloudDataStore(
 
 RocksDBCloudDataStore::~RocksDBCloudDataStore()
 {
-    if (query_worker_pool_ != nullptr || data_store_service_ != nullptr ||
-        db_ != nullptr)
+    if (query_worker_pool_ != nullptr || db_ != nullptr)
     {
         Shutdown();
     }
@@ -173,15 +172,9 @@ RocksDBCloudDataStore::~RocksDBCloudDataStore()
 
 void RocksDBCloudDataStore::Shutdown()
 {
+    RocksDBDataStoreCommon::Shutdown();
+
     std::unique_lock<std::shared_mutex> db_lk(db_mux_);
-
-    // shutdown query worker pool
-    query_worker_pool_->Shutdown();
-    // query_worker_pool_ = nullptr;
-
-    data_store_service_->ForceEraseScanIters(shard_id_);
-    // data_store_service_ = nullptr;
-
     if (db_ != nullptr)
     {
         DLOG(INFO) << "RocksDBCloudDataStore Shutdown, db->Close()";

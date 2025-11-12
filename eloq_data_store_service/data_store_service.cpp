@@ -271,6 +271,8 @@ bool DataStoreService::StartService(bool create_db_if_missing)
                                    << shard_id;
                         return false;
                     }
+                    ds_ref.scan_iter_cache_ =
+                        std::make_unique<TTLWrapperCache>();
 
                     if (open_mode == DSShardStatus::ReadOnly)
                     {
@@ -368,6 +370,11 @@ bool DataStoreService::ConnectAndStartDataStore(uint32_t data_shard_id,
             LOG(ERROR) << "Failed to start db instance in data store service";
             return false;
         }
+    }
+
+    if (shard_ref.scan_iter_cache_ == nullptr)
+    {
+        shard_ref.scan_iter_cache_ = std::make_unique<TTLWrapperCache>();
     }
 
     if (open_mode == DSShardStatus::ReadOnly)
@@ -1078,34 +1085,34 @@ void DataStoreService::EmplaceScanIter(uint32_t shard_id,
                                        std::unique_ptr<TTLWrapper> iter)
 {
     DataShard &ds_ref = data_shards_.at(shard_id);
-    ds_ref.scan_iter_cache_.Emplace(session_id, std::move(iter));
+    ds_ref.scan_iter_cache_->Emplace(session_id, std::move(iter));
 }
 
 TTLWrapper *DataStoreService::BorrowScanIter(uint32_t shard_id,
                                              const std::string &session_id)
 {
     DataShard &ds_ref = data_shards_.at(shard_id);
-    auto *scan_iter_wrapper = ds_ref.scan_iter_cache_.Borrow(session_id);
+    auto *scan_iter_wrapper = ds_ref.scan_iter_cache_->Borrow(session_id);
     return scan_iter_wrapper;
 }
 
 void DataStoreService::ReturnScanIter(uint32_t shard_id, TTLWrapper *iter)
 {
     DataShard &ds_ref = data_shards_.at(shard_id);
-    ds_ref.scan_iter_cache_.Return(iter);
+    ds_ref.scan_iter_cache_->Return(iter);
 }
 
 void DataStoreService::EraseScanIter(uint32_t shard_id,
                                      const std::string &session_id)
 {
     DataShard &ds_ref = data_shards_.at(shard_id);
-    ds_ref.scan_iter_cache_.Erase(session_id);
+    ds_ref.scan_iter_cache_->Erase(session_id);
 }
 
 void DataStoreService::ForceEraseScanIters(uint32_t shard_id)
 {
     DataShard &ds_ref = data_shards_.at(shard_id);
-    ds_ref.scan_iter_cache_.ForceEraseIters();
+    ds_ref.scan_iter_cache_->ForceEraseIters();
 }
 
 void DataStoreService::BatchWriteRecords(

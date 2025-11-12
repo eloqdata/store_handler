@@ -162,6 +162,8 @@ public:
      */
     bool Initialize() override;
 
+    void Shutdown() override;
+
     /**
      * @brief indicate end of flush entries in a single ckpt for \@param batch
      * to base table or skindex table in data store, stop and return false if
