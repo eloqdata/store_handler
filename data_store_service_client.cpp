@@ -4229,7 +4229,6 @@ bool DataStoreServiceClient::InitPreBuiltTables()
                           callback_data,
                           &SyncCallback);
         callback_data->Wait();
-
         if (callback_data->Result().error_code() !=
             remote::DataStoreError::NO_ERROR)
         {
