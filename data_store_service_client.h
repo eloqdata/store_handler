@@ -74,6 +74,7 @@ public:
         bool is_bootstrap,
         txservice::CatalogFactory *catalog_factory[3],
         const DataStoreServiceClusterManager &cluster_manager,
+        bool bind_data_shard_with_ng,
         DataStoreService *data_store_service = nullptr)
         : catalog_factory_array_{catalog_factory[0],
                                  catalog_factory[1],
@@ -81,7 +82,8 @@ public:
                                  &range_catalog_factory_,
                                  &hash_catalog_factory_},
           data_store_service_(data_store_service),
-          need_bootstrap_(is_bootstrap)
+          need_bootstrap_(is_bootstrap),
+          bind_data_shard_with_ng_(bind_data_shard_with_ng)
     {
         // Init dss cluster config.
         dss_topology_version_ = cluster_manager.GetTopologyVersion();
@@ -684,6 +686,7 @@ private:
     DataStoreService *data_store_service_;
 
     bool need_bootstrap_{false};
+    bool bind_data_shard_with_ng_{false};
 
     struct DssNode
     {

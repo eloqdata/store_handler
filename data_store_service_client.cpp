@@ -2969,15 +2969,15 @@ void DataStoreServiceClient::RestoreTxCache(txservice::NodeGroupId cc_ng_id,
 bool DataStoreServiceClient::OnLeaderStart(uint32_t ng_id,
                                            uint32_t *next_leader_node)
 {
-    DLOG(INFO) << "=======DataStoreServiceClient OnLeaderStart called "
-                  "data_store_service_:"
-               << data_store_service_ << " ng_id:" << ng_id;
+    if (!bind_data_shard_with_ng_)
+    {
+        return true;
+    }
+
     if (data_store_service_ != nullptr)
     {
         // Binded data store shard with ng.
         data_store_service_->OpenDataStore(ng_id);
-        DLOG(INFO) << "=======DataStoreServiceClient OnLeaderStart end, ng_id:"
-                   << ng_id;
     }
 
     Connect();
@@ -2987,9 +2987,11 @@ bool DataStoreServiceClient::OnLeaderStart(uint32_t ng_id,
 
 bool DataStoreServiceClient::OnLeaderStop(uint32_t ng_id, int64_t term)
 {
-    DLOG(INFO)
-        << "DataStoreServiceClient OnLeaderStop called data_store_service_:"
-        << data_store_service_;
+    if (!bind_data_shard_with_ng_)
+    {
+        return true;
+    }
+
     // swith to read only in case of data store status is read write
     if (data_store_service_ != nullptr)
     {
@@ -3012,9 +3014,11 @@ void DataStoreServiceClient::OnStartFollowing(uint32_t ng_id,
                                               int64_t standby_term,
                                               bool resubscribe)
 {
-    DLOG(INFO)
-        << "DataStoreServiceClient OnStartFollowing called data_store_service_:"
-        << data_store_service_;
+    if (!bind_data_shard_with_ng_)
+    {
+        return;
+    }
+
     if (data_store_service_ != nullptr)
     {
         // Now, only support one shard.
@@ -3526,8 +3530,6 @@ void DataStoreServiceClient::ReadInternal(ReadClosure *read_closure)
 {
     if (IsLocalShard(read_closure->ShardId()))
     {
-        DLOG(INFO) << "====ReadInternal local shard_id:"
-                   << read_closure->ShardId();
         read_closure->PrepareRequest(true);
         data_store_service_->Read(read_closure->TableName(),
                                   read_closure->PartitionId(),
@@ -3541,8 +3543,6 @@ void DataStoreServiceClient::ReadInternal(ReadClosure *read_closure)
     }
     else
     {
-        DLOG(INFO) << "====ReadInternal remote shard_id:"
-                   << read_closure->ShardId();
         read_closure->PrepareRequest(false);
         uint32_t node_index = GetOwnerNodeIndexOfShard(read_closure->ShardId());
         read_closure->SetRemoteNodeIndex(node_index);
