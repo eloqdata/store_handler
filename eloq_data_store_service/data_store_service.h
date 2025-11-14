@@ -615,11 +615,6 @@ public:
     bool IsOwnerOfShard(uint32_t shard_id) const
     {
         const auto &ds_ref = data_shards_.at(shard_id);
-
-        DLOG(INFO) << "====IsOwnerOfShard shard_id:" << shard_id << " res:"
-                   << (int) (ds_ref.shard_status_.load(
-                                 std::memory_order_acquire) !=
-                             DSShardStatus::Closed);
         return ds_ref.shard_status_.load(std::memory_order_acquire) !=
                DSShardStatus::Closed;
     }
