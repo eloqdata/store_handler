@@ -26,7 +26,9 @@
 #include <bthread/mutex.h>
 
 #include <chrono>
+#include <condition_variable>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <shared_mutex>
 #include <string>
@@ -39,10 +41,15 @@
 #include "data_store_service_config.h"
 #include "data_store_service_util.h"
 #include "ds_request.pb.h"
+#if defined(DATA_STORE_TYPE_ELOQDSS_ROCKSDB_CLOUD_S3)
+#include "s3_file_downloader.h"
+#endif
 #include "thread_worker_pool.h"
 
 namespace EloqDS
 {
+
+class SyncFileCacheLocalRequest;
 
 enum class WriteOpType
 {
@@ -450,6 +457,18 @@ public:
         ::google::protobuf::Closure *done) override;
 
     /**
+     * @brief RPC handler for file cache synchronization (generic for any storage backend)
+     * @param controller RPC controller
+     * @param request File cache sync request
+     * @param response Empty response (google.protobuf.Empty)
+     * @param done Callback function
+     */
+    void SyncFileCache(::google::protobuf::RpcController *controller,
+                       const ::EloqDS::remote::SyncFileCacheRequest *request,
+                       ::google::protobuf::Empty *response,
+                       ::google::protobuf::Closure *done) override;
+
+    /**
      * @brief Create snapshot for backup operation
      * @param result Result (output)
      * @param backup_files Backup files (output)
@@ -752,6 +771,52 @@ private:
     // map{event_id->migrate_log}
     std::shared_mutex migrate_task_mux_;
     std::unordered_map<std::string, MigrateLog> migrate_task_map_;
+
+    /**
+     * @brief Worker thread for periodic file cache sync to standby nodes
+     * @param interval_sec Sync interval in seconds
+     */
+    void FileCacheSyncWorker(uint32_t interval_sec);
+
+    /**
+     * @brief Process file cache sync request (called by file_sync_worker_)
+     * @param req Local request containing the sync request
+     */
+    void ProcessSyncFileCache(SyncFileCacheLocalRequest *req);
+
+#if defined(DATA_STORE_TYPE_ELOQDSS_ROCKSDB_CLOUD_S3)
+    /**
+     * @brief Create S3 downloader instance
+     * @return Unique pointer to S3FileDownloader, or nullptr on failure
+     */
+    std::unique_ptr<S3FileDownloader> CreateS3Downloader() const;
+#endif
+    
+    /**
+     * @brief Get SST file cache size limit from config
+     * @return Cache size limit in bytes
+     */
+    uint64_t GetSstFileCacheSizeLimit() const;
+    
+    /**
+     * @brief Determine which files to keep based on cache size limit and file number
+     *        Files with lower file numbers are prioritized (older files are kept first)
+     *        Files with higher file numbers are excluded if cache size limit is exceeded
+     * @param file_info_map Map of all available files from primary node
+     * @param cache_size_limit Maximum cache size in bytes
+     * @return Set of file names that should be kept on local disk
+     */
+    std::set<std::string> DetermineFilesToKeep(
+        const std::map<std::string, ::EloqDS::remote::FileInfo> &file_info_map,
+        uint64_t cache_size_limit) const;
+
+    std::unique_ptr<ThreadWorkerPool> file_cache_sync_worker_;
+    std::unique_ptr<ThreadWorkerPool> file_sync_worker_;
+
+    // File cache sync worker synchronization
+    std::mutex file_cache_sync_mutex_;
+    std::condition_variable file_cache_sync_cv_;
+    bool file_cache_sync_running_{false};
 };
 
 }  // namespace EloqDS

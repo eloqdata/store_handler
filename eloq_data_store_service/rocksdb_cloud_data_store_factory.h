@@ -74,6 +74,46 @@ public:
         return ds;
     }
 
+    std::string GetStoragePath() const override
+    {
+        return config_.storage_path_;
+    }
+
+    std::string GetS3BucketName() const override
+    {
+        return cloud_config_.bucket_prefix_ + cloud_config_.bucket_name_;
+    }
+
+    std::string GetS3ObjectPath() const override
+    {
+        return cloud_config_.object_path_;
+    }
+
+    std::string GetS3Region() const override
+    {
+        return cloud_config_.region_;
+    }
+
+    std::string GetS3EndpointUrl() const override
+    {
+        return cloud_config_.s3_endpoint_url_;
+    }
+
+    std::string GetAwsAccessKeyId() const override
+    {
+        return cloud_config_.aws_access_key_id_;
+    }
+
+    std::string GetAwsSecretKey() const override
+    {
+        return cloud_config_.aws_secret_key_;
+    }
+
+    uint64_t GetSstFileCacheSize() const override
+    {
+        return cloud_config_.sst_file_cache_size_;
+    }
+
 private:
     ::EloqDS::RocksDBConfig config_;
     ::EloqDS::RocksDBCloudConfig cloud_config_;

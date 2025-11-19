@@ -386,6 +386,13 @@ if ((WITH_DATA_STORE STREQUAL "ELOQDSS_ROCKSDB_CLOUD_S3") OR
           purger_event_listener.cpp
           purger_sliding_window.cpp
     )
+endif()
+
+if (WITH_DATA_STORE STREQUAL "ELOQDSS_ROCKSDB_CLOUD_S3")
+    SET(RESELOQ_SOURCES ${RESELOQ_SOURCES}
+        s3_file_downloader.cpp
+    )
+endif()
 elseif (WITH_DATA_STORE STREQUAL "ELOQDSS_ROCKSDB")
     SET(RESELOQ_SOURCES ${RESELOQ_SOURCES}
 	  rocksdb_data_store_common.cpp
