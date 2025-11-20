@@ -882,13 +882,6 @@ bool RocksDBCloudDataStore::CollectCachedSstFiles(
     rocksdb::CloudFileSystem *cfs =
         dynamic_cast<rocksdb::CloudFileSystem *>(cloud_fs_.get());
     
-    // Add cloud manifest file to file_infos. Set its file number to 0 so
-    // that it is always kept in the keep list.
-    ::EloqDS::remote::FileInfo file_info;
-    file_info.set_file_name("CLOUDMANIFEST-" + cfs_options_.new_cookie_on_open);
-    file_info.set_file_size(0);
-    file_info.set_file_number(0);
-    file_infos.push_back(file_info);
     for (const auto &meta : metadata)
     {
         std::string filename =
