@@ -378,7 +378,7 @@ bool DataStoreService::ConnectAndStartDataStore(uint32_t data_shard_id,
     }
 
     // Make sure file sync is not running
-    while (is_file_sync_running_.load(std::memory_order_relaxed))
+    while (shard_ref.is_file_sync_running_.load(std::memory_order_relaxed))
     {
         bthread_usleep(10000);
     }
@@ -1345,23 +1345,28 @@ void DataStoreService::SyncFileCache(
     ::google::protobuf::Closure *done)
 {
     brpc::ClosureGuard done_guard(done);
-    
+
     // Validate shard ID
-    if (request->shard_id() != shard_id_)
-    {
-        LOG(WARNING) << "Invalid shard ID in SyncFileCache request: " 
-                    << request->shard_id() << " (expected " << shard_id_ << ")";
-        // Note: Since response is Empty, we can't return error code.
-        // Errors are logged and RPC completes successfully.
-        // The primary node can check logs if needed.
-        return;
-    }
-    
+    // if (request->shard_id() != shard_id_)
+    // {
+    //     LOG(WARNING) << "Invalid shard ID in SyncFileCache request: "
+    //                 << request->shard_id() << " (expected " << shard_id_ <<
+    //                 ")";
+    //     // Note: Since response is Empty, we can't return error code.
+    //     // Errors are logged and RPC completes successfully.
+    //     // The primary node can check logs if needed.
+    //     return;
+    // }
+
+    // TODO(lzx): validate this node is the follower of the shard.
+    auto &ds_ref = data_shards_.at(request->shard_id());
+    auto shard_status = ds_ref.shard_status_.load(std::memory_order_acquire);
+
     // Only process if we're a standby node (closed status)
-    if (shard_status_.load(std::memory_order_acquire) != DSShardStatus::Closed)
+    if (shard_status != DSShardStatus::Closed)
     {
-        LOG(WARNING) << "SyncFileCache called on non-standby node (status: " 
-                    << static_cast<int>(shard_status_.load()) << ")";
+        LOG(WARNING) << "SyncFileCache called on non-standby node (status: "
+                     << static_cast<int>(shard_status) << ")";
         return;
     }
     
@@ -1397,7 +1402,11 @@ void DataStoreService::ProcessSyncFileCache(SyncFileCacheLocalRequest *req)
     
     const auto *request = req->GetRequest();
 
-    if (shard_status_.load(std::memory_order_acquire) != DSShardStatus::Closed)
+    uint32_t shard_id = request->shard_id();
+    auto &ds_ref = data_shards_.at(shard_id);
+
+    if (ds_ref.shard_status_.load(std::memory_order_acquire) !=
+        DSShardStatus::Closed)
     {
         LOG(WARNING) << "Shard status is not closed, skipping file sync";
         req->Finish();
@@ -1421,7 +1430,7 @@ void DataStoreService::ProcessSyncFileCache(SyncFileCacheLocalRequest *req)
     }
     
     // Construct full storage path with shard ID: {storage_path}/ds_{shard_id}/db/
-    std::string db_path = storage_path + "/ds_" + std::to_string(shard_id_) + "/db/";
+    std::string db_path = storage_path + "/ds_" + std::to_string(shard_id) + "/db/";
 
     // Create local db_path if not exists
     if (!std::filesystem::exists(db_path))
@@ -1453,14 +1462,16 @@ void DataStoreService::ProcessSyncFileCache(SyncFileCacheLocalRequest *req)
         req->Finish();
         return;
     }
-  
-    is_file_sync_running_.store(true, std::memory_order_release);
+
+    ds_ref.is_file_sync_running_.store(true, std::memory_order_release);
     for (const auto &entry : dir_ite)
     {
-        if (shard_status_.load(std::memory_order_acquire) != DSShardStatus::Closed)
+        if (ds_ref.shard_status_.load(std::memory_order_acquire) !=
+            DSShardStatus::Closed)
         {
             LOG(WARNING) << "Shard status is not closed, skipping file sync";
-            is_file_sync_running_.store(false, std::memory_order_release);
+            ds_ref.is_file_sync_running_.store(false,
+                                               std::memory_order_release);
             req->Finish();
             return;
         }
@@ -1495,7 +1506,7 @@ void DataStoreService::ProcessSyncFileCache(SyncFileCacheLocalRequest *req)
     if (downloader == nullptr)
     {
         LOG(ERROR) << "Failed to create S3 downloader, skipping downloads";
-        is_file_sync_running_.store(false, std::memory_order_release);
+        ds_ref.is_file_sync_running_.store(false, std::memory_order_release);
         req->Finish();
         return;
     }
@@ -1518,7 +1529,8 @@ void DataStoreService::ProcessSyncFileCache(SyncFileCacheLocalRequest *req)
 
     for (const auto &filename : files_to_keep)
     {
-        if (shard_status_.load(std::memory_order_acquire) != DSShardStatus::Closed)
+        if (ds_ref.shard_status_.load(std::memory_order_acquire) !=
+            DSShardStatus::Closed)
         {
             LOG(WARNING) << "Shard status is not closed, skipping file sync";
             break;
@@ -1563,7 +1575,7 @@ void DataStoreService::ProcessSyncFileCache(SyncFileCacheLocalRequest *req)
     
     // Finish the RPC (response is Empty, so just call done)
     req->Finish();
-    is_file_sync_running_.store(false, std::memory_order_release);
+    ds_ref.is_file_sync_running_.store(false, std::memory_order_release);
 }
 
 void DataStoreService::FetchDSSClusterConfig(
@@ -2891,80 +2903,86 @@ void DataStoreService::FileCacheSyncWorker(uint32_t interval_sec)
             }
         }
 
-        // Only sync if we're the primary node
-        if (shard_status_.load(std::memory_order_acquire) !=
-            DSShardStatus::ReadWrite)
+        for (uint32_t shard_id = 0; shard_id < data_shards_.size(); ++shard_id)
         {
-            continue;
-        }
+            auto &ds_ref = data_shards_.at(shard_id);
 
-        if (data_store_ == nullptr)
-        {
-            continue;
-        }
-
-        // Collect file cache
-        std::vector<::EloqDS::remote::FileInfo> file_infos;
-        auto *cloud_store =
-            dynamic_cast<RocksDBCloudDataStore *>(data_store_.get());
-        if (cloud_store == nullptr)
-        {
-            continue;  // Not a RocksDB Cloud store
-        }
-
-        if (!cloud_store->CollectCachedSstFiles(file_infos))
-        {
-            LOG(WARNING) << "Failed to collect file cache for sync";
-            continue;
-        }
-
-        // Get standby nodes from cluster manager
-        uint32_t shard_id = shard_id_;
-        const auto shard = cluster_manager_.GetShard(shard_id);
-        const auto &members = shard.nodes_;  // Access nodes_ vector directly
-
-        // Send to each standby node
-        for (const auto &member : members)
-        {
-            if (member == cluster_manager_.GetThisNode())
+            // Only sync if we're the primary node
+            if (ds_ref.shard_status_.load(std::memory_order_acquire) !=
+                DSShardStatus::ReadWrite)
             {
-                continue;  // Skip self
-            }
-
-            // Get channel to standby node by node (not by shard id)
-            DSSNode standby_node(member.host_name_, member.port_);
-            auto channel =
-                cluster_manager_.GetDataStoreServiceChannel(standby_node);
-            if (channel == nullptr)
-            {
-                LOG(WARNING) << "Failed to get channel to standby node "
-                            << member.host_name_ << ":" << member.port_;
                 continue;
             }
 
-            // Create RPC stub and send
-            ::EloqDS::remote::DataStoreRpcService_Stub stub(channel.get());
-            ::EloqDS::remote::SyncFileCacheRequest request;
-            google::protobuf::Empty response;
-            brpc::Controller cntl;
-
-            request.set_shard_id(shard_id);
-            for (const auto &file_info : file_infos)
+            if (ds_ref.data_store_ == nullptr)
             {
-                *request.add_files() = file_info;
+                continue;
             }
 
-            stub.SyncFileCache(&cntl, &request, &response, nullptr);
-
-            if (cntl.Failed())
+            // Collect file cache
+            std::vector<::EloqDS::remote::FileInfo> file_infos;
+            auto *cloud_store =
+                dynamic_cast<RocksDBCloudDataStore *>(ds_ref.data_store_.get());
+            if (cloud_store == nullptr)
             {
-                LOG(WARNING) << "Failed to sync file cache to standby: "
-                            << cntl.ErrorText();
+                continue;  // Not a RocksDB Cloud store
             }
-            else
+
+            if (!cloud_store->CollectCachedSstFiles(file_infos))
             {
-                DLOG(INFO) << "Synced " << file_infos.size()
-                          << " files to standby node " << member.host_name_;
+                LOG(WARNING) << "Failed to collect file cache for sync";
+                continue;
+            }
+
+            // Get standby nodes from cluster manager
+            const auto shard = cluster_manager_.GetShard(shard_id);
+            const auto &members =
+                shard.nodes_;  // Access nodes_ vector directly
+
+            // Send to each standby node
+            for (const auto &member : members)
+            {
+                if (member == cluster_manager_.GetThisNode())
+                {
+                    continue;  // Skip self
+                }
+
+                // Get channel to standby node by node (not by shard id)
+                DSSNode standby_node(member.host_name_, member.port_);
+                auto channel =
+                    cluster_manager_.GetDataStoreServiceChannel(standby_node);
+                if (channel == nullptr)
+                {
+                    LOG(WARNING) << "Failed to get channel to standby node "
+                                 << member.host_name_ << ":" << member.port_;
+                    continue;
+                }
+
+                // Create RPC stub and send
+                ::EloqDS::remote::DataStoreRpcService_Stub stub(channel.get());
+                ::EloqDS::remote::SyncFileCacheRequest request;
+                google::protobuf::Empty response;
+                brpc::Controller cntl;
+
+                request.set_shard_id(shard_id);
+                for (const auto &file_info : file_infos)
+                {
+                    *request.add_files() = file_info;
+                }
+
+                stub.SyncFileCache(&cntl, &request, &response, nullptr);
+
+                if (cntl.Failed())
+                {
+                    LOG(WARNING) << "Failed to sync file cache to standby: "
+                                 << cntl.ErrorText();
+                }
+                else
+                {
+                    DLOG(INFO)
+                        << "Synced " << file_infos.size()
+                        << " files to standby node " << member.host_name_;
+                }
             }
         }
     }

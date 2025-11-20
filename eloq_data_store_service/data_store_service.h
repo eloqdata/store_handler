@@ -689,10 +689,6 @@ private:
     std::string config_file_path_;
     std::string migration_log_path_;
 
-    // Whether the file cache sync is running. Used to avoid concurrent local ssd file operations
-    // between db and file sync worker.
-    std::atomic<bool> is_file_sync_running_{false};
-
     /**
      * @brief Per-shard data structure encapsulating all shard-specific state.
      * Each DataShard manages its own data store, status, and scan cache.
@@ -723,6 +719,10 @@ private:
         std::atomic<DSShardStatus> shard_status_{DSShardStatus::Closed};
         std::atomic<uint64_t> ongoing_write_requests_{0};
         std::unique_ptr<TTLWrapperCache> scan_iter_cache_{nullptr};
+
+        // Whether the file cache sync is running. Used to avoid concurrent
+        // local ssd file operations between db and file sync worker.
+        std::atomic<bool> is_file_sync_running_{false};
     };
 
     std::array<DataShard, 1000> data_shards_;
