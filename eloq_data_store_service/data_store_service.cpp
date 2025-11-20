@@ -25,12 +25,15 @@
 #include <brpc/server.h>
 
 #include <algorithm>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <map>
 #include <memory>
 #include <random>
+#include <set>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -38,6 +41,7 @@
 #include "data_store_fault_inject.h"  // ACTION_FAULT_INJECTOR
 #include "internal_request.h"
 #include "object_pool.h"
+#include "rocksdb_cloud_data_store.h"
 
 namespace EloqDS
 {
@@ -68,6 +72,8 @@ thread_local ObjectPool<CreateSnapshotForBackupRpcRequest>
     rpc_create_snapshot_req_pool_;
 thread_local ObjectPool<CreateSnapshotForBackupLocalRequest>
     local_create_snapshot_req_pool_;
+
+thread_local ObjectPool<SyncFileCacheLocalRequest> local_sync_file_cache_req_pool_;
 
 TTLWrapperCache::TTLWrapperCache()
 {
@@ -226,6 +232,23 @@ DataStoreService::~DataStoreService()
 
     migrate_worker_.Shutdown();
 
+    // Stop file cache sync worker
+    if (file_cache_sync_worker_ != nullptr)
+    {
+        {
+            std::unique_lock<std::mutex> lk(file_cache_sync_mutex_);
+            file_cache_sync_running_ = false;
+            file_cache_sync_cv_.notify_one();
+        }
+        file_cache_sync_worker_->Shutdown();
+    }
+
+    // Stop file sync worker
+    if (file_sync_worker_ != nullptr)
+    {
+        file_sync_worker_->Shutdown();
+    }
+
     // shutdown all data_store
     if (shard_status_.load(std::memory_order_acquire) != DSShardStatus::Closed)
     {
@@ -310,6 +333,21 @@ bool DataStoreService::StartService(bool create_db_if_missing,
     LOG(INFO) << "DataStoreService started on port "
               << cluster_manager_.GetThisNode().port_;
 
+#ifdef DATA_STORE_TYPE_ELOQDSS_ROCKSDB_CLOUD_S3
+    // Start file cache sync worker (for primary node to send file cache to standby)
+    uint32_t sync_interval_sec =
+        cluster_manager_.GetFileCacheSyncIntervalSec();
+    file_cache_sync_running_ = true;
+    file_cache_sync_worker_ = std::make_unique<ThreadWorkerPool>(1);
+    file_cache_sync_worker_->SubmitWork(
+        [this, sync_interval_sec]() { FileCacheSyncWorker(sync_interval_sec); });
+
+    // Start file sync worker (for standby node to process incoming sync requests)
+    file_sync_worker_ = std::make_unique<ThreadWorkerPool>(1);
+    // ThreadWorkerPool manages its own worker threads internally
+    // We just need to create it and submit work items to it
+#endif
+
     CheckAndRecoverMigrateTask();
 
     return true;
@@ -339,6 +377,12 @@ bool DataStoreService::ConnectAndStartDataStore(uint32_t data_shard_id,
             expect_status = shard_status_.load(std::memory_order_acquire);
         }
         return expect_status == open_mode;
+    }
+
+    // Make sure file sync is not running
+    while (is_file_sync_running_.load(std::memory_order_relaxed))
+    {
+        bthread_usleep(10000);
     }
 
     DLOG(INFO) << "Connecting and starting data store for shard id:"
@@ -1252,6 +1296,234 @@ void DataStoreService::CreateSnapshotForBackup(
 
     // Process request async
     data_store_->CreateSnapshotForBackup(req);
+}
+
+void DataStoreService::SyncFileCache(
+    ::google::protobuf::RpcController *controller,
+    const ::EloqDS::remote::SyncFileCacheRequest *request,
+    ::google::protobuf::Empty *response,
+    ::google::protobuf::Closure *done)
+{
+    brpc::ClosureGuard done_guard(done);
+    
+    // Validate shard ID
+    if (request->shard_id() != shard_id_)
+    {
+        LOG(WARNING) << "Invalid shard ID in SyncFileCache request: " 
+                    << request->shard_id() << " (expected " << shard_id_ << ")";
+        // Note: Since response is Empty, we can't return error code.
+        // Errors are logged and RPC completes successfully.
+        // The primary node can check logs if needed.
+        return;
+    }
+    
+    // Only process if we're a standby node (closed status)
+    if (shard_status_.load(std::memory_order_acquire) != DSShardStatus::Closed)
+    {
+        LOG(WARNING) << "SyncFileCache called on non-standby node (status: " 
+                    << static_cast<int>(shard_status_.load()) << ")";
+        return;
+    }
+    
+    // Submit to file sync worker for async processing (file I/O should not block bthread)
+    SyncFileCacheLocalRequest *req = local_sync_file_cache_req_pool_.NextObject();
+    req->SetRequest(request, done_guard.release());
+    
+    if (file_sync_worker_ == nullptr)
+    {
+        LOG(ERROR) << "FileSyncWorker not initialized, cannot process SyncFileCache";
+        req->Free();
+        // Note: done_guard was released, so we need to manually call done
+        brpc::ClosureGuard done_guard(done);
+        return;
+    }
+    
+    bool res = file_sync_worker_->SubmitWork([this, req]() {
+        ProcessSyncFileCache(req);
+    });
+    
+    if (!res)
+    {
+        req->Free();
+        LOG(ERROR) << "Failed to submit SyncFileCache work to file sync worker";
+        // Note: done_guard was released, so we need to manually call done
+        brpc::ClosureGuard done_guard(done);
+    }
+}
+
+void DataStoreService::ProcessSyncFileCache(SyncFileCacheLocalRequest *req)
+{
+    std::unique_ptr<PoolableGuard> poolable_guard = std::make_unique<PoolableGuard>(req);
+    
+    const auto *request = req->GetRequest();
+
+    if (shard_status_.load(std::memory_order_acquire) != DSShardStatus::Closed)
+    {
+        LOG(WARNING) << "Shard status is not closed, skipping file sync";
+        req->Finish();
+        return;
+    }
+    
+    // Get storage path from factory (even though DB is closed, path still exists)
+    if (data_store_factory_ == nullptr)
+    {
+        LOG(ERROR) << "DataStoreFactory is null, cannot process file cache sync";
+        req->Finish();
+        return;
+    }
+    
+    std::string storage_path = data_store_factory_->GetStoragePath();
+    if (storage_path.empty())
+    {
+        LOG(ERROR) << "Storage path is empty, cannot process file cache sync";
+        req->Finish();
+        return;
+    }
+    
+    // Construct full storage path with shard ID: {storage_path}/ds_{shard_id}/db/
+    std::string db_path = storage_path + "/ds_" + std::to_string(shard_id_) + "/db/";
+
+    // Create local db_path if not exists
+    if (!std::filesystem::exists(db_path))
+    {
+        std::filesystem::create_directories(db_path);
+    }
+    
+    // Build file info map from request
+    std::map<std::string, ::EloqDS::remote::FileInfo> file_info_map;
+    for (const auto &file_info : request->files())
+    {
+        file_info_map[file_info.file_name()] = file_info;
+    }
+    
+    // Step 1: Decide the list of files to keep based on cache size and file number
+    // Prioritize files with lower file numbers (older files are more likely to be needed)
+    uint64_t cache_size_limit = GetSstFileCacheSizeLimit();
+    std::set<std::string> files_to_keep = DetermineFilesToKeep(
+        file_info_map, cache_size_limit);
+    
+    // Step 2: List local directory and remove SST files that don't belong to keep list
+    uint32_t deleted_count = 0;
+    std::error_code ec;
+    std::filesystem::directory_iterator dir_ite(db_path, ec);
+    
+    if (ec.value() != 0)
+    {
+        LOG(ERROR) << "Failed to list local directory: " << ec.message();
+        req->Finish();
+        return;
+    }
+  
+    is_file_sync_running_.store(true, std::memory_order_release);
+    for (const auto &entry : dir_ite)
+    {
+        if (shard_status_.load(std::memory_order_acquire) != DSShardStatus::Closed)
+        {
+            LOG(WARNING) << "Shard status is not closed, skipping file sync";
+            is_file_sync_running_.store(false, std::memory_order_release);
+            req->Finish();
+            return;
+        }
+        if (entry.is_regular_file())
+        {
+            std::string filename = entry.path().filename().string();
+            // Only process .sst- files (format: {file_number}.sst-{epoch})
+            if (filename.find(".sst-") != std::string::npos)
+            {
+                if (files_to_keep.find(filename) == files_to_keep.end())
+                {
+                    std::string file_path = db_path + filename;
+                    std::error_code del_ec;
+                    if (std::filesystem::remove(file_path, del_ec))
+                    {
+                        deleted_count++;
+                        DLOG(INFO) << "Deleted file not in keep list: " << filename;
+                    }
+                    else
+                    {
+                        LOG(WARNING) << "Failed to delete file " << filename 
+                                    << ": " << del_ec.message();
+                    }
+                }
+            }
+        }
+    }
+    
+    // Step 3: Download missing files from S3 that are in the keep list
+#if defined(DATA_STORE_TYPE_ELOQDSS_ROCKSDB_CLOUD_S3)
+    std::unique_ptr<S3FileDownloader> downloader = CreateS3Downloader();
+    if (downloader == nullptr)
+    {
+        LOG(ERROR) << "Failed to create S3 downloader, skipping downloads";
+        is_file_sync_running_.store(false, std::memory_order_release);
+        req->Finish();
+        return;
+    }
+    
+    uint32_t downloaded_count = 0;
+    if (!std::filesystem::exists(db_path + "IDENTITY"))
+    {
+        downloader->DownloadFile("IDENTITY", db_path + "IDENTITY");
+    }
+    if (!std::filesystem::exists(db_path + "CURRENT"))
+    {
+        // Create dummy local CURRENT file. This file needs to be in local db dir so that
+        // rocksdb cloud will not clean up the db dir when opening db. Rocksdbcloud
+        // ignores content of CURRENT file so we can set any content we want.
+        std::ofstream current_file(db_path + "CURRENT");
+        current_file << "MANIFEST-000001\n";
+        current_file.close();
+    }
+
+
+    for (const auto &filename : files_to_keep)
+    {
+        if (shard_status_.load(std::memory_order_acquire) != DSShardStatus::Closed)
+        {
+            LOG(WARNING) << "Shard status is not closed, skipping file sync";
+            break;
+        }
+        std::string file_path = db_path + filename;
+        
+        // Check if file already exists locally
+        if (std::filesystem::exists(file_path))
+        {
+            continue;  // Already have this file
+        }
+        
+        // Download from S3
+        auto it = file_info_map.find(filename);
+        if (it == file_info_map.end())
+        {
+            LOG(WARNING) << "File " << filename 
+                        << " in keep list but not in file info map";
+            continue;
+        }
+        
+        if (downloader->DownloadFile(filename, file_path))
+        {
+            downloaded_count++;
+            DLOG(INFO) << "Downloaded " << filename;
+        }
+        else
+        {
+            LOG(ERROR) << "Failed to download " << filename;
+        }
+    }
+#else
+    // S3 download not available for non-RocksDB Cloud S3 backends
+    uint32_t downloaded_count = 0;
+    DLOG(INFO) << "S3 download not available for this data store type";
+#endif
+    
+    DLOG(INFO) << "File cache sync complete: received=" << request->files_size()
+              << ", keep_list_size=" << files_to_keep.size()
+              << ", deleted=" << deleted_count 
+              << ", downloaded=" << downloaded_count;
+    
+    // Finish the RPC (response is Empty, so just call done)
+    req->Finish();
+    is_file_sync_running_.store(false, std::memory_order_release);
 }
 
 void DataStoreService::FetchDSSClusterConfig(
@@ -2251,6 +2523,7 @@ bool DataStoreService::SwitchReadWriteToReadOnly(uint32_t shard_id)
                        "ReadWrite or ReadOnly";
         return false;
     }
+
     // wait for all write requests to finish
     while (ongoing_write_requests_.load(std::memory_order_acquire) > 0)
     {
@@ -2532,6 +2805,211 @@ void DataStoreService::CleanupOldMigrateLogs()
             ++it;
         }
     }
+}
+
+void DataStoreService::FileCacheSyncWorker(uint32_t interval_sec)
+{
+    while (true)
+    {
+        {
+            // Wait for interval or stop signal using condition variable
+            std::unique_lock<std::mutex> lk(file_cache_sync_mutex_);
+            file_cache_sync_cv_.wait_for(
+                lk,
+                std::chrono::seconds(interval_sec),
+                [this] { return !file_cache_sync_running_; });
+            
+            if (!file_cache_sync_running_)
+            {
+                break;
+            }
+        }
+
+        // Only sync if we're the primary node
+        if (shard_status_.load(std::memory_order_acquire) !=
+            DSShardStatus::ReadWrite)
+        {
+            continue;
+        }
+
+        if (data_store_ == nullptr)
+        {
+            continue;
+        }
+
+        // Collect file cache
+        std::vector<::EloqDS::remote::FileInfo> file_infos;
+        auto *cloud_store =
+            dynamic_cast<RocksDBCloudDataStore *>(data_store_.get());
+        if (cloud_store == nullptr)
+        {
+            continue;  // Not a RocksDB Cloud store
+        }
+
+        if (!cloud_store->CollectCachedSstFiles(file_infos))
+        {
+            LOG(WARNING) << "Failed to collect file cache for sync";
+            continue;
+        }
+
+        // Get standby nodes from cluster manager
+        uint32_t shard_id = shard_id_;
+        const auto shard = cluster_manager_.GetShard(shard_id);
+        const auto &members = shard.nodes_;  // Access nodes_ vector directly
+
+        // Send to each standby node
+        for (const auto &member : members)
+        {
+            if (member == cluster_manager_.GetThisNode())
+            {
+                continue;  // Skip self
+            }
+
+            // Get channel to standby node by node (not by shard id)
+            DSSNode standby_node(member.host_name_, member.port_);
+            auto channel =
+                cluster_manager_.GetDataStoreServiceChannel(standby_node);
+            if (channel == nullptr)
+            {
+                LOG(WARNING) << "Failed to get channel to standby node "
+                            << member.host_name_ << ":" << member.port_;
+                continue;
+            }
+
+            // Create RPC stub and send
+            ::EloqDS::remote::DataStoreRpcService_Stub stub(channel.get());
+            ::EloqDS::remote::SyncFileCacheRequest request;
+            google::protobuf::Empty response;
+            brpc::Controller cntl;
+
+            request.set_shard_id(shard_id);
+            for (const auto &file_info : file_infos)
+            {
+                *request.add_files() = file_info;
+            }
+
+            stub.SyncFileCache(&cntl, &request, &response, nullptr);
+
+            if (cntl.Failed())
+            {
+                LOG(WARNING) << "Failed to sync file cache to standby: "
+                            << cntl.ErrorText();
+            }
+            else
+            {
+                DLOG(INFO) << "Synced " << file_infos.size()
+                          << " files to standby node " << member.host_name_;
+            }
+        }
+    }
+}
+
+#if defined(DATA_STORE_TYPE_ELOQDSS_ROCKSDB_CLOUD_S3)
+std::unique_ptr<S3FileDownloader> DataStoreService::CreateS3Downloader() const
+{
+    if (data_store_factory_ == nullptr)
+    {
+        return nullptr;
+    }
+    
+    // Get S3 configuration from factory
+    std::string bucket_name = data_store_factory_->GetS3BucketName();
+    std::string object_path = data_store_factory_->GetS3ObjectPath();
+    std::string region = data_store_factory_->GetS3Region();
+    std::string endpoint_url = data_store_factory_->GetS3EndpointUrl();
+    
+    if (bucket_name.empty())
+    {
+        LOG(ERROR) << "S3 configuration incomplete, cannot create downloader";
+        return nullptr;
+    }
+    
+    // Construct S3 URL: s3://bucket-name/object-path/
+    std::string s3_url = "s3://" + bucket_name;
+    if (!object_path.empty())
+    {
+        s3_url += "/" + object_path;
+        // Ensure URL ends with '/' if object_path doesn't end with it
+        if (object_path.back() != '/')
+        {
+            s3_url += "/";
+        }
+    }
+    
+    // Get AWS credentials from factory
+    std::string aws_access_key_id = data_store_factory_->GetAwsAccessKeyId();
+    std::string aws_secret_key = data_store_factory_->GetAwsSecretKey();
+    
+    // Note: If credentials are empty, S3FileDownloader will use default credential provider
+    
+    return std::make_unique<S3FileDownloader>(
+        s3_url, region, aws_access_key_id, aws_secret_key, endpoint_url);
+}
+#endif
+
+uint64_t DataStoreService::GetSstFileCacheSizeLimit() const
+{
+    if (data_store_factory_ == nullptr)
+    {
+        // Return default if factory is not available
+        return 20ULL * 1024 * 1024 * 1024;  // Default 20GB
+    }
+    
+    uint64_t cache_size = data_store_factory_->GetSstFileCacheSize();
+    if (cache_size == 0)
+    {
+        // Return default if factory returns 0 (not applicable or not set)
+        return 20ULL * 1024 * 1024 * 1024;  // Default 20GB
+    }
+    
+    return cache_size;
+}
+
+std::set<std::string> DataStoreService::DetermineFilesToKeep(
+    const std::map<std::string, ::EloqDS::remote::FileInfo> &file_info_map,
+    uint64_t cache_size_limit) const
+{
+    std::set<std::string> files_to_keep;
+    
+    // Sort files by file number (ascending) - lower numbers are older, prioritize keeping these
+    std::vector<std::pair<uint64_t, std::string>> files_sorted;
+    for (const auto &[filename, file_info] : file_info_map)
+    {
+        files_sorted.push_back({file_info.file_number(), filename});
+    }
+    
+    std::sort(files_sorted.begin(), files_sorted.end(),
+              [](const auto &a, const auto &b) {
+                  return a.first < b.first;  // Ascending: lower file numbers first
+              });
+    
+    // Add files to keep list until we reach cache size limit
+    uint64_t current_size = 0;
+    for (const auto &[file_number, filename] : files_sorted)
+    {
+        auto it = file_info_map.find(filename);
+        if (it == file_info_map.end())
+        {
+            continue;
+        }
+        
+        uint64_t file_size = it->second.file_size();
+        
+        // If adding this file would exceed limit, stop (files with higher numbers won't be kept)
+        if (current_size + file_size > cache_size_limit)
+        {
+            break;
+        }
+        
+        files_to_keep.insert(filename);
+        current_size += file_size;
+    }
+    
+    DLOG(INFO) << "Determined " << files_to_keep.size() 
+              << " files to keep (total size: " << current_size 
+              << " bytes, limit: " << cache_size_limit << " bytes)";
+    
+    return files_to_keep;
 }
 
 }  // namespace EloqDS

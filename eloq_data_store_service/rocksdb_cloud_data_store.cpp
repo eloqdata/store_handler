@@ -19,6 +19,8 @@
  *    <http://www.gnu.org/licenses/>.
  *
  */
+#include "rocksdb_cloud_data_store.h"
+
 #include <aws/core/client/ClientConfiguration.h>
 #include <aws/s3/S3Client.h>
 #include <bthread/condition_variable.h>
@@ -35,6 +37,7 @@
 #include <chrono>
 #include <filesystem>
 #include <memory>
+#include <set>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -47,7 +50,6 @@
 #include "purger_event_listener.h"
 #include "rocksdb/cloud/cloud_file_system_impl.h"
 #include "rocksdb/cloud/cloud_storage_provider.h"
-#include "rocksdb_cloud_data_store.h"
 
 #define LONG_STR_SIZE 21
 
@@ -451,8 +453,8 @@ bool RocksDBCloudDataStore::OpenCloudDB(
     // boost write performance by enabling unordered write
     options.unordered_write = true;
     // skip Consistency check, which compares the actual file size with the size
-    // recorded in the metadata, which can fail when skip_cloud_files_in_getchildren is
-    // set to true
+    // recorded in the metadata, which can fail when
+    // skip_cloud_files_in_getchildren is set to true
     options.paranoid_checks = false;
 
     // print db statistics every 60 seconds
@@ -830,6 +832,110 @@ void RocksDBCloudDataStore::CreateSnapshotForBackup(
 rocksdb::DBCloud *RocksDBCloudDataStore::GetDBPtr()
 {
     return db_;
+}
+
+bool RocksDBCloudDataStore::CollectCachedSstFiles(
+    std::vector<::EloqDS::remote::FileInfo> &file_infos)
+{
+    std::shared_lock<std::shared_mutex> db_lk(db_mux_);
+
+    if (db_ == nullptr)
+    {
+        LOG(ERROR) << "DB not open, cannot collect file cache";
+        return false;
+    }
+
+    // Get live file metadata from RocksDB
+    std::vector<rocksdb::LiveFileMetaData> metadata;
+    db_->GetLiveFilesMetaData(&metadata);
+
+    // Get list of files in local directory
+    std::set<std::string> local_files;
+    std::error_code ec;
+    std::filesystem::directory_iterator dir_ite(db_path_, ec);
+    if (ec.value() != 0)
+    {
+        LOG(ERROR) << "Failed to list local directory: " << ec.message();
+        return false;
+    }
+
+    for (const auto &entry : dir_ite)
+    {
+        if (entry.is_regular_file())
+        {
+            std::string filename = entry.path().filename().string();
+            // Only include .sst- files (format: {file_number}.sst-{epoch})
+            if (filename.find(".sst-") != std::string::npos)
+            {
+                local_files.insert(filename);
+            }
+        }
+    }
+
+    // Build intersection: files that are both in metadata and local directory
+    file_infos.clear();
+    rocksdb::CloudFileSystem *cfs =
+        dynamic_cast<rocksdb::CloudFileSystem *>(cloud_fs_.get());
+    
+    // Add cloud manifest file to file_infos. Set its file number to 0 so
+    // that it is always kept in the keep list.
+    ::EloqDS::remote::FileInfo file_info;
+    file_info.set_file_name("CLOUDMANIFEST-" + cfs_options_.new_cookie_on_open);
+    file_info.set_file_size(0);
+    file_info.set_file_number(0);
+    file_infos.push_back(file_info);
+    for (const auto &meta : metadata)
+    {
+        std::string filename =
+            std::filesystem::path(meta.name).filename().string();
+        std::string remapped_filename = cfs->RemapFilename(filename);
+        // Only include files that exist locally
+        if (local_files.find(remapped_filename) != local_files.end())
+        {
+            ::EloqDS::remote::FileInfo file_info;
+            file_info.set_file_name(remapped_filename);
+            file_info.set_file_size(meta.size);
+            file_info.set_file_number(ExtractFileNumber(remapped_filename));
+
+            file_infos.push_back(file_info);
+        }
+    }
+
+    DLOG(INFO) << "Collected " << file_infos.size()
+               << " cached SST files for shard " << shard_id_;
+    return true;
+}
+
+uint64_t RocksDBCloudDataStore::ExtractFileNumber(const std::string &file_name)
+{
+    // SST file names are in format: {file_number}.sst-{epoch}
+    // Example: "000011.sst-ef6b2d92d3687a84"
+    // Extract numeric part before ".sst-"
+    size_t sst_pos = file_name.find(".sst-");
+    if (sst_pos == std::string::npos)
+    {
+        LOG(ERROR) << "Failed to extract file number from " << file_name;
+        return 0;
+    }
+
+    std::string base = file_name.substr(0, sst_pos);
+    // Remove leading zeros and convert to number
+    size_t first_non_zero = base.find_first_not_of('0');
+    if (first_non_zero == std::string::npos)
+    {
+        LOG(ERROR) << "All zeros in file number from " << file_name;
+        return 0;  // All zeros
+    }
+
+    try
+    {
+        return std::stoull(base.substr(first_non_zero));
+    }
+    catch (const std::exception &e)
+    {
+        LOG(ERROR) << "Failed to extract file number from " << file_name;
+        return 0;
+    }
 }
 
 inline std::string RocksDBCloudDataStore::MakeCloudManifestCookie(

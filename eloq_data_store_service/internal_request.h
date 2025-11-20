@@ -1588,4 +1588,40 @@ private:
     google::protobuf::Closure *done_{nullptr};
 };
 
+class SyncFileCacheLocalRequest : public Poolable
+{
+public:
+    SyncFileCacheLocalRequest() = default;
+    SyncFileCacheLocalRequest(const SyncFileCacheLocalRequest &other) = delete;
+    SyncFileCacheLocalRequest &operator=(const SyncFileCacheLocalRequest &other) = delete;
+
+    void Clear() override
+    {
+        request_ = nullptr;
+        done_ = nullptr;
+    }
+
+    void SetRequest(const ::EloqDS::remote::SyncFileCacheRequest *request,
+                    google::protobuf::Closure *done)
+    {
+        request_ = request;
+        done_ = done;
+    }
+
+    const ::EloqDS::remote::SyncFileCacheRequest *GetRequest() const
+    {
+        return request_;
+    }
+
+    void Finish()
+    {
+        brpc::ClosureGuard done_guard(done_);
+        // Response is Empty, nothing to set
+    }
+
+private:
+    const ::EloqDS::remote::SyncFileCacheRequest *request_{nullptr};
+    google::protobuf::Closure *done_{nullptr};
+};
+
 }  // namespace EloqDS

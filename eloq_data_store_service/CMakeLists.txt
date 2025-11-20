@@ -399,6 +399,11 @@ elseif (WITH_DATA_STORE STREQUAL "ELOQDSS_ELOQSTORE")
     )
 endif ()
 
+if (WITH_DATA_STORE STREQUAL "ELOQDSS_ROCKSDB_CLOUD_S3")
+    SET(RESELOQ_SOURCES ${RESELOQ_SOURCES}
+        s3_file_downloader.cpp
+    )
+endif()
 
 
 include_directories(

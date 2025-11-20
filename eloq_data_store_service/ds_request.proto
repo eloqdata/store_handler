@@ -39,6 +39,9 @@ service DataStoreRpcService {
   //-----Snapshot and branch
   rpc CreateSnapshotForBackup(CreateSnapshotForBackupRequest) returns (CreateSnapshotForBackupResponse);
 
+  //-----File cache sync for standby warm-up (generic protocol for any storage backend)
+  rpc SyncFileCache(SyncFileCacheRequest) returns (google.protobuf.Empty);
+
 };
 
 enum DataStoreError {
@@ -349,4 +352,16 @@ message FaultInjectRequest {
 }
 message FaultInjectResponse {
   bool finished = 1;
+}
+
+//-----File cache sync for standby warm-up
+message FileInfo {
+  string file_name = 1;      // File name (e.g., "000123.sst")
+  uint64 file_size = 2;      // File size in bytes
+  uint64 file_number = 3;    // File number extracted from filename for eviction priority
+}
+
+message SyncFileCacheRequest {
+  uint32 shard_id = 1;
+  repeated FileInfo files = 2;
 }
