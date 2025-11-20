@@ -295,6 +295,7 @@ bool DataStoreServiceClient::PutAll(
     // Process each table
     for (auto &[kv_table_name, entries] : flush_task)
     {
+        size_t records_count = 0;
         auto &table_name = entries.front()->data_sync_task_->table_name_;
 
         // Group records by partition
@@ -310,6 +311,7 @@ bool DataStoreServiceClient::PutAll(
             {
                 continue;
             }
+            records_count += batch.size();
 
             if (table_name.IsHashPartitioned())
             {
@@ -466,6 +468,12 @@ bool DataStoreServiceClient::PutAll(
         {
             callback_data->Clear();
             callback_data->Free();
+        }
+
+        if (metrics::enable_kv_metrics)
+        {
+            metrics::kv_meter->Collect(
+                metrics::NAME_KV_FLUSH_ROWS_TOTAL, records_count, "base");
         }
     }
     return true;
@@ -2616,6 +2624,12 @@ bool DataStoreServiceClient::PutArchivesAll(
                        << sync_concurrent->result_.error_msg();
             return false;
         }
+
+        if (metrics::enable_kv_metrics)
+        {
+            metrics::kv_meter->Collect(
+                metrics::NAME_KV_FLUSH_ROWS_TOTAL, recs_cnt, "archive");
+        }
     }
 
     return true;
@@ -3667,11 +3681,6 @@ DataStoreServiceClient::FetchRecord(
         return FetchSnapshot(fetch_snapshot_cc);
     }
 
-    if (metrics::enable_kv_metrics)
-    {
-        fetch_cc->start_ = metrics::Clock::now();
-    }
-
     if (!fetch_cc->tx_key_.IsOwner())
     {
         fetch_cc->tx_key_ = fetch_cc->tx_key_.Clone();
@@ -3680,6 +3689,11 @@ DataStoreServiceClient::FetchRecord(
     if (fetch_cc->only_fetch_archives_)
     {
         return FetchArchives(fetch_cc);
+    }
+
+    if (metrics::enable_kv_metrics)
+    {
+        fetch_cc->start_ = metrics::Clock::now();
     }
 
     int32_t kv_partition_id = KvPartitionIdOf(
@@ -3780,11 +3794,6 @@ DataStoreServiceClient::FetchBucketData(
 txservice::store::DataStoreHandler::DataStoreOpStatus
 DataStoreServiceClient::FetchSnapshot(txservice::FetchSnapshotCc *fetch_cc)
 {
-    if (metrics::enable_kv_metrics)
-    {
-        fetch_cc->start_ = metrics::Clock::now();
-    }
-
     if (!fetch_cc->tx_key_.IsOwner())
     {
         fetch_cc->tx_key_ = fetch_cc->tx_key_.Clone();
@@ -3793,6 +3802,11 @@ DataStoreServiceClient::FetchSnapshot(txservice::FetchSnapshotCc *fetch_cc)
     if (fetch_cc->only_fetch_archives_)
     {
         return FetchVisibleArchive(fetch_cc);
+    }
+
+    if (metrics::enable_kv_metrics)
+    {
+        fetch_cc->start_ = metrics::Clock::now();
     }
 
     int32_t kv_part_id = KvPartitionIdOf(
