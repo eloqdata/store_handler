@@ -41,7 +41,9 @@
 #include "data_store_fault_inject.h"  // ACTION_FAULT_INJECTOR
 #include "internal_request.h"
 #include "object_pool.h"
+#if defined(DATA_STORE_TYPE_ELOQDSS_ROCKSDB_CLOUD_S3)
 #include "rocksdb_cloud_data_store.h"
+#endif
 
 namespace EloqDS
 {
@@ -2809,6 +2811,7 @@ void DataStoreService::CleanupOldMigrateLogs()
 
 void DataStoreService::FileCacheSyncWorker(uint32_t interval_sec)
 {
+#if defined(DATA_STORE_TYPE_ELOQDSS_ROCKSDB_CLOUD_S3)
     while (true)
     {
         {
@@ -2902,6 +2905,7 @@ void DataStoreService::FileCacheSyncWorker(uint32_t interval_sec)
             }
         }
     }
+#endif
 }
 
 #if defined(DATA_STORE_TYPE_ELOQDSS_ROCKSDB_CLOUD_S3)
