@@ -86,12 +86,13 @@ S3FileDownloader::S3FileDownloader(const std::string &s3_url,
         if (lower_endpoint.find("https://") == 0)
         {
             config.scheme = Aws::Http::Scheme::HTTPS;
+            config.verifySSL = true;  // keep TLS verification for HTTPS
         }
         else
         {
             config.scheme = Aws::Http::Scheme::HTTP;
+            config.verifySSL = false;
         }
-        config.verifySSL = false;
     }
     
     std::shared_ptr<Aws::Auth::AWSCredentialsProvider> credentials_provider;

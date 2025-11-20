@@ -27,6 +27,7 @@
 
 #include <chrono>
 #include <condition_variable>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -457,7 +458,8 @@ public:
         ::google::protobuf::Closure *done) override;
 
     /**
-     * @brief RPC handler for file cache synchronization (generic for any storage backend)
+     * @brief RPC handler for file cache synchronization (generic for any
+     * storage backend)
      * @param controller RPC controller
      * @param request File cache sync request
      * @param response Empty response (google.protobuf.Empty)
@@ -699,6 +701,9 @@ private:
     std::unique_ptr<DataStore> data_store_{nullptr};
     std::atomic<DSShardStatus> shard_status_{DSShardStatus::Closed};
     std::atomic<uint64_t> ongoing_write_requests_{0};
+    // Whether the file cache sync is running. Used to avoid concurrent local ssd file operations
+    // between db and file sync worker.
+    std::atomic<bool> is_file_sync_running_{false};
 
     // scan iterator cache
     TTLWrapperCache scan_iter_cache_;
@@ -791,17 +796,18 @@ private:
      */
     std::unique_ptr<S3FileDownloader> CreateS3Downloader() const;
 #endif
-    
+
     /**
      * @brief Get SST file cache size limit from config
      * @return Cache size limit in bytes
      */
     uint64_t GetSstFileCacheSizeLimit() const;
-    
+
     /**
-     * @brief Determine which files to keep based on cache size limit and file number
-     *        Files with lower file numbers are prioritized (older files are kept first)
-     *        Files with higher file numbers are excluded if cache size limit is exceeded
+     * @brief Determine which files to keep based on cache size limit and file
+     * number Files with lower file numbers are prioritized (older files are
+     * kept first) Files with higher file numbers are excluded if cache size
+     * limit is exceeded
      * @param file_info_map Map of all available files from primary node
      * @param cache_size_limit Maximum cache size in bytes
      * @return Set of file names that should be kept on local disk

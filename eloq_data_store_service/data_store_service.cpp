@@ -379,6 +379,12 @@ bool DataStoreService::ConnectAndStartDataStore(uint32_t data_shard_id,
         return expect_status == open_mode;
     }
 
+    // Make sure file sync is not running
+    while (is_file_sync_running_.load(std::memory_order_relaxed))
+    {
+        bthread_usleep(10000);
+    }
+
     DLOG(INFO) << "Connecting and starting data store for shard id:"
               << data_shard_id
               << ", open_mode:" << static_cast<int>(open_mode)
@@ -1328,7 +1334,7 @@ void DataStoreService::SyncFileCache(
         LOG(ERROR) << "FileSyncWorker not initialized, cannot process SyncFileCache";
         req->Free();
         // Note: done_guard was released, so we need to manually call done
-        // Since we can't process, we'll let the RPC timeout (not ideal but acceptable)
+        brpc::ClosureGuard done_guard(done);
         return;
     }
     
@@ -1341,7 +1347,7 @@ void DataStoreService::SyncFileCache(
         req->Free();
         LOG(ERROR) << "Failed to submit SyncFileCache work to file sync worker";
         // Note: done_guard was released, so we need to manually call done
-        // if submission fails. Since we can't process, we'll let the RPC timeout
+        brpc::ClosureGuard done_guard(done);
     }
 }
 
@@ -1350,6 +1356,13 @@ void DataStoreService::ProcessSyncFileCache(SyncFileCacheLocalRequest *req)
     std::unique_ptr<PoolableGuard> poolable_guard = std::make_unique<PoolableGuard>(req);
     
     const auto *request = req->GetRequest();
+
+    if (shard_status_.load(std::memory_order_acquire) != DSShardStatus::Closed)
+    {
+        LOG(WARNING) << "Shard status is not closed, skipping file sync";
+        req->Finish();
+        return;
+    }
     
     // Get storage path from factory (even though DB is closed, path still exists)
     if (data_store_factory_ == nullptr)
@@ -1369,6 +1382,12 @@ void DataStoreService::ProcessSyncFileCache(SyncFileCacheLocalRequest *req)
     
     // Construct full storage path with shard ID: {storage_path}/ds_{shard_id}/db/
     std::string db_path = storage_path + "/ds_" + std::to_string(shard_id_) + "/db/";
+
+    // Create local db_path if not exists
+    if (!std::filesystem::exists(db_path))
+    {
+        std::filesystem::create_directories(db_path);
+    }
     
     // Build file info map from request
     std::map<std::string, ::EloqDS::remote::FileInfo> file_info_map;
@@ -1394,9 +1413,17 @@ void DataStoreService::ProcessSyncFileCache(SyncFileCacheLocalRequest *req)
         req->Finish();
         return;
     }
-    
+  
+    is_file_sync_running_.store(true, std::memory_order_release);
     for (const auto &entry : dir_ite)
     {
+        if (shard_status_.load(std::memory_order_acquire) != DSShardStatus::Closed)
+        {
+            LOG(WARNING) << "Shard status is not closed, skipping file sync";
+            is_file_sync_running_.store(false, std::memory_order_release);
+            req->Finish();
+            return;
+        }
         if (entry.is_regular_file())
         {
             std::string filename = entry.path().filename().string();
@@ -1428,13 +1455,34 @@ void DataStoreService::ProcessSyncFileCache(SyncFileCacheLocalRequest *req)
     if (downloader == nullptr)
     {
         LOG(ERROR) << "Failed to create S3 downloader, skipping downloads";
+        is_file_sync_running_.store(false, std::memory_order_release);
         req->Finish();
         return;
     }
     
     uint32_t downloaded_count = 0;
+    if (!std::filesystem::exists(db_path + "IDENTITY"))
+    {
+        downloader->DownloadFile("IDENTITY", db_path + "IDENTITY");
+    }
+    if (!std::filesystem::exists(db_path + "CURRENT"))
+    {
+        // Create dummy local CURRENT file. This file needs to be in local db dir so that
+        // rocksdb cloud will not clean up the db dir when opening db. Rocksdbcloud
+        // ignores content of CURRENT file so we can set any content we want.
+        std::ofstream current_file(db_path + "CURRENT");
+        current_file << "MANIFEST-000001\n";
+        current_file.close();
+    }
+
+
     for (const auto &filename : files_to_keep)
     {
+        if (shard_status_.load(std::memory_order_acquire) != DSShardStatus::Closed)
+        {
+            LOG(WARNING) << "Shard status is not closed, skipping file sync";
+            break;
+        }
         std::string file_path = db_path + filename;
         
         // Check if file already exists locally
@@ -1475,6 +1523,7 @@ void DataStoreService::ProcessSyncFileCache(SyncFileCacheLocalRequest *req)
     
     // Finish the RPC (response is Empty, so just call done)
     req->Finish();
+    is_file_sync_running_.store(false, std::memory_order_release);
 }
 
 void DataStoreService::FetchDSSClusterConfig(

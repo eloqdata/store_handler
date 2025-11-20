@@ -19,6 +19,8 @@
  *    <http://www.gnu.org/licenses/>.
  *
  */
+#include "rocksdb_cloud_data_store.h"
+
 #include <aws/core/client/ClientConfiguration.h>
 #include <aws/s3/S3Client.h>
 #include <bthread/condition_variable.h>
@@ -48,7 +50,6 @@
 #include "purger_event_listener.h"
 #include "rocksdb/cloud/cloud_file_system_impl.h"
 #include "rocksdb/cloud/cloud_storage_provider.h"
-#include "rocksdb_cloud_data_store.h"
 
 #define LONG_STR_SIZE 21
 
@@ -452,8 +453,8 @@ bool RocksDBCloudDataStore::OpenCloudDB(
     // boost write performance by enabling unordered write
     options.unordered_write = true;
     // skip Consistency check, which compares the actual file size with the size
-    // recorded in the metadata, which can fail when skip_cloud_files_in_getchildren is
-    // set to true
+    // recorded in the metadata, which can fail when
+    // skip_cloud_files_in_getchildren is set to true
     options.paranoid_checks = false;
 
     // print db statistics every 60 seconds
@@ -873,11 +874,20 @@ bool RocksDBCloudDataStore::CollectCachedSstFiles(
 
     // Build intersection: files that are both in metadata and local directory
     file_infos.clear();
+    rocksdb::CloudFileSystem *cfs =
+        dynamic_cast<rocksdb::CloudFileSystem *>(cloud_fs_.get());
+    
+    // Add cloud manifest file to file_infos. Set its file number to 0 so
+    // that it is always kept in the keep list.
+    ::EloqDS::remote::FileInfo file_info;
+    file_info.set_file_name("CLOUDMANIFEST-" + cfs_options_.new_cookie_on_open);
+    file_info.set_file_size(0);
+    file_info.set_file_number(0);
+    file_infos.push_back(file_info);
     for (const auto &meta : metadata)
     {
-        std::string filename = std::filesystem::path(meta.name).filename().string();
-        rocksdb::CloudFileSystem *cfs =
-        dynamic_cast<rocksdb::CloudFileSystem *>(cloud_fs_.get());
+        std::string filename =
+            std::filesystem::path(meta.name).filename().string();
         std::string remapped_filename = cfs->RemapFilename(filename);
         // Only include files that exist locally
         if (local_files.find(remapped_filename) != local_files.end())
