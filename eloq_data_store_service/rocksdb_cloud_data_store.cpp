@@ -158,8 +158,7 @@ RocksDBCloudDataStore::RocksDBCloudDataStore(
 
 RocksDBCloudDataStore::~RocksDBCloudDataStore()
 {
-    if (query_worker_pool_ != nullptr || data_store_service_ != nullptr ||
-        db_ != nullptr)
+    if (query_worker_pool_ != nullptr || db_ != nullptr)
     {
         Shutdown();
     }
@@ -167,15 +166,9 @@ RocksDBCloudDataStore::~RocksDBCloudDataStore()
 
 void RocksDBCloudDataStore::Shutdown()
 {
+    RocksDBDataStoreCommon::Shutdown();
+
     std::unique_lock<std::shared_mutex> db_lk(db_mux_);
-
-    // shutdown query worker pool
-    query_worker_pool_->Shutdown();
-    query_worker_pool_ = nullptr;
-
-    data_store_service_->ForceEraseScanIters(shard_id_);
-    data_store_service_ = nullptr;
-
     if (db_ != nullptr)
     {
         DLOG(INFO) << "RocksDBCloudDataStore Shutdown, db->Close()";
@@ -361,6 +354,7 @@ bool RocksDBCloudDataStore::StartDB()
 #endif
 
     DLOG(INFO) << "DBCloud Open";
+    auto start_time = std::chrono::steady_clock::now();
     rocksdb::CloudFileSystem *cfs;
     // Open the cloud file system
     status = EloqDS::NewCloudFileSystem(cfs_options_, &cfs);
@@ -378,6 +372,11 @@ bool RocksDBCloudDataStore::StartDB()
 
         return false;
     }
+    auto end_time = std::chrono::steady_clock::now();
+    auto use_time = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        end_time - start_time)
+                        .count();
+    LOG(INFO) << "DBCloud open, NewCloudFileSystem took " << use_time << " ms";
 
     std::string cookie_on_open = "";
     std::string new_cookie_on_open = "";
@@ -632,7 +631,7 @@ bool RocksDBCloudDataStore::OpenCloudDB(
     // Disable auto compactions before blocking purger
     options.disable_auto_compactions = true;
 
-    auto start = std::chrono::system_clock::now();
+    auto start = std::chrono::steady_clock::now();
     std::unique_lock<std::shared_mutex> db_lk(db_mux_);
     rocksdb::Status status;
     uint32_t retry_num = 0;
@@ -652,10 +651,10 @@ bool RocksDBCloudDataStore::OpenCloudDB(
         bthread_usleep(retry_num * 200000);
     }
 
-    auto end = std::chrono::system_clock::now();
+    auto end = std::chrono::steady_clock::now();
     auto duration =
         std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-    DLOG(INFO) << "DBCloud Open took " << duration.count() << " ms";
+    LOG(INFO) << "DBCloud Open took " << duration.count() << " ms";
 
     if (!status.ok())
     {

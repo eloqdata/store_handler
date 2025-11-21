@@ -93,9 +93,10 @@ message CommonResult {
 }
 
 message ReadRequest {
-  uint32 partition_id = 1;
+  int32 partition_id = 1;
   string kv_table_name = 2;
-  repeated bytes key_str = 3;
+  bytes key_str = 3;
+  uint32 shard_id = 4;
 }
 
 message ReadResponse {
@@ -142,8 +143,9 @@ message BatchWriteRecordsRequest {
 
   string kv_table_name = 1;
   int32 partition_id = 2;
-  bool skip_wal = 3;
-  repeated Item items = 4;
+  uint32 shard_id = 3;
+  bool skip_wal = 4;
+  repeated Item items = 5;
 }
 
 message BatchWriteRecordsResponse {
@@ -165,6 +167,7 @@ message DeleteRangeRequest {
   bytes start_key = 3;
   bytes end_key = 4;
   bool skip_wal = 5;
+  uint32 shard_id = 6;
 }
 
 message DeleteRangeResponse {
@@ -303,7 +306,7 @@ message SearchCondition {
 message ScanRequest {
   string session_id = 1;
   string kv_table_name_str = 2;
-  uint32 partition_id = 3;
+  int32 partition_id = 3;
   // empty start_key will be treated as negitive infinity or
   // positive infinity depends on scan_forward
   bytes start_key = 4;
@@ -316,6 +319,7 @@ message ScanRequest {
   uint32 batch_size = 9;     // Number of items to return in scan
   repeated SearchCondition search_conditions = 10;
   bool generate_session_id = 11;
+  uint32 shard_id = 12;
 }
 
 // Response message for scan operations

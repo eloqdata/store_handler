@@ -51,8 +51,21 @@ public:
         DataStoreService *data_store_service,
         bool start_db = true) override
     {
+        // Add shard_id to object_path_
+        auto shard_cloud_config = cloud_config_;
+        if (shard_cloud_config.object_path_.empty())
+        {
+            shard_cloud_config.object_path_ = "rocksdb_cloud_object_path/";
+        }
+        else if (shard_cloud_config.object_path_.back() != '/')
+        {
+            shard_cloud_config.object_path_.append("/");
+        }
+        shard_cloud_config.object_path_.append("ds_");
+        shard_cloud_config.object_path_.append(std::to_string(shard_id));
+
         auto ds = std::make_unique<RocksDBCloudDataStore>(
-            cloud_config_,
+            shard_cloud_config,
             config_,
             create_if_missing,
             tx_enable_cache_replacement_,
