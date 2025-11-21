@@ -1609,8 +1609,26 @@ bool DataStoreServiceClient::UpdateRangeSlices(
                               version,
                               slice_plan,
                               slice_sync_concurrent);
+    // 3- Wait for slice requests to complete. Make sure meta data is updated
+    // after all slice info is written.
+    {
+        std::unique_lock<bthread::Mutex> lk(slice_sync_concurrent->mux_);
+        slice_sync_concurrent->all_request_started_ = true;
+        while (slice_sync_concurrent->unfinished_request_cnt_ != 0)
+        {
+            slice_sync_concurrent->cv_.wait(lk);
+        }
+    }
 
-    // 3- Enqueue and dispatch metadata record concurrently
+    if (slice_sync_concurrent->result_.error_code() !=
+        remote::DataStoreError::NO_ERROR)
+    {
+        LOG(WARNING) << "UpdateRangeSlices: Failed to write segments. Error: "
+                     << slice_sync_concurrent->result_.error_msg();
+        return false;
+    }
+
+    // 4- Enqueue and dispatch metadata record concurrently
     RangeMetadataAccumulator meta_acc;
     EnqueueRangeMetadataRecord(catalog_factory,
                                table_name,
@@ -1629,16 +1647,6 @@ bool DataStoreServiceClient::UpdateRangeSlices(
                                  meta_acc,
                                  meta_sync_concurrent);
 
-    // 4- Wait for slice requests to complete
-    {
-        std::unique_lock<bthread::Mutex> lk(slice_sync_concurrent->mux_);
-        slice_sync_concurrent->all_request_started_ = true;
-        while (slice_sync_concurrent->unfinished_request_cnt_ != 0)
-        {
-            slice_sync_concurrent->cv_.wait(lk);
-        }
-    }
-
     // 5- Wait for metadata requests to complete
     {
         std::unique_lock<bthread::Mutex> lk(meta_sync_concurrent->mux_);
@@ -1650,14 +1658,6 @@ bool DataStoreServiceClient::UpdateRangeSlices(
     }
 
     // 6- Check for errors
-    if (slice_sync_concurrent->result_.error_code() !=
-        remote::DataStoreError::NO_ERROR)
-    {
-        LOG(WARNING) << "UpdateRangeSlices: Failed to write segments. Error: "
-                     << slice_sync_concurrent->result_.error_msg();
-        return false;
-    }
-
     if (meta_sync_concurrent->result_.error_code() !=
         remote::DataStoreError::NO_ERROR)
     {
@@ -1721,16 +1721,7 @@ bool DataStoreServiceClient::UpsertRanges(
                                    meta_acc);
     }
 
-    // 2- Dispatch metadata batches concurrently (batched by table/partition)
-    SyncConcurrentRequest *meta_sync_concurrent =
-        sync_concurrent_request_pool_.NextObject();
-    PoolableGuard meta_guard(meta_sync_concurrent);
-    meta_sync_concurrent->Reset();
-    DispatchRangeMetadataBatches(kv_range_table_name,
-                                 meta_acc,
-                                 meta_sync_concurrent);
-
-    // 3- Dispatch slice batches for all ranges concurrently (shared SyncConcurrentRequest)
+    // 2- Dispatch slice batches for all ranges concurrently (shared SyncConcurrentRequest)
     SyncConcurrentRequest *slice_sync_concurrent =
         sync_concurrent_request_pool_.NextObject();
     PoolableGuard slice_guard(slice_sync_concurrent);
@@ -1746,7 +1737,33 @@ bool DataStoreServiceClient::UpsertRanges(
                                   slice_sync_concurrent);
     }
 
-    // 4- Wait for metadata requests to complete
+    // 3- Wait for slice requests to complete
+    {
+        std::unique_lock<bthread::Mutex> lk(slice_sync_concurrent->mux_);
+        slice_sync_concurrent->all_request_started_ = true;
+        while (slice_sync_concurrent->unfinished_request_cnt_ != 0)
+        {
+            slice_sync_concurrent->cv_.wait(lk);
+        }
+    }
+    if (slice_sync_concurrent->result_.error_code() !=
+        remote::DataStoreError::NO_ERROR)
+    {
+        LOG(WARNING) << "UpsertRanges: Failed to write range slices. Error: "
+                     << slice_sync_concurrent->result_.error_msg();
+        return false;
+    }
+
+    // 4- Dispatch metadata batches concurrently (batched by table/partition)
+    SyncConcurrentRequest *meta_sync_concurrent =
+        sync_concurrent_request_pool_.NextObject();
+    PoolableGuard meta_guard(meta_sync_concurrent);
+    meta_sync_concurrent->Reset();
+    DispatchRangeMetadataBatches(kv_range_table_name,
+                                 meta_acc,
+                                 meta_sync_concurrent);
+
+    // 5- Wait for metadata requests to complete
     {
         std::unique_lock<bthread::Mutex> lk(meta_sync_concurrent->mux_);
         meta_sync_concurrent->all_request_started_ = true;
@@ -1756,30 +1773,12 @@ bool DataStoreServiceClient::UpsertRanges(
         }
     }
 
-    // 5- Wait for slice requests to complete
-    {
-        std::unique_lock<bthread::Mutex> lk(slice_sync_concurrent->mux_);
-        slice_sync_concurrent->all_request_started_ = true;
-        while (slice_sync_concurrent->unfinished_request_cnt_ != 0)
-        {
-            slice_sync_concurrent->cv_.wait(lk);
-        }
-    }
-
     // 6- Check for errors
     if (meta_sync_concurrent->result_.error_code() !=
         remote::DataStoreError::NO_ERROR)
     {
         LOG(WARNING) << "UpsertRanges: Failed to write range metadata. Error: "
                      << meta_sync_concurrent->result_.error_msg();
-        return false;
-    }
-
-    if (slice_sync_concurrent->result_.error_code() !=
-        remote::DataStoreError::NO_ERROR)
-    {
-        LOG(WARNING) << "UpsertRanges: Failed to write range slices. Error: "
-                     << slice_sync_concurrent->result_.error_msg();
         return false;
     }
 
