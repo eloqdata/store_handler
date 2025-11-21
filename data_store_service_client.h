@@ -47,6 +47,7 @@ namespace EloqDS
 struct PartitionFlushState;
 struct PartitionBatchRequest;
 struct PartitionCallbackData;
+struct SyncConcurrentRequest;
 class DataStoreServiceClient;
 class BatchWriteRecordsClosure;
 class ReadClosure;
@@ -57,6 +58,42 @@ struct UpsertTableData;
 class ScanNextClosure;
 class CreateSnapshotForBackupClosure;
 class SinglePartitionScanner;
+
+// Range batching helper structs
+struct RangeSliceBatchPlan
+{
+    uint32_t segment_cnt;
+    std::vector<std::string> segment_keys;      // Owned string buffers
+    std::vector<std::string> segment_records;    // Owned string buffers
+
+    // Clear method for reuse
+    void Clear()
+    {
+        segment_cnt = 0;
+        segment_keys.clear();
+        segment_records.clear();
+    }
+};
+
+struct RangeMetadataRecord
+{
+    std::string encoded_key;
+    std::string encoded_value;
+    uint64_t version;  // Stored separately for records_ts in BatchWriteRecords
+};
+
+struct RangeMetadataAccumulator
+{
+    // Key: (kv_table_name, kv_partition_id) as string pair
+    // Value: vector of metadata records for that table/partition
+    std::map<std::pair<std::string, int32_t>,
+             std::vector<RangeMetadataRecord>> records_by_table_partition;
+
+    void Clear()
+    {
+        records_by_table_partition.clear();
+    }
+};
 
 class DssClusterConfig;
 
@@ -546,6 +583,40 @@ private:
         uint16_t parts_cnt_per_key,
         uint16_t parts_cnt_per_record,
         uint64_t now);
+
+    /**
+     * Helper methods for range slice batching
+     */
+    RangeSliceBatchPlan PrepareRangeSliceBatches(
+        const txservice::TableName &table_name,
+        uint64_t version,
+        const std::vector<const txservice::StoreSlice *> &slices,
+        int32_t partition_id);
+
+    void DispatchRangeSliceBatches(std::string_view kv_table_name,
+                                   int32_t kv_partition_id,
+                                   uint64_t version,
+                                   const RangeSliceBatchPlan &plan,
+                                   SyncConcurrentRequest *sync_concurrent);
+
+    /**
+     * Helper methods for range metadata batching
+     */
+    void EnqueueRangeMetadataRecord(
+        const txservice::CatalogFactory *catalog_factory,
+        const txservice::TableName &table_name,
+        const txservice::TxKey &range_start_key,
+        int32_t partition_id,
+        uint64_t range_version,
+        uint64_t version,
+        uint32_t segment_cnt,
+        RangeMetadataAccumulator &accumulator);
+
+    void DispatchRangeMetadataBatches(
+        std::string_view kv_table_name,
+        const RangeMetadataAccumulator &accumulator,
+        SyncConcurrentRequest *sync_concurrent,
+        size_t max_batch_size = 64 * 1024 * 1024);  // 64MB
 
     /**
      * Delete range and flush data are not frequent calls, all calls are sent
