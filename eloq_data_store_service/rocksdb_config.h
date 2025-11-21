@@ -66,6 +66,7 @@ struct RocksDBConfig
     size_t batch_write_size_;
     size_t periodic_compaction_seconds_;
     std::string dialy_offpeak_time_utc_;
+    bool disable_write_stall_;
 };
 
 #if (defined(DATA_STORE_TYPE_ELOQDSS_ROCKSDB_CLOUD_S3) ||                      \

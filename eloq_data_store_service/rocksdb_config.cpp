@@ -98,6 +98,10 @@ DEFINE_string(
     rocksdb_batch_write_size,
     "1MB", /*Adjust for balancing the memory footprint and throughput*/
     "RocksDB batch write size when doing checkpoint");
+DEFINE_bool(
+    rocksdb_disable_write_stall,
+    false,
+    "RocksDB disable write stall due to too many background operations");
 
 DEFINE_uint32(
     rocksdb_periodic_compaction_seconds,
@@ -489,6 +493,12 @@ RocksDBConfig::RocksDBConfig(const INIReader &config,
             : config.GetString("store",
                                "rocksdb_dialy_offpeak_time_utc",
                                FLAGS_rocksdb_dialy_offpeak_time_utc);
+    disable_write_stall_ =
+        !CheckCommandLineFlagIsDefault("rocksdb_disable_write_stall")
+            ? FLAGS_rocksdb_disable_write_stall
+            : config.GetBoolean("store",
+                                "rocksdb_disable_write_stall",
+                                FLAGS_rocksdb_disable_write_stall);
 };
 
 #if (defined(DATA_STORE_TYPE_ELOQDSS_ROCKSDB_CLOUD_S3) ||                      \

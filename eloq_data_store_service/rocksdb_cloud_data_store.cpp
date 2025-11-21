@@ -596,6 +596,11 @@ bool RocksDBCloudDataStore::OpenCloudDB(
             max_bytes_for_level_multiplier_;
     }
 
+    if (disable_write_stall_)
+    {
+        options.disable_write_stall = disable_write_stall_;
+    }
+
     // Add event listener for purger
     rocksdb::CloudFileSystemImpl *cfs_impl =
         dynamic_cast<rocksdb::CloudFileSystemImpl *>(cloud_fs_.get());

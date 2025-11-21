@@ -141,6 +141,7 @@ public:
               config.hard_pending_compaction_bytes_limit_bytes_),
           max_subcompactions_(config.max_subcompactions_),
           write_rate_limit_(config.write_rate_limit_bytes_),
+          disable_write_stall_(config.disable_write_stall_),
           batch_write_size_(config.batch_write_size_),
           periodic_compaction_seconds_(config.periodic_compaction_seconds_),
           dialy_offpeak_time_utc_(config.dialy_offpeak_time_utc_),
@@ -307,6 +308,7 @@ protected:
     const size_t hard_pending_compaction_bytes_limit_;
     const size_t max_subcompactions_;
     const size_t write_rate_limit_;
+    const bool disable_write_stall_;
     const size_t batch_write_size_;
     const size_t periodic_compaction_seconds_;
     const std::string dialy_offpeak_time_utc_;
