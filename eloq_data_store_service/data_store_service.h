@@ -42,15 +42,18 @@
 #include "data_store_service_config.h"
 #include "data_store_service_util.h"
 #include "ds_request.pb.h"
-#if defined(DATA_STORE_TYPE_ELOQDSS_ROCKSDB_CLOUD_S3)
-#include "s3_file_downloader.h"
-#endif
 #include "thread_worker_pool.h"
 
 namespace EloqDS
 {
 
 class SyncFileCacheLocalRequest;
+
+#if defined(DATA_STORE_TYPE_ELOQDSS_ROCKSDB_CLOUD_S3)
+// Must not include "s3_file_downloader.h" in this file, for there is a enum
+// type definition in "S3Client.h" conflicted with eloqsql.
+class S3FileDownloader;
+#endif
 
 enum class WriteOpType
 {

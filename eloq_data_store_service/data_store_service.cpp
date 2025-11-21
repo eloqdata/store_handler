@@ -43,6 +43,7 @@
 #include "object_pool.h"
 #if defined(DATA_STORE_TYPE_ELOQDSS_ROCKSDB_CLOUD_S3)
 #include "rocksdb_cloud_data_store.h"
+#include "s3_file_downloader.h"
 #endif
 
 namespace EloqDS
