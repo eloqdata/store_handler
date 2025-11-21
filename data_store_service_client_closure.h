@@ -626,7 +626,15 @@ public:
         ds_service_client_ = nullptr;
         cntl_.Reset();
         request_.Clear();
+        // The Clear of the brpc request/response only clear the content of the
+        // request/response, but donot release the memory of the
+        // request/response. So we need to swap with an empty request/response
+        // to release the memory of the request/response.
+        EloqDS::remote::ReadRequest empty_request;
+        request_.Swap(&empty_request);
         response_.Clear();
+        EloqDS::remote::ReadResponse empty_response;
+        response_.Swap(&empty_response);
         table_name_ = "";
         partition_id_ = INT32_MAX;
         shard_id_ = UINT32_MAX;
@@ -1615,7 +1623,11 @@ public:
         callback_ = nullptr;
 
         request_.Clear();
+        EloqDS::remote::BatchWriteRecordsRequest empty_request;
+        request_.Swap(&empty_request);
         response_.Clear();
+        EloqDS::remote::BatchWriteRecordsResponse empty_response;
+        response_.Swap(&empty_response);
         cntl_.Reset();
         remote_node_index_ = UINT32_MAX;
         parts_cnt_per_key_ = 1;
@@ -1902,7 +1914,11 @@ public:
     {
         cntl_.Reset();
         request_.Clear();
+        EloqDS::remote::ScanRequest empty_request;
+        request_.Swap(&empty_request);
         response_.Clear();
+        EloqDS::remote::ScanResponse empty_response;
+        response_.Swap(&empty_response);
         remote_node_index_ = UINT32_MAX;
         cntl_.Reset();
         ds_service_client_ = nullptr;
