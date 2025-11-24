@@ -596,7 +596,7 @@ private:
     void DispatchRangeSliceBatches(std::string_view kv_table_name,
                                    int32_t kv_partition_id,
                                    uint64_t version,
-                                   const RangeSliceBatchPlan &plan,
+                                   const std::vector<RangeSliceBatchPlan> &plans,
                                    SyncConcurrentRequest *sync_concurrent);
 
     /**
