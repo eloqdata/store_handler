@@ -79,14 +79,14 @@ EloqStoreDataStore::EloqStoreDataStore(uint32_t shard_id,
     ::eloqstore::KvOptions opts =
         factory->eloq_store_configs_.eloqstore_configs_;
     // Fix storage path
-    for (auto &path : opts.store_path)
-    {
-        path.append("/ds_").append(std::to_string(shard_id));
-    }
-    if (!opts.cloud_store_path.empty())
-    {
-        opts.cloud_store_path.append("/ds_").append(std::to_string(shard_id));
-    }
+    // for (auto &path : opts.store_path)
+    // {
+    //     path.append("/ds_").append(std::to_string(shard_id));
+    // }
+    // if (!opts.cloud_store_path.empty())
+    // {
+    //     opts.cloud_store_path.append("/ds_").append(std::to_string(shard_id));
+    // }
 
     DLOG(INFO) << "Create EloqStore storage with workers: " << opts.num_threads
                << ", store path: " << opts.store_path.front()
