@@ -598,7 +598,7 @@ private:
         const std::vector<const txservice::StoreSlice *> &slices,
         int32_t partition_id);
 
-    void DispatchRangeSliceBatches(
+    std::pair<size_t, size_t> DispatchRangeSliceBatches(
         std::string_view kv_table_name,
         int32_t kv_partition_id,
         const std::vector<RangeSliceBatchPlan> &plans,

@@ -1387,7 +1387,7 @@ RangeSliceBatchPlan DataStoreServiceClient::PrepareRangeSliceBatches(
  * @param plans Vector of RangeSliceBatchPlan to dispatch
  * @param sync_concurrent SyncConcurrentRequest for concurrency control
  */
-void DataStoreServiceClient::DispatchRangeSliceBatches(
+std::pair<size_t, size_t> DataStoreServiceClient::DispatchRangeSliceBatches(
     std::string_view kv_table_name,
     int32_t kv_partition_id,
     const std::vector<RangeSliceBatchPlan> &plans,
@@ -1415,6 +1415,9 @@ void DataStoreServiceClient::DispatchRangeSliceBatches(
     records_ttl.reserve(total_segments);
     op_types.reserve(total_segments);
 
+    size_t cnt = 0;
+    size_t wait_cnt = 0;
+
     size_t write_batch_size = 0;
     constexpr size_t overhead_per_segment =
         20;  // records_ts (8) + records_ttl (8) + op_types (4)
@@ -1441,11 +1444,13 @@ void DataStoreServiceClient::DispatchRangeSliceBatches(
                     while (sync_concurrent->unfinished_request_cnt_ >=
                            SyncConcurrentRequest::max_flying_write_count)
                     {
+                        wait_cnt++;
                         sync_concurrent->cv_.wait(lk);
                     }
                     sync_concurrent->unfinished_request_cnt_++;
                 }
 
+                cnt++;
                 // Dispatch current batch
                 BatchWriteRecords(kv_table_name,
                                   kv_partition_id,
@@ -1494,11 +1499,13 @@ void DataStoreServiceClient::DispatchRangeSliceBatches(
             while (sync_concurrent->unfinished_request_cnt_ >=
                    SyncConcurrentRequest::max_flying_write_count)
             {
+                wait_cnt++;
                 sync_concurrent->cv_.wait(lk);
             }
             sync_concurrent->unfinished_request_cnt_++;
         }
 
+        cnt++;
         BatchWriteRecords(kv_table_name,
                           kv_partition_id,
                           data_shard_id,
@@ -1691,10 +1698,13 @@ bool DataStoreServiceClient::UpdateRangeSlices(
     slice_plans.reserve(update_range_slice_reqs.size());
     RangeMetadataAccumulator meta_acc;
 
+    size_t total_slice_cnt = 0;
+
     // 1- First pass: Prepare slice batches and accumulate metadata for all
     // ranges
     for (auto &req : update_range_slice_reqs)
     {
+        total_slice_cnt += req.range_slices_.size();
         // Prepare slice batches for this range
         auto slice_plan = PrepareRangeSliceBatches(*req.table_name_,
                                                    req.ckpt_ts_,
@@ -1736,13 +1746,17 @@ bool DataStoreServiceClient::UpdateRangeSlices(
         sync_concurrent_request_pool_.NextObject();
     PoolableGuard slice_guard(slice_sync_concurrent);
     slice_sync_concurrent->Reset();
+    size_t data_cnt = 0;
+    size_t wait_cnt = 0;
     for (const auto &[kv_partition_id, slice_plans] : slice_plans)
     {
         // Call DispatchRangeSliceBatches once with all plans
-        DispatchRangeSliceBatches(kv_range_slices_table_name,
-                                  kv_partition_id,
-                                  slice_plans,
-                                  slice_sync_concurrent);
+        auto [a, b] = DispatchRangeSliceBatches(kv_range_slices_table_name,
+                                                kv_partition_id,
+                                                slice_plans,
+                                                slice_sync_concurrent);
+        data_cnt += a;
+        wait_cnt += b;
     }
 
     // 3- Wait for slice requests to complete
@@ -1761,7 +1775,9 @@ bool DataStoreServiceClient::UpdateRangeSlices(
                      update_stop_time - update_start_time)
                      .count()
               << ", plan size = " << slice_plans.size()
-              << ", req size = " << update_range_slice_reqs.size();
+              << ", req size = " << update_range_slice_reqs.size()
+              << ", data cnt = " << data_cnt << ", wait cnt = " << wait_cnt
+              << ", slice cnt = " << total_slice_cnt;
 
     if (slice_sync_concurrent->result_.error_code() !=
         remote::DataStoreError::NO_ERROR)
@@ -1792,7 +1808,7 @@ bool DataStoreServiceClient::UpdateRangeSlices(
     }
 
     auto update_meta_stop_time = std::chrono::steady_clock::now();
-    LOG(INFO) << "yf: client, update range slices time = "
+    LOG(INFO) << "yf: client, update range meta time = "
               << std::chrono::duration_cast<std::chrono::microseconds>(
                      update_meta_stop_time - update_meta_start_time)
                      .count()
