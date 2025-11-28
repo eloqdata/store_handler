@@ -1452,6 +1452,8 @@ std::pair<size_t, size_t> DataStoreServiceClient::DispatchRangeSliceBatches(
                 }
 
                 cnt++;
+                LOG(INFO) << "yf: client, dispatch keys size = " << keys.size()
+                          << ", batch size = " << write_batch_size;
                 // Dispatch current batch
                 BatchWriteRecords(kv_table_name,
                                   kv_partition_id,
