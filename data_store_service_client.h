@@ -602,7 +602,8 @@ private:
         std::string_view kv_table_name,
         int32_t kv_partition_id,
         const std::vector<RangeSliceBatchPlan> &plans,
-        SyncConcurrentRequest *sync_concurrent);
+        SyncConcurrentRequest *sync_concurrent,
+        size_t &write_batch_size);
 
     /**
      * Helper methods for range metadata batching

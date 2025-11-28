@@ -1391,7 +1391,8 @@ std::pair<size_t, size_t> DataStoreServiceClient::DispatchRangeSliceBatches(
     std::string_view kv_table_name,
     int32_t kv_partition_id,
     const std::vector<RangeSliceBatchPlan> &plans,
-    SyncConcurrentRequest *sync_concurrent)
+    SyncConcurrentRequest *sync_concurrent,
+    size_t &d_write_batch_size)
 {
     uint32_t data_shard_id = GetShardIdByPartitionId(kv_partition_id, false);
 
@@ -1520,6 +1521,8 @@ std::pair<size_t, size_t> DataStoreServiceClient::DispatchRangeSliceBatches(
                           1,   // parts_cnt_per_key
                           1);  // parts_cnt_per_record
     }
+
+    d_write_batch_size = write_batch_size;
 
     return {cnt, wait_cnt};
 }
@@ -1750,15 +1753,19 @@ bool DataStoreServiceClient::UpdateRangeSlices(
     slice_sync_concurrent->Reset();
     size_t data_cnt = 0;
     size_t wait_cnt = 0;
+    size_t write_batch_size = 0;
     for (const auto &[kv_partition_id, slice_plans] : slice_plans)
     {
+        size_t c = 0;
         // Call DispatchRangeSliceBatches once with all plans
         auto [a, b] = DispatchRangeSliceBatches(kv_range_slices_table_name,
                                                 kv_partition_id,
                                                 slice_plans,
-                                                slice_sync_concurrent);
+                                                slice_sync_concurrent,
+                                                c);
         data_cnt += a;
         wait_cnt += b;
+        write_batch_size += c;
     }
 
     // 3- Wait for slice requests to complete
@@ -1779,7 +1786,8 @@ bool DataStoreServiceClient::UpdateRangeSlices(
               << ", plan size = " << slice_plans.size()
               << ", req size = " << update_range_slice_reqs.size()
               << ", data cnt = " << data_cnt << ", wait cnt = " << wait_cnt
-              << ", slice cnt = " << total_slice_cnt;
+              << ", slice cnt = " << total_slice_cnt
+              << ", write batch size = " << write_batch_size;
 
     if (slice_sync_concurrent->result_.error_code() !=
         remote::DataStoreError::NO_ERROR)
@@ -1886,11 +1894,13 @@ bool DataStoreServiceClient::UpdateRangeSlices(
     slice_sync_concurrent->Reset();
     std::vector<RangeSliceBatchPlan> slice_plans;
     slice_plans.emplace_back(std::move(slice_plan));
+    size_t c;
     const uint32_t segment_cnt = slice_plans[0].segment_cnt;
     DispatchRangeSliceBatches(kv_range_slices_table_name,
                               KvPartitionIdOf(table_name),
                               slice_plans,
-                              slice_sync_concurrent);
+                              slice_sync_concurrent,
+                              c);
     // 3- Wait for slice requests to complete. Make sure meta data is updated
     // after all slice info is written.
     {
@@ -2010,13 +2020,15 @@ bool DataStoreServiceClient::UpsertRanges(
         sync_concurrent_request_pool_.NextObject();
     PoolableGuard slice_guard(slice_sync_concurrent);
     slice_sync_concurrent->Reset();
+    size_t c = 0;
 
     int32_t kv_partition_id = KvPartitionIdOf(table_name);
     // Call DispatchRangeSliceBatches once with all plans
     DispatchRangeSliceBatches(kv_range_slices_table_name,
                               kv_partition_id,
                               slice_plans,
-                              slice_sync_concurrent);
+                              slice_sync_concurrent,
+                              c);
 
     // 3- Wait for slice requests to complete
     {
