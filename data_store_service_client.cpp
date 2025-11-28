@@ -27,6 +27,7 @@
 #include <boost/uuid/uuid.hpp>
 #include <boost/uuid/uuid_generators.hpp>
 #include <boost/uuid/uuid_io.hpp>
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <random>
@@ -1727,6 +1728,8 @@ bool DataStoreServiceClient::UpdateRangeSlices(
             meta_acc);
     }
 
+    auto update_start_time = std::chrono::steady_clock::now();
+
     // 2- Dispatch slice batches for all ranges concurrently (shared
     // SyncConcurrentRequest)
     SyncConcurrentRequest *slice_sync_concurrent =
@@ -1751,6 +1754,15 @@ bool DataStoreServiceClient::UpdateRangeSlices(
             slice_sync_concurrent->cv_.wait(lk);
         }
     }
+
+    auto update_stop_time = std::chrono::steady_clock::now();
+    LOG(INFO) << "yf: client, update range slices time = "
+              << std::chrono::duration_cast<std::chrono::microseconds>(
+                     update_stop_time - update_start_time)
+                     .count()
+              << ", plan size = " << slice_plans.size()
+              << ", req size = " << update_range_slice_reqs.size();
+
     if (slice_sync_concurrent->result_.error_code() !=
         remote::DataStoreError::NO_ERROR)
     {
@@ -1758,6 +1770,8 @@ bool DataStoreServiceClient::UpdateRangeSlices(
                      << slice_sync_concurrent->result_.error_msg();
         return false;
     }
+
+    auto update_meta_start_time = std::chrono::steady_clock::now();
 
     // 4- Dispatch metadata batches concurrently (batched by table/partition)
     SyncConcurrentRequest *meta_sync_concurrent =
@@ -1776,6 +1790,14 @@ bool DataStoreServiceClient::UpdateRangeSlices(
             meta_sync_concurrent->cv_.wait(lk);
         }
     }
+
+    auto update_meta_stop_time = std::chrono::steady_clock::now();
+    LOG(INFO) << "yf: client, update range slices time = "
+              << std::chrono::duration_cast<std::chrono::microseconds>(
+                     update_meta_stop_time - update_meta_start_time)
+                     .count()
+              << ", plan size = " << slice_plans.size()
+              << ", req size = " << update_range_slice_reqs.size();
 
     // 6- Check for errors
     if (meta_sync_concurrent->result_.error_code() !=
