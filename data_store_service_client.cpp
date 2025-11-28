@@ -1520,6 +1520,8 @@ std::pair<size_t, size_t> DataStoreServiceClient::DispatchRangeSliceBatches(
                           1,   // parts_cnt_per_key
                           1);  // parts_cnt_per_record
     }
+
+    return {cnt, wait_cnt};
 }
 
 void DataStoreServiceClient::EnqueueRangeMetadataRecord(
