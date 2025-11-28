@@ -1312,6 +1312,7 @@ RangeSliceBatchPlan DataStoreServiceClient::PrepareRangeSliceBatches(
     // Estimate capacity based on slices size
     plan.segment_keys.reserve(slices.size() / 10 + 1);  // Rough estimate
     plan.segment_records.reserve(slices.size() / 10 + 1);
+    plan.version = version;
 
     std::string segment_key =
         EncodeRangeSliceKey(table_name, partition_id, plan.segment_cnt);
@@ -1388,35 +1389,35 @@ RangeSliceBatchPlan DataStoreServiceClient::PrepareRangeSliceBatches(
 void DataStoreServiceClient::DispatchRangeSliceBatches(
     std::string_view kv_table_name,
     int32_t kv_partition_id,
-    uint64_t version,
     const std::vector<RangeSliceBatchPlan> &plans,
     SyncConcurrentRequest *sync_concurrent)
 {
     uint32_t data_shard_id = GetShardIdByPartitionId(kv_partition_id, false);
-    
+
     // Initialize batch vectors
     std::vector<std::string_view> keys;
     std::vector<std::string_view> records;
     std::vector<uint64_t> records_ts;
     std::vector<uint64_t> records_ttl;
     std::vector<WriteOpType> op_types;
-    
+
     // Estimate total segments across all plans
     size_t total_segments = 0;
     for (const auto &plan : plans)
     {
         total_segments += plan.segment_cnt;
     }
-    
+
     keys.reserve(total_segments);
     records.reserve(total_segments);
     records_ts.reserve(total_segments);
     records_ttl.reserve(total_segments);
     op_types.reserve(total_segments);
-    
+
     size_t write_batch_size = 0;
-    constexpr size_t overhead_per_segment = 20;  // records_ts (8) + records_ttl (8) + op_types (4)
-    
+    constexpr size_t overhead_per_segment =
+        20;  // records_ts (8) + records_ttl (8) + op_types (4)
+
     // Iterate through all plans and collect segments
     for (const auto &plan : plans)
     {
@@ -1424,12 +1425,16 @@ void DataStoreServiceClient::DispatchRangeSliceBatches(
         {
             size_t key_size = plan.segment_keys[i].size();
             size_t record_size = plan.segment_records[i].size();
-            size_t segment_total_size = key_size + record_size + overhead_per_segment;
-            
-            // If adding this segment would exceed MAX_WRITE_BATCH_SIZE and batch is non-empty, dispatch current batch
-            if (write_batch_size + segment_total_size >= MAX_WRITE_BATCH_SIZE && keys.size() > 0)
+            size_t segment_total_size =
+                key_size + record_size + overhead_per_segment;
+
+            // If adding this segment would exceed MAX_WRITE_BATCH_SIZE and
+            // batch is non-empty, dispatch current batch
+            if (write_batch_size + segment_total_size >= MAX_WRITE_BATCH_SIZE &&
+                keys.size() > 0)
             {
-                // Concurrency control: wait if limit reached, then increment counter
+                // Concurrency control: wait if limit reached, then increment
+                // counter
                 {
                     std::unique_lock<bthread::Mutex> lk(sync_concurrent->mux_);
                     while (sync_concurrent->unfinished_request_cnt_ >=
@@ -1439,7 +1444,7 @@ void DataStoreServiceClient::DispatchRangeSliceBatches(
                     }
                     sync_concurrent->unfinished_request_cnt_++;
                 }
-                
+
                 // Dispatch current batch
                 BatchWriteRecords(kv_table_name,
                                   kv_partition_id,
@@ -1452,9 +1457,9 @@ void DataStoreServiceClient::DispatchRangeSliceBatches(
                                   true,
                                   sync_concurrent,
                                   SyncConcurrentRequestCallback,
-                                  1,  // parts_cnt_per_key
-                                  1); // parts_cnt_per_record
-                
+                                  1,   // parts_cnt_per_key
+                                  1);  // parts_cnt_per_record
+
                 // Clear and re-reserve for next batch
                 keys.clear();
                 records.clear();
@@ -1468,17 +1473,17 @@ void DataStoreServiceClient::DispatchRangeSliceBatches(
                 op_types.reserve(total_segments);
                 write_batch_size = 0;
             }
-            
+
             // Append to batch vectors
             keys.emplace_back(plan.segment_keys[i]);
             records.emplace_back(plan.segment_records[i]);
-            records_ts.emplace_back(version);
+            records_ts.emplace_back(plan.version);
             records_ttl.emplace_back(0);  // no TTL for range slices
             op_types.emplace_back(WriteOpType::PUT);
             write_batch_size += segment_total_size;
         }
     }
-    
+
     // Dispatch final batch if vectors are non-empty
     if (keys.size() > 0)
     {
@@ -1492,7 +1497,7 @@ void DataStoreServiceClient::DispatchRangeSliceBatches(
             }
             sync_concurrent->unfinished_request_cnt_++;
         }
-        
+
         BatchWriteRecords(kv_table_name,
                           kv_partition_id,
                           data_shard_id,
@@ -1504,8 +1509,8 @@ void DataStoreServiceClient::DispatchRangeSliceBatches(
                           true,
                           sync_concurrent,
                           SyncConcurrentRequestCallback,
-                          1,  // parts_cnt_per_key
-                          1); // parts_cnt_per_record
+                          1,   // parts_cnt_per_key
+                          1);  // parts_cnt_per_record
     }
 }
 
@@ -1524,8 +1529,10 @@ void DataStoreServiceClient::EnqueueRangeMetadataRecord(
     int32_t kv_partition_id = KvPartitionIdOf(table_name);
 
     // Encode key and value
-    std::string key_str = EncodeRangeKey(catalog_factory, table_name, range_start_key);
-    std::string rec_str = EncodeRangeValue(partition_id, range_version, version, segment_cnt);
+    std::string key_str =
+        EncodeRangeKey(catalog_factory, table_name, range_start_key);
+    std::string rec_str =
+        EncodeRangeValue(partition_id, range_version, version, segment_cnt);
 
     // Get or create entry in accumulator
     auto key = std::make_pair(kv_table_name, kv_partition_id);
@@ -1545,15 +1552,18 @@ void DataStoreServiceClient::DispatchRangeMetadataBatches(
     SyncConcurrentRequest *sync_concurrent,
     size_t max_batch_size)
 {
-    for (const auto &[table_partition, records_vec] : accumulator.records_by_table_partition)
+    for (const auto &[table_partition, records_vec] :
+         accumulator.records_by_table_partition)
     {
         const std::string &kv_table_name_str = table_partition.first;
         int32_t kv_partition_id = table_partition.second;
-        uint32_t data_shard_id = GetShardIdByPartitionId(kv_partition_id, false);
+        uint32_t data_shard_id =
+            GetShardIdByPartitionId(kv_partition_id, false);
 
-        // Use kv_table_name parameter if provided, otherwise use kv_table_name_str
-        // For consistency, prefer the parameter
-        std::string_view target_table_name = kv_table_name.empty() ? kv_table_name_str : kv_table_name;
+        // Use kv_table_name parameter if provided, otherwise use
+        // kv_table_name_str For consistency, prefer the parameter
+        std::string_view target_table_name =
+            kv_table_name.empty() ? kv_table_name_str : kv_table_name;
 
         // Initialize batch vectors
         std::vector<std::string_view> keys;
@@ -1574,14 +1584,19 @@ void DataStoreServiceClient::DispatchRangeMetadataBatches(
         {
             size_t key_size = record.encoded_key.size();
             size_t value_size = record.encoded_value.size();
-            // Overhead: records_ts (8 bytes) + records_ttl (8 bytes) + op_types (4 bytes) ≈ 20 bytes
+            // Overhead: records_ts (8 bytes) + records_ttl (8 bytes) + op_types
+            // (4 bytes) ≈ 20 bytes
             constexpr size_t overhead_per_record = 20;
-            size_t record_total_size = key_size + value_size + overhead_per_record;
+            size_t record_total_size =
+                key_size + value_size + overhead_per_record;
 
-            // If adding this record would exceed max_batch_size and batch is non-empty, dispatch current batch
-            if (write_batch_size + record_total_size >= max_batch_size && keys.size() > 0)
+            // If adding this record would exceed max_batch_size and batch is
+            // non-empty, dispatch current batch
+            if (write_batch_size + record_total_size >= max_batch_size &&
+                keys.size() > 0)
             {
-                // Concurrency control: wait if limit reached, then increment counter
+                // Concurrency control: wait if limit reached, then increment
+                // counter
                 {
                     std::unique_lock<bthread::Mutex> lk(sync_concurrent->mux_);
                     while (sync_concurrent->unfinished_request_cnt_ >=
@@ -1604,8 +1619,8 @@ void DataStoreServiceClient::DispatchRangeMetadataBatches(
                                   true,
                                   sync_concurrent,
                                   SyncConcurrentRequestCallback,
-                                  1,  // parts_cnt_per_key
-                                  1); // parts_cnt_per_record
+                                  1,   // parts_cnt_per_key
+                                  1);  // parts_cnt_per_record
 
                 // Clear and re-reserve for next batch
                 keys.clear();
@@ -1630,10 +1645,12 @@ void DataStoreServiceClient::DispatchRangeMetadataBatches(
             write_batch_size += record_total_size;
         }
 
-        // Dispatch final batch for this table/partition if vectors are non-empty
+        // Dispatch final batch for this table/partition if vectors are
+        // non-empty
         if (keys.size() > 0)
         {
-            // Concurrency control: wait if limit reached, then increment counter
+            // Concurrency control: wait if limit reached, then increment
+            // counter
             {
                 std::unique_lock<bthread::Mutex> lk(sync_concurrent->mux_);
                 while (sync_concurrent->unfinished_request_cnt_ >=
@@ -1655,10 +1672,138 @@ void DataStoreServiceClient::DispatchRangeMetadataBatches(
                               true,
                               sync_concurrent,
                               SyncConcurrentRequestCallback,
-                              1,  // parts_cnt_per_key
-                              1); // parts_cnt_per_record
+                              1,   // parts_cnt_per_key
+                              1);  // parts_cnt_per_record
         }
     }
+}
+
+bool DataStoreServiceClient::UpdateRangeSlices(
+    std::vector<txservice::UpdateRangeSlicesReq> &update_range_slice_reqs)
+{
+    if (update_range_slice_reqs.empty())
+    {
+        return true;
+    }
+
+    std::unordered_map<int32_t, std::vector<RangeSliceBatchPlan>> slice_plans;
+    slice_plans.reserve(update_range_slice_reqs.size());
+    RangeMetadataAccumulator meta_acc;
+
+    // 1- First pass: Prepare slice batches and accumulate metadata for all
+    // ranges
+    for (auto &req : update_range_slice_reqs)
+    {
+        // Prepare slice batches for this range
+        auto slice_plan = PrepareRangeSliceBatches(*req.table_name_,
+                                                   req.ckpt_ts_,
+                                                   req.range_slices_,
+                                                   req.partition_id_);
+        uint32_t segment_cnt = slice_plan.segment_cnt;
+        int32_t kv_partition_id = KvPartitionIdOf(*req.table_name_);
+        auto iter = slice_plans.find(kv_partition_id);
+        if (iter == slice_plans.end())
+        {
+            auto em_it = slice_plans.try_emplace(kv_partition_id);
+            em_it.first->second.push_back(std::move(slice_plan));
+        }
+        else
+        {
+            iter->second.push_back(std::move(slice_plan));
+        }
+
+        auto catalog_factory = GetCatalogFactory(req.table_name_->Engine());
+        assert(catalog_factory != nullptr);
+
+        // Enqueue metadata record for this range
+        EnqueueRangeMetadataRecord(
+            catalog_factory,
+            *req.table_name_,
+            req.start_key_,
+            req.partition_id_,
+            req.range_version_,  // range_version (using version for now)
+            req.ckpt_ts_,
+            segment_cnt,
+            meta_acc);
+    }
+
+    // 2- Dispatch slice batches for all ranges concurrently (shared
+    // SyncConcurrentRequest)
+    SyncConcurrentRequest *slice_sync_concurrent =
+        sync_concurrent_request_pool_.NextObject();
+    PoolableGuard slice_guard(slice_sync_concurrent);
+    slice_sync_concurrent->Reset();
+    for (const auto &[kv_partition_id, slice_plans] : slice_plans)
+    {
+        // Call DispatchRangeSliceBatches once with all plans
+        DispatchRangeSliceBatches(kv_range_slices_table_name,
+                                  kv_partition_id,
+                                  slice_plans,
+                                  slice_sync_concurrent);
+    }
+
+    // 3- Wait for slice requests to complete
+    {
+        std::unique_lock<bthread::Mutex> lk(slice_sync_concurrent->mux_);
+        slice_sync_concurrent->all_request_started_ = true;
+        while (slice_sync_concurrent->unfinished_request_cnt_ != 0)
+        {
+            slice_sync_concurrent->cv_.wait(lk);
+        }
+    }
+    if (slice_sync_concurrent->result_.error_code() !=
+        remote::DataStoreError::NO_ERROR)
+    {
+        LOG(WARNING) << "UpsertRanges: Failed to write range slices. Error: "
+                     << slice_sync_concurrent->result_.error_msg();
+        return false;
+    }
+
+    // 4- Dispatch metadata batches concurrently (batched by table/partition)
+    SyncConcurrentRequest *meta_sync_concurrent =
+        sync_concurrent_request_pool_.NextObject();
+    PoolableGuard meta_guard(meta_sync_concurrent);
+    meta_sync_concurrent->Reset();
+    DispatchRangeMetadataBatches(
+        kv_range_table_name, meta_acc, meta_sync_concurrent);
+
+    // 5- Wait for metadata requests to complete
+    {
+        std::unique_lock<bthread::Mutex> lk(meta_sync_concurrent->mux_);
+        meta_sync_concurrent->all_request_started_ = true;
+        while (meta_sync_concurrent->unfinished_request_cnt_ != 0)
+        {
+            meta_sync_concurrent->cv_.wait(lk);
+        }
+    }
+
+    // 6- Check for errors
+    if (meta_sync_concurrent->result_.error_code() !=
+        remote::DataStoreError::NO_ERROR)
+    {
+        LOG(WARNING)
+            << "UpdateRangeSlices: Failed to write range metadata. Error: "
+            << meta_sync_concurrent->result_.error_msg();
+        return false;
+    }
+
+    // 7- Flush data
+    SyncCallbackData *callback_data = sync_callback_data_pool_.NextObject();
+    PoolableGuard guard(callback_data);
+    callback_data->Reset();
+    std::vector<std::string> kv_range_table_names;
+    kv_range_table_names.emplace_back(kv_range_table_name);
+    FlushData(kv_range_table_names, callback_data, &SyncCallback);
+    callback_data->Wait();
+    if (callback_data->Result().error_code() !=
+        EloqDS::remote::DataStoreError::NO_ERROR)
+    {
+        LOG(WARNING) << "UpsertRanges: Failed to flush ranges. Error: "
+                     << callback_data->Result().error_msg();
+        return false;
+    }
+
+    return true;
 }
 
 /**
@@ -1704,7 +1849,6 @@ bool DataStoreServiceClient::UpdateRangeSlices(
     const uint32_t segment_cnt = slice_plans[0].segment_cnt;
     DispatchRangeSliceBatches(kv_range_slices_table_name,
                               KvPartitionIdOf(table_name),
-                              version,
                               slice_plans,
                               slice_sync_concurrent);
     // 3- Wait for slice requests to complete. Make sure meta data is updated
@@ -1741,9 +1885,8 @@ bool DataStoreServiceClient::UpdateRangeSlices(
         sync_concurrent_request_pool_.NextObject();
     PoolableGuard meta_guard(meta_sync_concurrent);
     meta_sync_concurrent->Reset();
-    DispatchRangeMetadataBatches(kv_range_table_name,
-                                 meta_acc,
-                                 meta_sync_concurrent);
+    DispatchRangeMetadataBatches(
+        kv_range_table_name, meta_acc, meta_sync_concurrent);
 
     // 5- Wait for metadata requests to complete
     {
@@ -1796,7 +1939,8 @@ bool DataStoreServiceClient::UpsertRanges(
     auto catalog_factory = GetCatalogFactory(table_name.Engine());
     assert(catalog_factory != nullptr);
 
-    // 1- First pass: Prepare slice batches and accumulate metadata for all ranges
+    // 1- First pass: Prepare slice batches and accumulate metadata for all
+    // ranges
     std::vector<RangeSliceBatchPlan> slice_plans;
     slice_plans.reserve(range_info.size());
     RangeMetadataAccumulator meta_acc;
@@ -1809,17 +1953,19 @@ bool DataStoreServiceClient::UpsertRanges(
         slice_plans.emplace_back(std::move(slice_plan));
 
         // Enqueue metadata record for this range
-        EnqueueRangeMetadataRecord(catalog_factory,
-                                   table_name,
-                                   range.start_key_,
-                                   range.partition_id_,
-                                   version,  // range_version (using version for now)
-                                   version,
-                                   slice_plans.back().segment_cnt,
-                                   meta_acc);
+        EnqueueRangeMetadataRecord(
+            catalog_factory,
+            table_name,
+            range.start_key_,
+            range.partition_id_,
+            version,  // range_version (using version for now)
+            version,
+            slice_plans.back().segment_cnt,
+            meta_acc);
     }
 
-    // 2- Dispatch slice batches for all ranges concurrently (shared SyncConcurrentRequest)
+    // 2- Dispatch slice batches for all ranges concurrently (shared
+    // SyncConcurrentRequest)
     SyncConcurrentRequest *slice_sync_concurrent =
         sync_concurrent_request_pool_.NextObject();
     PoolableGuard slice_guard(slice_sync_concurrent);
@@ -1829,7 +1975,6 @@ bool DataStoreServiceClient::UpsertRanges(
     // Call DispatchRangeSliceBatches once with all plans
     DispatchRangeSliceBatches(kv_range_slices_table_name,
                               kv_partition_id,
-                              version,
                               slice_plans,
                               slice_sync_concurrent);
 
@@ -1855,9 +2000,8 @@ bool DataStoreServiceClient::UpsertRanges(
         sync_concurrent_request_pool_.NextObject();
     PoolableGuard meta_guard(meta_sync_concurrent);
     meta_sync_concurrent->Reset();
-    DispatchRangeMetadataBatches(kv_range_table_name,
-                                 meta_acc,
-                                 meta_sync_concurrent);
+    DispatchRangeMetadataBatches(
+        kv_range_table_name, meta_acc, meta_sync_concurrent);
 
     // 5- Wait for metadata requests to complete
     {
