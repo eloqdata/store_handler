@@ -1736,15 +1736,14 @@ bool DataStoreServiceClient::UpdateRangeSlices(
         assert(catalog_factory != nullptr);
 
         // Enqueue metadata record for this range
-        EnqueueRangeMetadataRecord(
-            catalog_factory,
-            *req.table_name_,
-            req.start_key_,
-            req.partition_id_,
-            req.range_version_,  // range_version (using version for now)
-            req.ckpt_ts_,
-            segment_cnt,
-            meta_acc);
+        EnqueueRangeMetadataRecord(catalog_factory,
+                                   *req.table_name_,
+                                   req.start_key_,
+                                   req.partition_id_,
+                                   req.range_version_,
+                                   req.ckpt_ts_,
+                                   segment_cnt,
+                                   meta_acc);
     }
 
     auto update_start_time = std::chrono::steady_clock::now();
