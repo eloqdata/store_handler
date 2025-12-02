@@ -715,7 +715,7 @@ private:
     {
         size_t h1 = std::hash<std::string_view>()(table.StringView());
         size_t h2 = std::hash<int32_t>()(range_id);
-        size_t hash_code = h1 ^ (h2 << 1);
+        size_t hash_code = h1 ^ (h2 + 0x9e3779b9 + (h1 << 6) + (h1 >> 2));
         return hash_code % txservice::Sharder::TotalRangeSlicesKvPartitions();
     }
 
