@@ -991,6 +991,7 @@ void DataStoreServiceClient::FetchRangeSlices(
         fetch_cc->SetFinish(txservice::CcErrorCode::NG_TERM_CHANGED);
         return;
     }
+
     fetch_cc->kv_partition_id_ = KvPartitionIdOf(fetch_cc->table_name_);
     uint32_t shard_id =
         GetShardIdByPartitionId(fetch_cc->kv_partition_id_, false);
@@ -1720,7 +1721,8 @@ bool DataStoreServiceClient::UpdateRangeSlices(
                                                    req.range_slices_,
                                                    req.partition_id_);
         uint32_t segment_cnt = slice_plan.segment_cnt;
-        int32_t kv_partition_id = KvPartitionIdOf(*req.table_name_);
+        int32_t kv_partition_id =
+            KvPartitionIdOfRangeSlices(*req.table_name_, req.partition_id_);
         auto iter = slice_plans.find(kv_partition_id);
         if (iter == slice_plans.end())
         {
@@ -1899,11 +1901,12 @@ bool DataStoreServiceClient::UpdateRangeSlices(
     slice_plans.emplace_back(std::move(slice_plan));
     size_t c;
     const uint32_t segment_cnt = slice_plans[0].segment_cnt;
-    DispatchRangeSliceBatches(kv_range_slices_table_name,
-                              KvPartitionIdOf(table_name),
-                              slice_plans,
-                              slice_sync_concurrent,
-                              c);
+    DispatchRangeSliceBatches(
+        kv_range_slices_table_name,
+        KvPartitionIdOfRangeSlices(table_name, partition_id),
+        slice_plans,
+        slice_sync_concurrent,
+        c);
     // 3- Wait for slice requests to complete. Make sure meta data is updated
     // after all slice info is written.
     {
@@ -1994,7 +1997,7 @@ bool DataStoreServiceClient::UpsertRanges(
 
     // 1- First pass: Prepare slice batches and accumulate metadata for all
     // ranges
-    std::vector<RangeSliceBatchPlan> slice_plans;
+    std::unordered_map<int32_t, std::vector<RangeSliceBatchPlan>> slice_plans;
     slice_plans.reserve(range_info.size());
     RangeMetadataAccumulator meta_acc;
 
@@ -2003,7 +2006,20 @@ bool DataStoreServiceClient::UpsertRanges(
         // Prepare slice batches for this range
         auto slice_plan = PrepareRangeSliceBatches(
             table_name, version, range.slices_, range.partition_id_);
-        slice_plans.emplace_back(std::move(slice_plan));
+        uint32_t segment_cnt = slice_plan.segment_cnt;
+
+        int32_t kv_partition_id =
+            KvPartitionIdOfRangeSlices(table_name, range.partition_id_);
+        auto iter = slice_plans.find(kv_partition_id);
+        if (iter == slice_plans.end())
+        {
+            auto em_it = slice_plans.try_emplace(kv_partition_id);
+            em_it.first->second.push_back(std::move(slice_plan));
+        }
+        else
+        {
+            iter->second.push_back(std::move(slice_plan));
+        }
 
         // Enqueue metadata record for this range
         EnqueueRangeMetadataRecord(
@@ -2013,7 +2029,7 @@ bool DataStoreServiceClient::UpsertRanges(
             range.partition_id_,
             version,  // range_version (using version for now)
             version,
-            slice_plans.back().segment_cnt,
+            segment_cnt,
             meta_acc);
     }
 
@@ -2025,13 +2041,15 @@ bool DataStoreServiceClient::UpsertRanges(
     slice_sync_concurrent->Reset();
     size_t c = 0;
 
-    int32_t kv_partition_id = KvPartitionIdOf(table_name);
-    // Call DispatchRangeSliceBatches once with all plans
-    DispatchRangeSliceBatches(kv_range_slices_table_name,
-                              kv_partition_id,
-                              slice_plans,
-                              slice_sync_concurrent,
-                              c);
+    for (auto &[kv_partition_id, slice_plan] : slice_plans)
+    {
+        // Call DispatchRangeSliceBatches once with all plans
+        DispatchRangeSliceBatches(kv_range_slices_table_name,
+                                  kv_partition_id,
+                                  slice_plan,
+                                  slice_sync_concurrent,
+                                  c);
+    }
 
     // 3- Wait for slice requests to complete
     {
@@ -4491,50 +4509,82 @@ bool DataStoreServiceClient::InitTableRanges(
 bool DataStoreServiceClient::DeleteTableRanges(
     const txservice::TableName &table_name)
 {
-    int32_t kv_partition_id = KvPartitionIdOf(table_name);
-    uint32_t data_shard_id = GetShardIdByPartitionId(kv_partition_id, false);
-    // delete all slices info from {kv_range_slices_table_name} table
     std::string start_key = table_name.String();
     std::string end_key = start_key;
     end_key.back()++;
 
-    SyncCallbackData *callback_data = sync_callback_data_pool_.NextObject();
-    PoolableGuard guard(callback_data);
-    callback_data->Reset();
-    DeleteRange(kv_range_slices_table_name,
-                kv_partition_id,
-                data_shard_id,
-                start_key,
-                end_key,
-                false,
-                callback_data,
-                &SyncCallback);
-    callback_data->Wait();
+    SyncConcurrentRequest *delete_slices_sync_concurrent =
+        sync_concurrent_request_pool_.NextObject();
+    PoolableGuard delete_slices_req_guard(delete_slices_sync_concurrent);
+    delete_slices_sync_concurrent->Reset();
+    size_t total_range_slices_kv_partitions = TotalRangeSlicesKvPartitions();
+    for (int32_t kv_partition_id = 0;
+         kv_partition_id < total_range_slices_kv_partitions;
+         ++kv_partition_id)
+    {
+        std::unique_lock<bthread::Mutex> lk(
+            delete_slices_sync_concurrent->mux_);
+        while (delete_slices_sync_concurrent->unfinished_request_cnt_ >=
+               SyncConcurrentRequest::max_flying_write_count)
+        {
+            delete_slices_sync_concurrent->cv_.wait(lk);
+        }
+        delete_slices_sync_concurrent->unfinished_request_cnt_++;
 
-    if (callback_data->Result().error_code() !=
+        // get shard id
+        uint32_t data_shard_id =
+            GetShardIdByPartitionId(kv_partition_id, false);
+        // delete all slices info from {kv_range_slices_table_name} table
+        DeleteRange(kv_range_slices_table_name,
+                    kv_partition_id,
+                    data_shard_id,
+                    start_key,
+                    end_key,
+                    false,
+                    delete_slices_sync_concurrent,
+                    SyncConcurrentRequestCallback);
+    }
+
+    // callback_data->Wait();
+    {
+        std::unique_lock<bthread::Mutex> lk(
+            delete_slices_sync_concurrent->mux_);
+        delete_slices_sync_concurrent->all_request_started_ = true;
+        while (delete_slices_sync_concurrent->unfinished_request_cnt_ != 0)
+        {
+            delete_slices_sync_concurrent->cv_.wait(lk);
+        }
+    }
+
+    if (delete_slices_sync_concurrent->result_.error_code() !=
         EloqDS::remote::DataStoreError::NO_ERROR)
     {
         LOG(ERROR) << "DeleteTableRanges failed, error: "
-                   << callback_data->Result().error_msg();
+                   << delete_slices_sync_concurrent->result_.error_msg();
         return false;
     }
 
+    int32_t kv_partition_id = KvPartitionIdOf(table_name);
+    uint32_t data_shard_id = GetShardIdByPartitionId(kv_partition_id, false);
     // delete all range info from {kv_range_table_name} table
-    callback_data->Reset();
+    SyncCallbackData *sync_callback_data =
+        sync_callback_data_pool_.NextObject();
+    PoolableGuard sync_callback_data_guard(sync_callback_data);
+    sync_callback_data->Reset();
     DeleteRange(kv_range_table_name,
-                kv_partition_id,
+                KvPartitionIdOf(table_name),
                 data_shard_id,
                 start_key,
                 end_key,
                 false,
-                callback_data,
+                sync_callback_data,
                 &SyncCallback);
-    callback_data->Wait();
-    if (callback_data->Result().error_code() !=
+    sync_callback_data->Wait();
+    if (sync_callback_data->Result().error_code() !=
         EloqDS::remote::DataStoreError::NO_ERROR)
     {
         LOG(ERROR) << "DeleteTableRanges failed, error: "
-                   << callback_data->Result().error_msg();
+                   << sync_callback_data->Result().error_msg();
         return false;
     }
 
